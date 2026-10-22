@@ -1,97 +1,44 @@
 # tv-control
 
-Control configured Android TV and Jellyfin clients from a Rust CLI or an MCP
-stdio server. Commands use device, app and media aliases; results distinguish
-observed state, verified postconditions and uncertain outcomes.
+A small Rust controller for Android TV and Jellyfin, with a CLI and two MCP tools.
 
-**Early MVP.** Local fixtures cover controller behavior. Router execution and
-user-to-TV latency are not qualified. The MCP server runs over local stdio; this
-repository does not provide a connected ChatGPT plugin or hosted endpoint.
+## Install
 
-## Guided installation and setup
-
-Start with the [reviewable shell installer](docs/INSTALLATION.md), or the manual
-archive path. Use `sh install.sh --version v0.2.2 --setup` after download, checksum
-verification and inspection. Agent mode uses `--json` and never launches setup.
-
-See [download, guided setup and direct ChatGPT connection](docs/ONBOARDING.md).
-The CLI provides `setup`, `interfaces`, `discover`, `doctor` and
-`connect-chatgpt`, with `--json` for agents and offline fixtures for evaluation.
-Setup previews a private configuration and requires confirmation before saving.
-It does not grant debugging access or create a tunnel/plugin. Discovery is an
-explicit bounded operation; advertisement is not proof of control capability.
-
-## Quick start
-
-Requires Linux or macOS, a stable Rust toolchain and a native linker. From a
-source checkout:
+Run in a terminal on macOS or Linux (ARM64 or x86-64):
 
 ```sh
-git clone https://github.com/antoine-berger/tv-control.git
-cd tv-control
-cargo build --locked --release
-./target/release/tv-control --help
-./target/release/tv-control validate examples/config.json
-./target/release/tv-control capabilities examples/config.json
+curl -fsSL https://github.com/antoine-berger/tv-control/releases/download/v0.2.3/install.sh | sh
 ```
 
-Validation and capability listing do not contact a TV or media server. The
-[example configuration](examples/config.json) uses fictitious identities and
-reserved addresses. See [configuration](docs/CONFIGURATION.md) before replacing
-them with your own installation details. Runtime adapters require an existing,
-authorized ADB connection or Jellyfin session and the configured executables.
+The installer asks for confirmation, checks an existing installation and opens the
+setup wizard. Run the same command again to resume after an interruption. Local
+setup progress is saved privately; a changed network or display is checked again.
+Existing configuration is preserved. No version, output path or setup flags are
+needed for this flow.
 
-## Supported actions
+This command executes downloaded code. [Inspection and checksum verification](docs/INSTALLATION.md)
+are available before execution. Maintained Android Platform Tools are required
+for ADB. Device debugging authorization and the optional ChatGPT connection need
+separate explicit approvals; the installer does not grant them.
 
-| Backend | Actions | Requirements |
-| --- | --- | --- |
-| ADB | Observe state, open a TV app, pause/resume, set a calibrated volume index | Explicit target and dedicated compatible ADB daemon; media app configured for playback controls |
-| Jellyfin | Observe state, pause/resume, resume a configured series | Accepted server version, existing credential and exact user/device session |
+## Scope
 
-ADB volume is an Android music stream index, not TV percent. Opening an app does
-not prove playback. Cast, Android TV Remote v2, UIAutomator, service-specific
-YouTube search and account navigation are not implemented. See
-[adapter requirements and limits](docs/ADAPTERS.md).
+ADB supports observed state, app opening, pause/resume and calibrated volume.
+Jellyfin supports session control and resuming configured media. Commands carry
+a deadline; dispatch alone does not count as a verified result. Cast and YouTube
+Music automation are not implemented. The ten-second chat-to-TV target and router
+runtime remain unqualified.
 
-## Usage
-
-After preparing a private configuration:
-
-```sh
-./target/release/tv-control validate config.local.json
-./target/release/tv-control execute config.local.json request.local.json
-./target/release/tv-control mcp config.local.json
-```
-
-Requests carry an absolute expiry supplied by the caller. A successful dispatch
-alone is not a verified result. Do not automatically repeat `outcome_unknown`:
-the TV may already have acted. See the [CLI reference](docs/CLI.md) for request
-examples, receipts and exit codes, or [MCP integration](docs/MCP.md) for host setup.
+The resumable wizard currently prepares local TV configuration. It does not resume
+or automate TV pairing, credentials, tunnel provisioning or ChatGPT plugin approval.
 
 ## Documentation
 
-- [Configuration](docs/CONFIGURATION.md): aliases, credentials and resource policy.
-- [Adapters](docs/ADAPTERS.md): supported protocols, playback evidence and ADB risks.
-- [CLI reference](docs/CLI.md): commands, actions, deadlines and results.
-- [MCP integration](docs/MCP.md): stdio lifecycle, tools and client responsibilities.
-- [Development](docs/DEVELOPMENT.md): architecture, checks and contribution guidance.
-- [Router packaging](docs/ROUTER.md): cross-build recipe and untested deployment scope.
-- [Acceptance](docs/ACCEPTANCE.md) and [benchmarks](benchmarks/README.md): evidence requirements and measurement limits.
-- [Architecture decisions](docs/ADR.md), [review notes](docs/REVIEW.md) and [qualification status](PLAN.md).
+- [Installation and recovery](docs/INSTALLATION.md)
+- [Device setup and chat connection](docs/ONBOARDING.md)
+- [Configuration](docs/CONFIGURATION.md), [CLI](docs/CLI.md) and [MCP](docs/MCP.md)
+- [Adapters and limits](docs/ADAPTERS.md)
+- [Development and source builds](docs/DEVELOPMENT.md), [architecture](docs/ADR.md)
+- [Router qualification](docs/ROUTER.md), [acceptance](docs/ACCEPTANCE.md) and [measurements](benchmarks/README.md)
 
-## Operational limits
-
-Coordination and deduplication are bounded, in memory and local to one process.
-They do not survive a restart or synchronize separate CLI invocations. ADB requires
-a dedicated daemon: a version preflight rejects known mismatches, but replacement
-between the check and invocation remains a risk. The explicit discovery command sends bounded local queries; ordinary control
-commands never discover, pair or install anything. Router configuration remains
-manual.
-
-The ten-second end-to-end target is unproven. Checked-in macOS benchmarks measure
-an older controller build and local fixtures, excluding the TV, ADB daemon and
-any tunnel. They are not router measurements.
-
-## License
-
-[MIT](LICENSE).
+[MIT licence](LICENSE).

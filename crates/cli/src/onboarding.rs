@@ -425,6 +425,21 @@ fn setup_command(input: &Options) -> Result<i32, &'static str> {
             }
         }
     };
+    if input.get("--device").is_none()
+        && owned
+            .get("--device")
+            .is_some_and(|id| !candidates.iter().any(|c| c.id == id))
+        && !manual
+    {
+        eprintln!(
+            "The saved display is no longer advertised at that address. Choose a current display."
+        );
+        owned.values.remove("--device");
+        if let Some(progress) = progress.as_mut() {
+            progress.clear_target()?;
+        }
+    }
+    let options = &owned;
     let candidate = if manual || candidates.is_empty() {
         if options.json && options.get("--manual-endpoint").is_none() {
             emit(
@@ -433,6 +448,7 @@ fn setup_command(input: &Options) -> Result<i32, &'static str> {
             );
             return Ok(2);
         }
+        manual = true;
         // Bind manual fallback to the interface chosen earlier in this invocation.
         let mut bound = Options {
             values: options.values.clone(),

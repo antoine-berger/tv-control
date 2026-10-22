@@ -3,7 +3,15 @@
 Build on Linux or macOS with a stable Rust toolchain and native linker. Python 3
 is used for repository checks and stdio integration fixtures. CI tests native Linux
 and macOS builds and cross-builds the ARM64 musl candidate; it does not run on a
-router or TV. See [quick start](../README.md#quick-start) for the release build.
+router or TV. Build a source checkout with:
+
+```sh
+git clone https://github.com/antoine-berger/tv-control.git
+cd tv-control
+cargo build --locked --release
+./target/release/tv-control --help
+```
+
 
 ## Architecture
 
@@ -41,7 +49,10 @@ cargo clippy --locked --workspace --all-targets -- -D warnings
 cargo test --locked --workspace
 cargo build --locked --release
 python3 scripts/check_architecture.py
+python3 -W error::ResourceWarning scripts/test_installer.py
 python3 -W error::ResourceWarning scripts/test_mcp.py target/release/tv-control
+python3 -W error::ResourceWarning scripts/test_onboarding.py target/release/tv-control
+python3 -W error::ResourceWarning scripts/test_install_flow.py target/release/tv-control
 ./target/release/tv-control validate examples/config.json
 python3 scripts/audit_publication.py
 ```
@@ -49,6 +60,11 @@ python3 scripts/audit_publication.py
 The automated suite uses fake clocks, injected ports, fake executables and loopback
 HTTP/ADB fixtures. It does not require a real TV, Jellyfin account, pairing or a
 router installation. Fixture success does not qualify physical playback.
+The integrated install flow uses a temporary HOME and a native test launcher that
+passes wire fixtures to the real Rust wizard. It exercises the zero-argument
+script stream and controlling PTY together. An optional second binary argument to
+`test_install_flow.py` qualifies compatibility with an independently verified
+v0.2.2 executable; CI does not silently download or execute old releases.
 
 Subprocess invocations own Unix process groups and bounded nonblocking pipes.
 Cleanup terminates owned processes on cancellation, timeout and exit. Inspect

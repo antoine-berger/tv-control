@@ -173,6 +173,7 @@ verify_installation() {
         if ! { [ -d "$version_dir" ] && [ ! -L "$version_dir" ]; }; then fail unexpected_version_entry; fi
         stored_version=${version_dir##*/}; valid_version "$stored_version" || fail invalid_installed_version
         [ "$(sed -n '1p' "$version_dir/.receipt")" = "$stored_version" ] || fail receipt_mismatch
+        valid_hash "$(sed -n '3p' "$version_dir/.receipt")" || fail invalid_receipt_digest
         printf '%s\n' "$version_dir/.receipt" "$version_dir/.manifest" >> "$work/expected-files"
         printf '%s\n' "$version_dir" "$version_dir/docs" "$version_dir/examples" "$version_dir/benchmarks" >> "$work/expected-dirs"
         [ -s "$version_dir/.manifest" ] || fail manifest_missing
@@ -201,7 +202,9 @@ run_setup() {
             work=
         fi
         if [ "$lock_owned" = yes ]; then rmdir "$lock"; lock_owned=no; fi
-        "$prefix/versions/$version/tv-control" setup --guided --resume --output "$config_parent/tv-control.local.json" <&3 >&3 2>&3 3<&-
+        set -- setup --resume --output "$config_parent/tv-control.local.json"
+        case "$version" in v0.2.0|v0.2.1|v0.2.2) ;; *) set -- "$@" --guided ;; esac
+        "$prefix/versions/$version/tv-control" "$@" <&3 >&3 2>&3 3<&-
 }
 if [ "$dry" = yes ]; then result planned 'Dry run: no download, installation, setup or authentication performed.'; exit 0; fi
 if [ "$interactive" = yes ]; then
@@ -235,6 +238,11 @@ fi
 if [ -e "$prefix" ]; then
     verify_installation
     if [ "$setup_requested" = yes ] && [ "$active" = "$version" ]; then
+        if [ -n "$archive_input" ] || [ -n "$checksum_input" ]; then fail setup_reuse_refuses_archive_override; fi
+        if [ -n "$expected_pin" ]; then
+            stored_digest=$(sed -n '3p' "$prefix/versions/$version/.receipt")
+            [ "$(printf '%s' "$stored_digest" | tr 'A-F' 'a-f')" = "$(printf '%s' "$expected_pin" | tr 'A-F' 'a-f')" ] || fail checksum_mismatch
+        fi
         result already_installed 'Existing installation verified; resuming setup.'
         run_setup
         exit 0

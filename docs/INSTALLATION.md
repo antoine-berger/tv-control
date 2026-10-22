@@ -1,139 +1,86 @@
-# User-scoped shell installer
+# Installation and recovery
 
-The `v0.2.2` patch fixes interactive installation from a pipe and provides the
-installer, its SHA-256 file and four platform archives. It leaves the existing
-`v0.2.0` and `v0.2.1` assets unchanged. Releases are pinned;
-there is no request to a moving `latest` endpoint.
-
-## Review before execution
-
-The preferred path is to download a pinned `install.sh` and its matching SHA-256
-file into a new directory, verify them with `shasum -a 256 -c install.sh.sha256`
-(macOS) or `sha256sum -c install.sh.sha256` (Linux), read the script, then execute
-it with `sh`. The release will provide both files alongside the four archives.
-The installer itself checks the archive checksum before parsing or publishing it.
-Checksums from the same GitHub release protect integrity relative to that release;
-they are not an independent signature or protection against publisher compromise.
-An independently obtained archive hash can be pinned with `--sha256 HEX`.
+## Guided installation
 
 ```sh
-mkdir tv-control-installer-v0.2.2
-cd tv-control-installer-v0.2.2
-curl --fail --location --proto '=https' --proto-redir '=https' --tlsv1.2 --output install.sh https://github.com/antoine-berger/tv-control/releases/download/v0.2.2/install.sh
-curl --fail --location --proto '=https' --proto-redir '=https' --tlsv1.2 --output install.sh.sha256 https://github.com/antoine-berger/tv-control/releases/download/v0.2.2/install.sh.sha256
-shasum -a 256 -c install.sh.sha256
-less install.sh
-sh install.sh --version v0.2.2 --setup
+curl -fsSL https://github.com/antoine-berger/tv-control/releases/download/v0.2.3/install.sh | sh
 ```
 
-On Linux use `sha256sum -c install.sh.sha256` if `shasum` is unavailable.
-Run each step only after the previous one succeeds. `--setup` explicitly starts
-the guided CLI after interactive installation confirmation. It is incompatible
-with `--json` and `--non-interactive`; agents cannot implicitly start discovery.
-For an unattended installation use `sh install.sh --version v0.2.2 --json`.
+The script defaults to the version shipped with that URL. It detects the host
+platform, asks for confirmation, verifies an existing installation, installs or
+updates its own files when needed, then runs the wizard. Repeating the same
+command reuses an intact current version without downloading it again. An older
+installation is updated after confirmation; previous payloads and external
+configuration are retained. A modified or unowned installation is refused.
 
+The wizard selects the only LAN interface when there is one, or asks which LAN
+to use. It asks before querying that LAN and before saving configuration. TV
+advertisements are unverified candidates. Network failure shows the stage and a
+numeric OS error when available, then offers manual TV connection details in the
+same wizard. The OS cause is not inferred from a generic failure code.
 
-Downloading then executing leaves a review opportunity. If you prefer a direct
-URL, this explicitly starts interactive setup from a pinned release:
+Confirmations and wizard input use `/dev/tty`; the script stream is code only.
+The complete installer function is parsed before execution. Without a controlling
+terminal the guided flow stops before installation writes. No sudo, shell profile
+edits, daemon, pairing, credentials, service or tunnel is created.
 
-```sh
-curl --fail --location --proto '=https' --proto-redir '=https' --tlsv1.2 https://github.com/antoine-berger/tv-control/releases/download/v0.2.2/install.sh | sh -s -- --version v0.2.2 --setup
-```
+## Resume
 
-This executes downloaded code without the separate inspection/checksum step and
-trusts GitHub and the publisher. The download-and-review path above remains the
-recommended default. Pipe mode does not imply consent: installation still asks
-for `yes`. Confirmations and the wizard use the controlling terminal
-(`/dev/tty`), never the script stream. The entire installer function is parsed
-before it runs, including when the download arrives in fragments. A missing
-controlling terminal gives `interactive_terminal_required` before any installation
-write. `--interactive` has the same terminal requirement; there is no fallback
-that consumes piped data as answers. `--json` or `--non-interactive` work without
-a terminal and never start setup. `--dry-run` does not open a terminal or write.
+Run the same installation command after a discovery failure, cancellation or
+restart. Configuration defaults to `$HOME/.config/tv-control/tv-control.local.json`
+(or the selected XDG config home). A private adjacent checkpoint remembers the
+validated interface, display choice, explicit manual endpoint and dependency
+paths. It contains no credentials or claims of device/tunnel authorization.
 
-The installer never invokes sudo or edits shell startup files. Tests install
-only into disposable temporary prefixes; existing user installations are not
-touched. PTY tests feed code through a separate fragmented pipe and keyboard
-answers through the terminal; the wizard is a harmless native test program.
+The saved interface/address is checked again. Discovery is repeated only after a
+new explicit confirmation; snapshots and dynamic ports are not trusted across
+processes. A disappeared display offers a fresh selection. A manual endpoint is
+reconfirmed before reuse. An already saved valid private configuration is kept,
+without discovery or rewriting it.
 
-## Layout and activation
+Checkpoint writes use a private temporary file, sync and atomic publication. A
+process-held file lock is released after process exit. Incomplete initial hard-link
+publication has a guided recovery for recognized duplicate temporary links only.
+Unreadable private state can be backed up and restarted after confirmation.
+Corrupt data is preserved; unsafe ownership, permissions, symlinks and unknown
+hard links are refused. Cooperative locking does not protect against a hostile
+process running as the same user, and filesystem durability is not guaranteed.
 
-The default root is `$HOME/.local/share/tv-control`. Use `--prefix ABSOLUTE_DIR`
-for a different **dedicated** root. Existing symlink path components are refused.
-The immediate parent must be user-owned and not writable by other users/groups.
-Use a canonical private path if a home or mount location is a symlink.
+These checkpoints cover local TV configuration only. TV authorization, maintained
+ADB installation, media preferences, tunnel credentials and ChatGPT plugin approval
+remain separately verified steps described in [onboarding](ONBOARDING.md).
 
-```text
-tv-control/
-  .tv-control-owner
-  current
-  tv-control                 # small launcher
-  versions/v0.2.2/
-    tv-control               # verified release binary
-    .receipt
-    .manifest
-    ... bundled docs/examples
-```
+## Verify before execution
 
-The root and version directories are private. Payload files are mode 0600;
-executables are 0700. Initial publication moves a complete staged root into
-place. Updates add a version without overwriting the old payload, then atomically
-replace the small `current` file. Old versions remain available. A cooperative
-lock serializes installer operations. This is not a security boundary against a
-hostile process running as the same user, nor a filesystem durability guarantee.
+Download `install.sh` and `install.sh.sha256` from the same pinned release, then
+verify with `shasum -a 256 -c install.sh.sha256` on macOS or
+`sha256sum -c install.sh.sha256` on Linux. Read the script and run `sh install.sh`.
+The pipe command executes downloaded code without this inspection opportunity.
+Checksums from the same release establish integrity relative to that release;
+they are not independent publisher signatures. Binaries are unsigned/not notarized.
+The script also verifies each platform archive checksum and ELF/Mach-O architecture.
 
-```sh
-sh install.sh --non-interactive --version v0.2.2
-sh install.sh --non-interactive --version v0.2.2 --update
-sh install.sh --non-interactive --uninstall
-```
+## Advanced and agent use
 
-Updates require `--update` and an explicitly specified version; `latest` is never
-resolved. An existing unowned directory or changed installation is refused. A
-stored version with a different archive digest is a conflict. Repeating an update
-to an identical verified version is safe. The launcher directory can be added to
-PATH manually, or invoke it by its full path; the installer does not create a
-symlink in an unrelated bin directory or silently modify PATH.
+The normal flow needs no flags. For agents, `--json` and `--non-interactive` never
+prompt or start setup. `--dry-run` does not download, open a terminal or write.
+Other options are listed by `sh install.sh --help`; they are intended for explicit
+version pinning, alternative dedicated prefixes and offline archives.
 
-Uninstall validates all stored payload hashes and the exact known file/directory
-set before removing recorded files. Unexpected files, changed payloads, symlinks or special entries (including FIFOs
-and sockets) cause refusal before any deletion. It never recursively removes an installation root or user config.
-An interrupted uninstall can leave partial owned files for manual inspection.
-Do not put personal data inside the installation root. User configuration belongs
-outside it and is preserved.
+An advanced same-version `--setup` reuse checks an explicit `--sha256` pin against
+the recorded archive digest. It refuses archive/checksum overrides instead of
+silently ignoring them. Pinned v0.2.0–v0.2.2 setup uses the arguments supported by
+those binaries; it does not gain the new checkpoint behavior. Noninteractive
+updates require an explicit version and `--update`. No moving `latest` URL is used.
 
-## Guided and agent modes
+Default installation root: `$HOME/.local/share/tv-control`. Payloads are versioned,
+private and activated with an atomic current-version file. The installer does not
+edit PATH. Existing symlink path components and writable-by-others installation
+parents are refused. Uninstall validates the recorded exact contents before removal;
+changed files, unexpected entries and special files stop it before deletion.
+Configuration and checkpoints are outside the installation and are preserved.
 
-In a terminal, installation asks for confirmation and then offers guided setup.
-Only an explicit `y` starts the CLI wizard, which may query the LAN interface the
-user chooses. Its config defaults to
-`${XDG_CONFIG_HOME:-$HOME/.config}/tv-control/tv-control.local.json`.
-ADB dependencies and device authorization remain separate, as do the official
-Secure MCP Tunnel credentials and plugin approvals. No daemon, key, pairing,
-authentication, service or tunnel is started by the installer.
-
-`--non-interactive` and `--json` never launch setup or read prompts. JSON mode
-writes a single structured result to stdout; diagnostics use stderr. `--dry-run`
-does not download, create directories, install or start setup. The mode is suited
-to an agent that needs a concrete plan/result without implicit device access.
-`--archive FILE --checksum FILE` supports explicit offline or air-gapped input.
-The checksum filename must identify the expected platform asset. These files are
-untrusted input and receive the same archive validation as HTTPS downloads.
-
-The installer also reads the binary header without executing it and refuses an
-ELF/Mach-O format or architecture mismatch before activation. Filesystem errors
-produce one structured failure in JSON mode when stdout remains available; the
-previous active version is preserved before activation. Existing controller
-processes are not restarted or stopped; their running version remains unchanged.
-
-The script supports POSIX sh on macOS/Linux, ARM64 and x86-64. It needs standard
-Unix utilities (including od), tar, gzip, mktemp, a SHA-256 provider (`sha256sum`, `shasum` or
-OpenSSL), and curl for HTTPS downloads. Dependencies are not installed silently.
-Archives are limited to 16 MiB compressed and at most 32 MiB decompressed. Parsing
-rejects unknown/absolute/traversal names, duplicate members, links and special
-files. Each allowlisted member is streamed to a file created in a private stage;
-archive paths, modes and ownership are never extracted into the filesystem.
-
-See [guided setup](ONBOARDING.md) for capability evidence and authorization limits.
-The router runtime, real discovery, TV effects and ten-second chat-to-TV goal
-remain separately unqualified.
+Archives are restricted to known regular members, at most 16 MiB compressed and
+32 MiB decompressed. Paths, links, duplicate entries and architecture mismatches
+are checked before activation. Tests use temporary HOME directories and fixture
+network responses; no real TV setup is implied by CI success.

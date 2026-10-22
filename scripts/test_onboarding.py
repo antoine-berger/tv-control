@@ -84,5 +84,5 @@ class Onboarding(unittest.TestCase):
  def test_resume_revalidates_interface_and_preserves_corrupt_checkpoint(self):
   fixture,data=self.failing_fixture();args=self.guided_args(fixture);self.run_cli('setup',*args,input='yes\n\n');checkpoint=self.output.with_name(self.output.name+'.setup-state.json')
   data['interfaces'][0]['address']='192.0.2.2';fixture.write_text(json.dumps(data));p=self.run_cli('setup',*args,input='q\n');self.assertEqual(p.returncode,1);self.assertIn('saved interface/address changed',p.stderr);self.assertEqual(json.loads(checkpoint.read_text())['interface'],'lan-fixture@192.0.2.2');self.assertFalse(self.output.exists())
-  checkpoint.write_text('{partial');p=self.run_cli('setup',*args);self.assertEqual(p.returncode,1);self.assertIn('checkpoint_corrupt_use_new_path',p.stderr);self.assertEqual(checkpoint.read_text(),'{partial');self.assertFalse(self.output.exists())
+  checkpoint.write_text('{partial');p=self.run_cli('setup',*args);self.assertEqual(p.returncode,1);self.assertIn('Saved setup progress is unreadable',p.stderr);self.assertEqual(checkpoint.read_text(),'{partial');self.assertFalse(self.output.exists())
 if __name__=='__main__':unittest.main()

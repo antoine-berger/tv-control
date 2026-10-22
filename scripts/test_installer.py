@@ -229,6 +229,12 @@ case "$url" in *.sha256) cp "$TV_TEST_CHECKSUM" "$output";; *) cp "$TV_TEST_ARCH
   env,log,marker=self.zero_argument_environment()
   p=self.run_terminal([],[('Continue? Type yes:',b'no\n')],env=env,fragmented=True);self.assertEqual(p.returncode,2,p.stdout);self.assertFalse(self.prefix.exists());self.assertFalse(log.exists());self.assertFalse(marker.exists())
   p=self.run_script([],env=env,input='yes\n');self.assertEqual(p.returncode,1,p.stdout+p.stderr);self.assertIn('interactive_terminal_required',p.stderr);self.assertFalse(self.prefix.exists());self.assertFalse(log.exists())
+ def test_existing_setup_reuse_checks_pin_and_refuses_archive_override(self):
+  archive=self.asset();self.assertEqual(self.install(archive).returncode,0);marker=self.root/'setup-marker';env=self.env.copy();env.update(TV_TEST_SETUP_MARKER=str(marker),XDG_CONFIG_HOME=str(self.root/'config'))
+  args=['--prefix',str(self.prefix),'--version','v0.2.3','--setup']
+  p=self.run_terminal([*args,'--sha256','0'*64],[('Continue? Type yes:',b'yes\n')],env=env);self.assertEqual(p.returncode,1,p.stdout);self.assertIn('checksum_mismatch',p.stdout);self.assertFalse(marker.exists())
+  p=self.run_terminal([*args,'--archive',str(archive)],[('Continue? Type yes:',b'yes\n')],env=env);self.assertEqual(p.returncode,1,p.stdout);self.assertIn('setup_reuse_refuses_archive_override',p.stdout);self.assertFalse(marker.exists())
+  digest=hashlib.sha256(archive.read_bytes()).hexdigest();p=self.run_terminal([*args,'--sha256',digest],[('Continue? Type yes:',b'yes\n')],env=env);self.assertEqual(p.returncode,0,p.stdout);self.assertTrue(marker.exists())
  def test_https_request_plan_uses_pinned_assets_and_flags(self):
   archive=self.asset();log=self.root/'curl-args';curl=self.bin/'curl'
   curl.write_text('''#!/bin/sh

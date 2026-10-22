@@ -73,3 +73,21 @@ not establish an end-to-end service-level guarantee. See [MCP integration](MCP.m
 projects. Their browser/vision or UI-navigation capabilities are not embedded
 backends here, and their performance cannot be attributed to this controller.
 Any future source reuse needs a separate license and integration review.
+
+## 010 — Resumable local setup
+
+The shell owns download, integrity checks and version activation. The Rust wizard
+owns interface/display selection and configuration; the checkpoint adapter owns
+private atomic persistence and process-held locking. The normal installer has no
+arguments and enters that wizard after confirmation, reusing an intact installation
+or updating an older version. Advanced noninteractive behavior stays explicit.
+
+Checkpoints store local choices and configuration progress only. They do not
+store credentials, discovery snapshots or authorization claims. Network consent
+is renewed before a resumed discovery; saved interfaces and target availability
+are revalidated. Recovery preserves corrupt data and handles recognized temporary
+hard links from interrupted initial publication. Content and open-file identity
+protect against accidental replacement or in-place edits during a session.
+
+Numeric discovery OS errors cross the port as optional failure evidence. They
+do not establish a cause; raw OS messages and packet payloads are not logged.

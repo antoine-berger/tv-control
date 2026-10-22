@@ -70,19 +70,125 @@ pub struct Store {
     path: PathBuf,
     _lock: File,
     expected: Option<(u64, u64)>,
+    expected_bytes: Option<Vec<u8>>,
+    source: Option<File>,
 }
 fn private_file(file: &File) -> Result<fs::Metadata, &'static str> {
     let m = file.metadata().map_err(|_| "checkpoint_unreadable")?;
-    if !m.is_file()
-        || m.uid() != unsafe { libc::geteuid() }
-        || m.permissions().mode() & 0o077 != 0
-        || m.nlink() != 1
+    if !m.is_file() || m.uid() != unsafe { libc::geteuid() } || m.permissions().mode() & 0o077 != 0
     {
         return Err("checkpoint_not_private");
+    }
+    if m.nlink() != 1 {
+        return Err("checkpoint_multiple_links");
     }
     Ok(m)
 }
 impl Store {
+    /// Finish only the exact duplicate links left by our initial atomic publication.
+    /// Unrecognized hard links remain errors; the checkpoint data is never deleted.
+    pub fn recover_publication(&mut self) -> Result<(), &'static str> {
+        let mut file = OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+            .open(&self.path)
+            .map_err(|_| "checkpoint_unreadable")?;
+        let metadata = file.metadata().map_err(|_| "checkpoint_unreadable")?;
+        if !metadata.is_file()
+            || metadata.uid() != unsafe { libc::geteuid() }
+            || metadata.permissions().mode() & 0o077 != 0
+            || metadata.nlink() < 2
+        {
+            return Err("checkpoint_not_private");
+        }
+        let mut bytes = Vec::new();
+        Read::by_ref(&mut file)
+            .take(8193)
+            .read_to_end(&mut bytes)
+            .map_err(|_| "checkpoint_unreadable")?;
+        let state: Checkpoint =
+            serde_json::from_slice(&bytes).map_err(|_| "checkpoint_corrupt_use_new_path")?;
+        state.validate()?;
+        let mut links = Vec::new();
+        for entry in fs::read_dir(self.path.parent().unwrap())
+            .map_err(|_| "checkpoint_unreadable")?
+            .take(256)
+        {
+            let entry = entry.map_err(|_| "checkpoint_unreadable")?;
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            let Some(numbers) = name
+                .strip_prefix(".tv-setup-")
+                .and_then(|s| s.strip_suffix(".tmp"))
+            else {
+                continue;
+            };
+            let parts: Vec<_> = numbers.split('-').collect();
+            if parts.len() != 2
+                || parts
+                    .iter()
+                    .any(|p| p.is_empty() || !p.bytes().all(|b| b.is_ascii_digit()))
+            {
+                continue;
+            }
+            let m = entry
+                .path()
+                .symlink_metadata()
+                .map_err(|_| "checkpoint_unreadable")?;
+            if m.is_file() && (m.dev(), m.ino()) == (metadata.dev(), metadata.ino()) {
+                links.push(entry.path());
+            }
+        }
+        if links.len() as u64 + 1 != metadata.nlink() {
+            return Err("checkpoint_unrecognized_links");
+        }
+        for link in links {
+            fs::remove_file(link).map_err(|_| "checkpoint_recovery_failed")?;
+        }
+        self.expected = None;
+        self.expected_bytes = None;
+        self.source = None;
+        Ok(())
+    }
+    /// Keep an unreadable private checkpoint without exposing or discarding its contents.
+    /// The caller must obtain explicit consent; unsafe file types/permissions stay errors.
+    pub fn quarantine(&mut self) -> Result<(), &'static str> {
+        let file = OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+            .open(&self.path)
+            .map_err(|_| "checkpoint_unreadable")?;
+        let metadata = private_file(&file)?;
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        let backup = self.path.with_file_name(format!(
+            "{}.corrupt-{}-{}",
+            self.path.file_name().unwrap().to_string_lossy(),
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        let _reservation = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .custom_flags(libc::O_NOFOLLOW)
+            .open(&backup)
+            .map_err(|_| "checkpoint_backup_failed")?;
+        let current = self
+            .path
+            .symlink_metadata()
+            .map_err(|_| "checkpoint_conflict")?;
+        if !current.is_file() || (current.dev(), current.ino()) != (metadata.dev(), metadata.ino())
+        {
+            return Err("checkpoint_conflict");
+        }
+        // Replace only our reserved empty backup, in one atomic rename. A crash
+        // cannot leave the source with an additional hard link.
+        fs::rename(&self.path, &backup).map_err(|_| "checkpoint_backup_failed")?;
+        self.expected = None;
+        self.expected_bytes = None;
+        self.source = None;
+        Ok(())
+    }
     pub fn open(path: &Path) -> Result<Self, &'static str> {
         let parent = path.parent().ok_or("checkpoint_directory_missing")?;
         for part in parent.ancestors() {
@@ -127,6 +233,8 @@ impl Store {
             path,
             _lock: lock,
             expected: None,
+            expected_bytes: None,
+            source: None,
         })
     }
     pub fn load(&mut self) -> Result<Option<Checkpoint>, &'static str> {
@@ -152,6 +260,8 @@ impl Store {
             serde_json::from_slice(&bytes).map_err(|_| "checkpoint_corrupt_use_new_path")?;
         checkpoint.validate()?;
         self.expected = Some((metadata.dev(), metadata.ino()));
+        self.expected_bytes = Some(bytes);
+        self.source = Some(file);
         Ok(Some(checkpoint))
     }
     pub fn save(&mut self, checkpoint: &Checkpoint) -> Result<(), &'static str> {
@@ -192,12 +302,30 @@ impl Store {
             if !actual.is_file() || (actual.dev(), actual.ino()) != expected {
                 return Err("checkpoint_conflict");
             }
+            let mut current = OpenOptions::new()
+                .read(true)
+                .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+                .open(&self.path)
+                .map_err(|_| "checkpoint_conflict")?;
+            let m = private_file(&current).map_err(|_| "checkpoint_conflict")?;
+            let mut current_bytes = Vec::new();
+            Read::by_ref(&mut current)
+                .take(8193)
+                .read_to_end(&mut current_bytes)
+                .map_err(|_| "checkpoint_conflict")?;
+            if (m.dev(), m.ino()) != expected
+                || self.expected_bytes.as_deref() != Some(current_bytes.as_slice())
+            {
+                return Err("checkpoint_conflict");
+            }
             fs::rename(&temporary, &self.path).map_err(|_| "checkpoint_publish_failed")?;
         } else {
             fs::hard_link(&temporary, &self.path).map_err(|_| "checkpoint_conflict")?;
         }
         let m = self.path.metadata().map_err(|_| "checkpoint_unreadable")?;
         self.expected = Some((m.dev(), m.ino()));
+        self.expected_bytes = Some(bytes);
+        self.source = Some(file);
         if let Some(parent) = self.path.parent() {
             if let Ok(dir) = File::open(parent) {
                 let _ = dir.sync_all();

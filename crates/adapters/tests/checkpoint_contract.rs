@@ -147,3 +147,41 @@ fn discovery_io_diagnostic_retains_numeric_evidence_without_raw_messages() {
     assert_eq!(failure.code, "mdns_send_failed");
     assert_eq!(failure.effect, tv_domain::Effect::None);
 }
+#[test]
+fn in_place_edits_are_not_overwritten() {
+    let temp = Temporary::new();
+    let path = temp.0.join("state.json");
+    let mut store = Store::open(&path).unwrap();
+    store.save(&temp.state()).unwrap();
+    fs::write(&path, b"user edit").unwrap();
+    assert_eq!(store.save(&temp.state()), Err("checkpoint_conflict"));
+    assert_eq!(fs::read(path).unwrap(), b"user edit");
+}
+#[test]
+fn interrupted_initial_publication_recovers_only_known_duplicate_links() {
+    let temp = Temporary::new();
+    let path = temp.0.join("state.json");
+    {
+        let mut store = Store::open(&path).unwrap();
+        store.save(&temp.state()).unwrap();
+    }
+    let bytes = fs::read(&path).unwrap();
+    let temporary = temp.0.join(".tv-setup-123-0.tmp");
+    fs::hard_link(&path, &temporary).unwrap();
+    let mut store = Store::open(&path).unwrap();
+    assert_eq!(store.load().unwrap_err(), "checkpoint_multiple_links");
+    store.recover_publication().unwrap();
+    assert!(store.load().unwrap().is_some());
+    assert!(!temporary.exists());
+    assert_eq!(fs::read(&path).unwrap(), bytes);
+    drop(store);
+    let unknown = temp.0.join("unrelated-link");
+    fs::hard_link(&path, &unknown).unwrap();
+    let mut store = Store::open(&path).unwrap();
+    assert_eq!(
+        store.recover_publication(),
+        Err("checkpoint_unrecognized_links")
+    );
+    assert!(unknown.exists());
+    assert_eq!(fs::read(path).unwrap(), bytes);
+}

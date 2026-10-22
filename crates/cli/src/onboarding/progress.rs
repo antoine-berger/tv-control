@@ -41,7 +41,36 @@ impl Progress {
             return Err("checkpoint_cannot_replace_configuration");
         }
         let mut store = Store::open(&path)?;
-        let state = store.load()?.unwrap_or_else(|| Checkpoint {
+        let loaded = store.load();
+        let loaded = if loaded
+            .as_ref()
+            .is_err_and(|e| *e == "checkpoint_multiple_links")
+            && !options.json
+        {
+            if prompt("Setup stopped during checkpoint publication. Keep its progress and finish recovery? Type yes:")?!="yes" {return Err("checkpoint_recovery_cancelled");}
+            store.recover_publication()?;
+            store.load()
+        } else {
+            loaded
+        };
+        let saved = match loaded {
+            Ok(saved) => saved,
+            Err(error)
+                if !options.json
+                    && matches!(
+                        error,
+                        "checkpoint_corrupt_use_new_path"
+                            | "checkpoint_invalid"
+                            | "checkpoint_too_large"
+                    ) =>
+            {
+                if prompt("Saved setup progress is unreadable. Keep a private backup and start setup again? Type yes:")?!="yes" {return Err("checkpoint_recovery_cancelled");}
+                store.quarantine()?;
+                None
+            }
+            Err(error) => return Err(error),
+        };
+        let state = saved.unwrap_or_else(|| Checkpoint {
             schema: 1,
             writer_version: env!("CARGO_PKG_VERSION").into(),
             output: output.clone(),
@@ -171,6 +200,12 @@ impl Progress {
     }
     pub fn completed(&mut self) -> Result<(), &'static str> {
         self.state.configuration_saved = true;
+        self.save()
+    }
+    pub fn clear_target(&mut self) -> Result<(), &'static str> {
+        self.state.device = None;
+        self.state.manual_endpoint = None;
+        self.state.manual_kind = None;
         self.save()
     }
     fn save(&mut self) -> Result<(), &'static str> {

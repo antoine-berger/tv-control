@@ -1,6 +1,7 @@
 # Guided setup and direct chat connection
 
-`tv-control setup` asks for a LAN interface and a detected display, previews a
+The [guided installer](INSTALLATION.md) handles the normal installation and resume flow.
+The commands below are advanced/manual steps. `tv-control setup` asks for a LAN interface and a detected display, previews a
 private configuration, then asks for confirmation. It does not start ADB, pair,
 connect to the device, modify TV settings or create a ChatGPT connection. Device
 access and host integration need the explicit steps below. Detection, configured
@@ -12,7 +13,7 @@ For guided user installation, use the [pinned shell installer](INSTALLATION.md).
 The manual archive path below remains available. Neither route creates device
 authorization or a connected ChatGPT plugin.
 
-Version 0.2.1 is an early release. Choose the archive for the **host running the
+Version 0.2.3 is an early release. Choose the archive for the **host running the
 controller**, not the TV. Archives contain the binary, licence, generic examples
 and this guide. ADB and the optional tunnel client remain separate dependencies.
 
@@ -23,17 +24,17 @@ and this guide. ADB and the optional tunnel client remain separate dependencies.
 | Linux x86-64, static musl | `tv-control-x86_64-linux-musl.tar.gz` |
 | Linux ARM64, static musl | `tv-control-aarch64-linux-musl.tar.gz` |
 
-From [the release page](https://github.com/antoine-berger/tv-control/releases/tag/v0.2.1),
+From [the release page](https://github.com/antoine-berger/tv-control/releases/tag/v0.2.3),
 download the selected archive **and its matching `.sha256` file**. Verify before
 extracting or executing. For example on Apple Silicon:
 
 ```sh
-curl --fail --location --proto '=https' --tlsv1.2 --remote-name https://github.com/antoine-berger/tv-control/releases/download/v0.2.1/tv-control-aarch64-apple-darwin.tar.gz
-curl --fail --location --proto '=https' --tlsv1.2 --remote-name https://github.com/antoine-berger/tv-control/releases/download/v0.2.1/tv-control-aarch64-apple-darwin.tar.gz.sha256
+curl --fail --location --proto '=https' --tlsv1.2 --remote-name https://github.com/antoine-berger/tv-control/releases/download/v0.2.3/tv-control-aarch64-apple-darwin.tar.gz
+curl --fail --location --proto '=https' --tlsv1.2 --remote-name https://github.com/antoine-berger/tv-control/releases/download/v0.2.3/tv-control-aarch64-apple-darwin.tar.gz.sha256
 shasum -a 256 -c tv-control-aarch64-apple-darwin.tar.gz.sha256
-mkdir tv-control-0.2.1
-tar -xzf tv-control-aarch64-apple-darwin.tar.gz -C tv-control-0.2.1
-cd tv-control-0.2.1
+mkdir tv-control-0.2.3
+tar -xzf tv-control-aarch64-apple-darwin.tar.gz -C tv-control-0.2.3
+cd tv-control-0.2.3
 ./tv-control --version
 ```
 
@@ -43,7 +44,7 @@ protect integrity relative to that release, not independent publisher identity.
 Binaries are unsigned/not notarized; any macOS security approval remains a user
 action after reviewing provenance. Linux ARM64 static inspection is not evidence
 of router firmware compatibility. No package manager or service installation is
-performed. Source build remains available in the README.
+performed. Source build instructions are in docs/DEVELOPMENT.md.
 
 ## Prepare the dependency and run setup
 
