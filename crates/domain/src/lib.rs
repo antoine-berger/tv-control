@@ -123,3 +123,5 @@ pub fn identifier(value: &str) -> bool {
             .bytes()
             .all(|b| b.is_ascii_alphanumeric() || b"_-".contains(&b))
 }
+
+pub mod onboarding;

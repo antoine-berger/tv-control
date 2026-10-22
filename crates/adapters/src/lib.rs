@@ -62,3 +62,4 @@ impl MediaCatalogue for Router {
         jellyfin::Jellyfin::new(&self.config, &*self.http).resolve(device, alias, ctx)
     }
 }
+pub mod discovery;
