@@ -8,7 +8,11 @@ capabilities, authorization and observed device state are different evidence.
 
 ## Download
 
-Version 0.2.0 is an early release. Choose the archive for the **host running the
+For guided user installation, use the [pinned shell installer](INSTALLATION.md).
+The manual archive path below remains available. Neither route creates device
+authorization or a connected ChatGPT plugin.
+
+Version 0.2.1 is an early release. Choose the archive for the **host running the
 controller**, not the TV. Archives contain the binary, licence, generic examples
 and this guide. ADB and the optional tunnel client remain separate dependencies.
 
@@ -19,17 +23,17 @@ and this guide. ADB and the optional tunnel client remain separate dependencies.
 | Linux x86-64, static musl | `tv-control-x86_64-linux-musl.tar.gz` |
 | Linux ARM64, static musl | `tv-control-aarch64-linux-musl.tar.gz` |
 
-From [the release page](https://github.com/antoine-berger/tv-control/releases/tag/v0.2.0),
+From [the release page](https://github.com/antoine-berger/tv-control/releases/tag/v0.2.1),
 download the selected archive **and its matching `.sha256` file**. Verify before
 extracting or executing. For example on Apple Silicon:
 
 ```sh
-curl --fail --location --proto '=https' --tlsv1.2 --remote-name https://github.com/antoine-berger/tv-control/releases/download/v0.2.0/tv-control-aarch64-apple-darwin.tar.gz
-curl --fail --location --proto '=https' --tlsv1.2 --remote-name https://github.com/antoine-berger/tv-control/releases/download/v0.2.0/tv-control-aarch64-apple-darwin.tar.gz.sha256
+curl --fail --location --proto '=https' --tlsv1.2 --remote-name https://github.com/antoine-berger/tv-control/releases/download/v0.2.1/tv-control-aarch64-apple-darwin.tar.gz
+curl --fail --location --proto '=https' --tlsv1.2 --remote-name https://github.com/antoine-berger/tv-control/releases/download/v0.2.1/tv-control-aarch64-apple-darwin.tar.gz.sha256
 shasum -a 256 -c tv-control-aarch64-apple-darwin.tar.gz.sha256
-mkdir tv-control-0.2.0
-tar -xzf tv-control-aarch64-apple-darwin.tar.gz -C tv-control-0.2.0
-cd tv-control-0.2.0
+mkdir tv-control-0.2.1
+tar -xzf tv-control-aarch64-apple-darwin.tar.gz -C tv-control-0.2.1
+cd tv-control-0.2.1
 ./tv-control --version
 ```
 

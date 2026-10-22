@@ -14,13 +14,15 @@ mode=install
 update=no
 noninteractive=no
 interactive=no
+setup_requested=no
 json=no
 dry=no
 work=
 activation=
 lock=
 lock_owned=no
-uid=$(id -u)
+result_emitted=no
+uid=
 usage() {
     cat <<'EOF'
 Usage: sh install.sh [options]
@@ -28,6 +30,7 @@ Usage: sh install.sh [options]
   --prefix ABSOLUTE_DIR  Dedicated install root (default ~/.local/share/tv-control)
   --non-interactive     Install without prompts; never runs setup or device access
   --interactive         Ask before installation; optionally offer guided setup
+  --setup               Explicitly start the guided wizard after interactive installation
   --json                Non-interactive structured result on stdout
   --dry-run             Read-only plan, without downloads or filesystem changes
   --update              Add a version to an existing owned installation, activate atomically
@@ -41,6 +44,7 @@ EOF
 }
 escape_json() { printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'; }
 result() {
+    result_emitted=yes
     if [ "$json" = yes ]; then
         printf '{"status":"%s","version":"%s","prefix":"%s","setup_started":false,"path_modified":false}\n' "$1" "$(escape_json "$version")" "$(escape_json "$prefix")"
     else
@@ -49,12 +53,16 @@ result() {
     fi
 }
 fail() {
+    result_emitted=yes
     if [ "$json" = yes ]; then printf '{"status":"error","code":"%s"}\n' "$1"; else printf 'tv-control installer: %s\n' "$1" >&2; fi
     exit 1
 }
 cleanup() {
     code=$?
     trap - 0 HUP INT TERM
+    if [ "$code" -ne 0 ] && [ "$result_emitted" != yes ]; then
+        if [ "$json" = yes ]; then printf '{"status":"error","code":"installer_operation_failed"}\n'; else printf 'tv-control installer: installer_operation_failed\n' >&2; fi
+    fi
     if [ -n "$activation" ] && [ -f "$activation" ] && [ ! -L "$activation" ]; then rm "$activation"; fi
     if [ -n "$work" ] && [ -d "$work" ] && [ ! -L "$work" ]; then
         case "$work" in "$parent"/.tv-control-stage.*) rm -rf "$work" ;; esac
@@ -79,6 +87,7 @@ while [ "$#" -gt 0 ]; do
         --sha256) need_value "$@"; expected_pin=$2; shift ;;
         --non-interactive) noninteractive=yes ;;
         --interactive) interactive=yes ;;
+        --setup) setup_requested=yes; interactive=yes ;;
         --json) json=yes; noninteractive=yes ;;
         --dry-run) dry=yes ;;
         --update) update=yes ;;
@@ -115,15 +124,14 @@ check_ancestors() {
         checked=${checked%/*}; [ -n "$checked" ] || checked=/
     done
 }
+uid=$(id -u)
 check_ancestors "$prefix"
 parent=${prefix%/*}; [ -n "$parent" ] || parent=/
 # The immediate publication parent must belong to this user and not be writable by others.
 check_private_parent() {
     [ -d "$parent" ] || fail parent_missing
-    owner=$(LC_ALL=C ls -nd "$parent" | awk '{print $3}')
-    [ "$owner" = "$uid" ] || fail parent_not_owned_by_user
-    perms=$(LC_ALL=C ls -ld "$parent" | awk '{print $1}')
-    case "$perms" in ?????w*|????????w*) fail parent_writable_by_others ;; esac
+    [ -n "$(find "$parent" -prune -user "$uid" -print)" ] || fail parent_not_owned_by_user
+    [ -z "$(find "$parent" -prune \( -perm -0020 -o -perm -0002 \) -print)" ] || fail parent_writable_by_others
 }
 hash_file() {
     if command -v sha256sum >/dev/null 2>&1; then sha256sum < "$1" | awk '{print $1}'
@@ -138,11 +146,12 @@ allowed_member() {
     esac
 }
 verify_installation() {
-    [ -d "$prefix" ] && [ ! -L "$prefix" ] || fail installation_missing
-    [ -f "$prefix/.tv-control-owner" ] && [ ! -L "$prefix/.tv-control-owner" ] || fail prefix_not_owned_installation
+    if ! { [ -d "$prefix" ] && [ ! -L "$prefix" ]; }; then fail installation_missing; fi
+    if ! { [ -f "$prefix/.tv-control-owner" ] && [ ! -L "$prefix/.tv-control-owner" ]; }; then fail prefix_not_owned_installation; fi
     [ "$(sed -n '1p' "$prefix/.tv-control-owner")" = TV_CONTROL_INSTALL_V1 ] || fail prefix_not_owned_installation
-    [ "$(LC_ALL=C ls -nd "$prefix" | awk '{print $3}')" = "$uid" ] || fail installation_owner_mismatch
+    [ -n "$(find "$prefix" -prune -user "$uid" -print)" ] || fail installation_owner_mismatch
     [ -z "$(find "$prefix" -type l -print)" ] || fail symlink_in_installation
+    [ -z "$(find "$prefix" ! -type f ! -type d -print)" ] || fail unexpected_installation_entry
     recorded_wrapper=$(sed -n '2p' "$prefix/.tv-control-owner")
     valid_hash "$recorded_wrapper" || fail invalid_installation_marker
     [ "$(hash_file "$prefix/tv-control")" = "$recorded_wrapper" ] || fail launcher_modified
@@ -152,15 +161,15 @@ verify_installation() {
     printf '%s\n' "$prefix/.tv-control-owner" "$prefix/current" "$prefix/tv-control" > "$work/expected-files"
     printf '%s\n' "$prefix" "$prefix/versions" > "$work/expected-dirs"
     for version_dir in "$prefix"/versions/*; do
-        [ -d "$version_dir" ] && [ ! -L "$version_dir" ] || fail unexpected_version_entry
+        if ! { [ -d "$version_dir" ] && [ ! -L "$version_dir" ]; }; then fail unexpected_version_entry; fi
         stored_version=${version_dir##*/}; valid_version "$stored_version" || fail invalid_installed_version
         [ "$(sed -n '1p' "$version_dir/.receipt")" = "$stored_version" ] || fail receipt_mismatch
         printf '%s\n' "$version_dir/.receipt" "$version_dir/.manifest" >> "$work/expected-files"
         printf '%s\n' "$version_dir" "$version_dir/docs" "$version_dir/examples" "$version_dir/benchmarks" >> "$work/expected-dirs"
         [ -s "$version_dir/.manifest" ] || fail manifest_missing
         while IFS=' ' read -r digest member extra; do
-            valid_hash "$digest" && [ -z "$extra" ] && allowed_member "$member" || fail invalid_manifest
-            [ -f "$version_dir/$member" ] && [ ! -L "$version_dir/$member" ] || fail installed_file_missing
+            if ! { valid_hash "$digest" && [ -z "$extra" ] && allowed_member "$member"; }; then fail invalid_manifest; fi
+            if ! { [ -f "$version_dir/$member" ] && [ ! -L "$version_dir/$member" ]; }; then fail installed_file_missing; fi
             [ "$(hash_file "$version_dir/$member")" = "$digest" ] || fail installed_file_modified
             printf '%s\n' "$version_dir/$member" >> "$work/expected-files"
         done < "$version_dir/.manifest"
@@ -208,9 +217,9 @@ case "$machine" in arm64|aarch64) architecture=aarch64 ;; x86_64|amd64) architec
 case "$os" in Darwin) target=$architecture-apple-darwin ;; Linux) target=$architecture-linux-musl ;; *) fail unsupported_os ;; esac
 asset=tv-control-$target.tar.gz
 if [ -n "$archive_input" ]; then
-    [ -f "$archive_input" ] && [ ! -L "$archive_input" ] || fail local_archive_missing_or_symlink
+    if ! { [ -f "$archive_input" ] && [ ! -L "$archive_input" ]; }; then fail local_archive_missing_or_symlink; fi
     [ -n "$checksum_input" ] || checksum_input=$archive_input.sha256
-    [ -f "$checksum_input" ] && [ ! -L "$checksum_input" ] || fail checksum_missing_or_symlink
+    if ! { [ -f "$checksum_input" ] && [ ! -L "$checksum_input" ]; }; then fail checksum_missing_or_symlink; fi
     cp "$archive_input" "$work/archive.tar.gz"; cp "$checksum_input" "$work/archive.sha256"
 else
     [ -z "$checksum_input" ] || fail checksum_requires_local_archive
@@ -222,7 +231,7 @@ else
 fi
 [ "$(awk 'END {print NR}' "$work/archive.sha256")" = 1 ] || fail invalid_checksum_file
 IFS=' ' read -r expected checksum_name extra < "$work/archive.sha256" || fail invalid_checksum_file
-valid_hash "$expected" && [ "$checksum_name" = "$asset" ] && [ -z "$extra" ] || fail invalid_checksum_file
+if ! { valid_hash "$expected" && [ "$checksum_name" = "$asset" ] && [ -z "$extra" ]; }; then fail invalid_checksum_file; fi
 expected=$(printf '%s' "$expected" | tr 'A-F' 'a-f')
 [ -z "$expected_pin" ] || [ "$expected" = "$(printf '%s' "$expected_pin" | tr 'A-F' 'a-f')" ] || fail pinned_checksum_mismatch
 [ "$(hash_file "$work/archive.tar.gz")" = "$expected" ] || fail archive_checksum_mismatch
@@ -248,6 +257,23 @@ while IFS= read -r member; do
     chmod 600 "$payload/$member"
     printf '%s  %s\n' "$(hash_file "$payload/$member")" "$member" >> "$payload/.manifest"
 done < "$work/members"
+# Inspect a thin little-endian ELF64/Mach-O executable header without running it.
+header=$(od -An -v -tx1 -N20 "$payload/tv-control" | tr -d ' \n')
+[ "${#header}" -eq 40 ] || fail binary_header_truncated
+case "$target" in
+    *-linux-musl)
+        [ "$(printf '%s' "$header" | cut -c1-12)" = 7f454c460201 ] || fail binary_format_mismatch
+        executable_type=$(printf '%s' "$header" | cut -c33-36)
+        case "$executable_type" in 0200|0300) ;; *) fail binary_format_mismatch ;; esac
+        actual_machine=$(printf '%s' "$header" | cut -c37-40)
+        case "$architecture:$actual_machine" in aarch64:b700|x86_64:3e00) ;; *) fail binary_architecture_mismatch ;; esac
+        ;;
+    *-apple-darwin)
+        actual_machine=$(printf '%s' "$header" | cut -c1-16)
+        case "$architecture:$actual_machine" in aarch64:cffaedfe0c000001|x86_64:cffaedfe07000001) ;; *) fail binary_architecture_mismatch ;; esac
+        [ "$(printf '%s' "$header" | cut -c25-32)" = 02000000 ] || fail binary_format_mismatch
+        ;;
+esac
 chmod 700 "$payload/tv-control"
 if [ -f "$payload/install.sh" ]; then chmod 700 "$payload/install.sh"; fi
 printf '%s\n%s\n%s\n' "$version" "$target" "$expected" > "$payload/.receipt"
@@ -267,11 +293,11 @@ LAUNCHER
     printf 'TV_CONTROL_INSTALL_V1\n%s\n' "$(hash_file "$new_root/tv-control")" > "$new_root/.tv-control-owner"
     mv "$payload" "$new_root/versions/$version"
     printf '%s\n' "$version" > "$new_root/current"
-    [ ! -e "$prefix" ] && [ ! -L "$prefix" ] || fail publication_target_appeared
+    if ! { [ ! -e "$prefix" ] && [ ! -L "$prefix" ]; }; then fail publication_target_appeared; fi
     mv "$new_root" "$prefix" || fail installation_publication_failed
 else
     if [ -e "$prefix/versions/$version" ] || [ -L "$prefix/versions/$version" ]; then
-        [ -f "$prefix/versions/$version/.receipt" ] && [ "$(sed -n '3p' "$prefix/versions/$version/.receipt")" = "$expected" ] || fail installed_version_conflict
+        if ! { [ -f "$prefix/versions/$version/.receipt" ] && [ "$(sed -n '3p' "$prefix/versions/$version/.receipt")" = "$expected" ]; }; then fail installed_version_conflict; fi
     else
         mv "$payload" "$prefix/versions/$version" || fail version_publication_failed
     fi
@@ -285,8 +311,11 @@ if [ "$json" != yes ]; then
     printf 'Executable: %s/tv-control\nAdd the installation directory to PATH yourself if desired; no shell startup file was changed.\n' "$prefix"
 fi
 if [ "$interactive" = yes ]; then
-    printf 'Run guided setup now? It can query the LAN interface you choose; no pairing/auth is automatic. [y/N]: ' >&2
-    if IFS= read -r answer && [ "$answer" = y ]; then
+    if [ "$setup_requested" != yes ]; then
+        printf 'Run guided setup now? It can query the LAN interface you choose; no pairing/auth is automatic. [y/N]: ' >&2
+        if IFS= read -r answer && [ "$answer" = y ]; then setup_requested=yes; fi
+    fi
+    if [ "$setup_requested" = yes ]; then
         config_parent=${XDG_CONFIG_HOME:-$HOME/.config}/tv-control
         case "$config_parent" in /*) ;; *) fail config_directory_must_be_absolute ;; esac
         check_ancestors "$config_parent"; mkdir -p "$config_parent"

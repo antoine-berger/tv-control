@@ -17,8 +17,13 @@ jobs:
           persist-credentials: false
       - run: rustup toolchain install stable --profile minimal --component rustfmt --component clippy
       - run: sh -n install.sh
-      - run: |
-          if command -v shellcheck >/dev/null 2>&1; then shellcheck -s sh install.sh; else echo "shellcheck unavailable on this runner"; fi
+      - if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes shellcheck busybox
+          shellcheck --version
+          shellcheck -s sh install.sh
+          busybox sh -n install.sh
       - run: python3 -W error::ResourceWarning scripts/test_installer.py
       - run: cargo fmt --all --check
       - run: cargo clippy --locked --workspace --all-targets -- -D warnings

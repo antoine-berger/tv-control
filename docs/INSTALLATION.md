@@ -1,9 +1,8 @@
 # User-scoped shell installer
 
-The installer is being prepared for the `v0.2.1` patch release. Until its release
-assets are published, use the already available `v0.2.0` explicitly when evaluating
-the source script. A source commit alone is not a published installer release.
-No existing `v0.2.0` asset is replaced by this work.
+The `v0.2.1` patch provides the installer, its SHA-256 file and four platform
+archives. It leaves the existing `v0.2.0` assets unchanged. Releases are pinned;
+there is no request to a moving `latest` endpoint.
 
 ## Review before execution
 
@@ -17,18 +16,28 @@ they are not an independent signature or protection against publisher compromise
 An independently obtained archive hash can be pinned with `--sha256 HEX`.
 
 ```sh
-# From an inspected source checkout; current published binary release:
-sh install.sh --version v0.2.0
-
-# Planned pinned installer release, after publication:
-sh install.sh --version v0.2.1
+mkdir tv-control-installer-v0.2.1
+cd tv-control-installer-v0.2.1
+curl --fail --location --proto '=https' --proto-redir '=https' --tlsv1.2 --output install.sh https://github.com/antoine-berger/tv-control/releases/download/v0.2.1/install.sh
+curl --fail --location --proto '=https' --proto-redir '=https' --tlsv1.2 --output install.sh.sha256 https://github.com/antoine-berger/tv-control/releases/download/v0.2.1/install.sh.sha256
+shasum -a 256 -c install.sh.sha256
+less install.sh
+sh install.sh --version v0.2.1 --setup
 ```
+
+On Linux use `sha256sum -c install.sh.sha256` if `shasum` is unavailable.
+Run each step only after the previous one succeeds. `--setup` explicitly starts
+the guided CLI after interactive installation confirmation. It is incompatible
+with `--json` and `--non-interactive`; agents cannot implicitly start discovery.
+For an unattended installation use `sh install.sh --version v0.2.1 --json`.
+
 
 Downloading then executing leaves a review opportunity. A `curl | sh` one-liner
 executes downloaded code before inspection and trusts the same distribution
 channel; it is not the recommended default. The installer requires explicit
 `--non-interactive` when stdin is a pipe. It never invokes sudo or edits shell
-startup files. No host installation was performed during development tests.
+startup files. Tests install only into disposable temporary prefixes; existing user installations
+are not touched.
 
 ## Layout and activation
 
@@ -70,8 +79,8 @@ PATH manually, or invoke it by its full path; the installer does not create a
 symlink in an unrelated bin directory or silently modify PATH.
 
 Uninstall validates all stored payload hashes and the exact known file/directory
-set before removing recorded files. Unexpected files, changed payloads or symlinks
-cause refusal. It never recursively removes an installation root or user config.
+set before removing recorded files. Unexpected files, changed payloads, symlinks or special entries (including FIFOs
+and sockets) cause refusal before any deletion. It never recursively removes an installation root or user config.
 An interrupted uninstall can leave partial owned files for manual inspection.
 Do not put personal data inside the installation root. User configuration belongs
 outside it and is preserved.
@@ -94,8 +103,14 @@ to an agent that needs a concrete plan/result without implicit device access.
 The checksum filename must identify the expected platform asset. These files are
 untrusted input and receive the same archive validation as HTTPS downloads.
 
+The installer also reads the binary header without executing it and refuses an
+ELF/Mach-O format or architecture mismatch before activation. Filesystem errors
+produce one structured failure in JSON mode when stdout remains available; the
+previous active version is preserved before activation. Existing controller
+processes are not restarted or stopped; their running version remains unchanged.
+
 The script supports POSIX sh on macOS/Linux, ARM64 and x86-64. It needs standard
-Unix utilities, tar, gzip, mktemp, a SHA-256 provider (`sha256sum`, `shasum` or
+Unix utilities (including od), tar, gzip, mktemp, a SHA-256 provider (`sha256sum`, `shasum` or
 OpenSSL), and curl for HTTPS downloads. Dependencies are not installed silently.
 Archives are limited to 16 MiB compressed and at most 32 MiB decompressed. Parsing
 rejects unknown/absolute/traversal names, duplicate members, links and special

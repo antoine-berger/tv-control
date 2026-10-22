@@ -12,6 +12,8 @@ output = pathlib.Path(sys.argv[2])
 output.parent.mkdir(parents=True, exist_ok=True)
 files = [(binary, "tv-control"), (root / "LICENSE", "LICENSE"),
          (root / "README.md", "README.md"),
+         (root / "install.sh", "install.sh"),
+         (root / "docs/INSTALLATION.md", "docs/INSTALLATION.md"),
          (root / "examples/config.json", "examples/config.json"),
          (root / "examples/mcp.json", "examples/mcp.json"),
          (root / "examples/discovery.json", "examples/discovery.json"),
@@ -31,3 +33,7 @@ with tarfile.open(output, "w:gz") as archive:
 digest = hashlib.sha256(output.read_bytes()).hexdigest()
 output.with_suffix(output.suffix + ".sha256").write_text(f"{digest}  {output.name}\n")
 print(json.dumps({"archive": output.name, "sha256": digest, "members": [name for _, name in files]}))
+
+installer = output.parent / "install.sh"
+installer.write_bytes((root / "install.sh").read_bytes())
+installer.with_suffix(".sh.sha256").write_text(f"{hashlib.sha256(installer.read_bytes()).hexdigest()}  install.sh\n")
