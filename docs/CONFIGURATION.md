@@ -16,6 +16,11 @@ where practical. Validation checks structure, resource bounds and references. It
 does not check executable availability, credentials, device access or compatibility.
 The CLI accepts configuration files up to 1 MiB and rejects unknown fields.
 
+`tv-control setup` can generate a private ADB-only draft without manual JSON.
+An optional ADB `discovery_service` field preserves the escaped DNS-SD service
+identity for diagnostics; it does not resolve or refresh a dynamic endpoint.
+Rediscover after device/debugging changes. See [guided setup](ONBOARDING.md).
+
 ## Configuration sections
 
 | Section | Purpose |

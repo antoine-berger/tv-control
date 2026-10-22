@@ -31,6 +31,7 @@ pub struct AdvertisedService {
     pub kind: ServiceKind,
     pub port: Option<u16>,
     pub instance: Option<String>,
+    pub valid_until_monotonic_ms: Option<u64>,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Candidate {
@@ -45,6 +46,8 @@ pub enum SetupReadiness {
     PairingRequired,
     DebuggingRequired,
     AmbiguousEndpoint,
+    AddressUnresolved,
+    DiscoveryExpired,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SetupPlan {

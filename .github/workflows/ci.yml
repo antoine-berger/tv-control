@@ -9,7 +9,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        os: [ubuntu-latest, macos-latest, macos-15-intel]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
@@ -22,20 +22,47 @@ jobs:
       - run: cargo build --locked --release
         env:
           RUSTFLAGS: --remap-path-prefix=${{ github.workspace }}=.
+          MACOSX_DEPLOYMENT_TARGET: "11.0"
       - run: python3 scripts/check_architecture.py
       - run: python3 scripts/audit_publication.py
       - run: python3 -W error::ResourceWarning scripts/test_mcp.py target/release/tv-control
+      - run: python3 -W error::ResourceWarning scripts/test_onboarding.py target/release/tv-control
       - run: target/release/tv-control validate examples/config.json
-  arm64-static:
+      - if: runner.os == 'macOS'
+        run: |
+          target=$(rustc -vV | sed -n 's/^host: //p')
+          python3 scripts/package.py target/release/tv-control "dist/tv-control-${target}.tar.gz"
+          python3 scripts/check_package.py "dist/tv-control-${target}.tar.gz" --smoke
+      - if: runner.os == 'macOS'
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: tv-control-macos-${{ runner.arch }}
+          path: dist/*
+  static-linux:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-unknown-linux-musl
+            asset: aarch64-linux-musl
+          - target: x86_64-unknown-linux-musl
+            asset: x86_64-linux-musl
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           persist-credentials: false
-      - run: rustup target add aarch64-unknown-linux-musl
-      - run: python3 scripts/cross_build.py
-      - run: python3 scripts/package.py target/aarch64-unknown-linux-musl/release/tv-control dist/tv-control-aarch64-linux-musl.tar.gz
+      - run: rustup target add ${{ matrix.target }}
+      - run: python3 scripts/cross_build.py --target ${{ matrix.target }}
+      - if: matrix.target == 'x86_64-unknown-linux-musl'
+        run: |
+          target/${{ matrix.target }}/release/tv-control --version
+          python3 scripts/test_onboarding.py target/${{ matrix.target }}/release/tv-control
+      - run: python3 scripts/package.py target/${{ matrix.target }}/release/tv-control dist/tv-control-${{ matrix.asset }}.tar.gz
+      - run: python3 scripts/check_package.py dist/tv-control-${{ matrix.asset }}.tar.gz
+      - if: matrix.target == 'x86_64-unknown-linux-musl'
+        run: python3 scripts/check_package.py dist/tv-control-${{ matrix.asset }}.tar.gz --smoke
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
-          name: tv-control-aarch64-linux-musl
+          name: tv-control-${{ matrix.asset }}
           path: dist/*

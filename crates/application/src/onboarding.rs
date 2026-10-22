@@ -13,7 +13,10 @@ pub fn discover(
 ) -> PortResult<Vec<Candidate>> {
     ctx.check()?;
     let all = port.interfaces()?;
-    let matches: Vec<_> = all.iter().filter(|i| i.name == interface).collect();
+    let matches: Vec<_> = all
+        .iter()
+        .filter(|i| i.name == interface || format!("{}@{}", i.name, i.address) == interface)
+        .collect();
     if matches.len() != 1 {
         return Err(Failure::before("interface_missing_or_ambiguous"));
     }
@@ -52,7 +55,12 @@ pub fn discover(
     result.sort_by_key(|c| c.address);
     Ok(result)
 }
-pub fn plan_setup(candidate: Candidate) -> SetupPlan {
+pub fn plan_setup(mut candidate: Candidate, now_monotonic_ms: u64) -> SetupPlan {
+    let had_services = !candidate.services.is_empty();
+    candidate.services.retain(|s| {
+        s.valid_until_monotonic_ms
+            .is_none_or(|until| until > now_monotonic_ms)
+    });
     let tls: Vec<_> = candidate
         .services
         .iter()
@@ -71,6 +79,16 @@ pub fn plan_setup(candidate: Candidate) -> SetupPlan {
             Some(format!("{}:{}", candidate.address, port)),
             SetupReadiness::AuthorizationUnverified,
         ),
+        [] if had_services && candidate.services.is_empty() => {
+            (None, SetupReadiness::DiscoveryExpired)
+        }
+        [] if candidate.services.iter().any(|s| {
+            matches!(s.kind, ServiceKind::AdbLegacy | ServiceKind::AdbTlsConnect)
+                && s.port.is_none()
+        }) =>
+        {
+            (None, SetupReadiness::AddressUnresolved)
+        }
         [] if candidate
             .services
             .iter()

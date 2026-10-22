@@ -51,7 +51,7 @@ impl NetworkDiscovery for FixtureDiscovery {
             .collect())
     }
     fn discover(&self, _: &LocalInterface, ctx: &Context<'_>) -> PortResult<Vec<Candidate>> {
-        let mut result = Vec::new();
+        let mut cache = dns::SnapshotCache::default();
         for packet in &self.packets {
             ctx.check()?;
             let candidate = match packet.protocol.as_str() {
@@ -70,7 +70,7 @@ impl NetworkDiscovery for FixtureDiscovery {
                                 .map_err(|_| Failure::before("invalid_fixture"))?,
                         );
                     }
-                    dns::collect(&mut result, &data, packet.peer);
+                    cache.mdns(&data, packet.peer, ctx.clock.monotonic_ms());
                     None
                 }
                 "ssdp" => parse_ssdp(
@@ -84,9 +84,9 @@ impl NetworkDiscovery for FixtureDiscovery {
                 _ => return Err(Failure::before("invalid_fixture_protocol")),
             };
             if let Some(candidate) = candidate {
-                result.push(candidate);
+                cache.dial(candidate, ctx.clock.monotonic_ms());
             }
         }
-        Ok(result)
+        Ok(cache.snapshot(ctx.clock.monotonic_ms()))
     }
 }

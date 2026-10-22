@@ -1,4 +1,4 @@
-//! Small bounded mDNS record parser; no resolver, URLs or network side effects.
+//! Bounded DNS wire parsing and a short-lived unicast discovery snapshot.
 use std::net::Ipv4Addr;
 use tv_domain::onboarding::*;
 pub const SERVICES: [&str; 3] = [
@@ -11,16 +11,51 @@ pub fn query() -> Vec<u8> {
     for service in SERVICES {
         for label in service.split('.') {
             packet.push(label.len() as u8);
-            packet.extend_from_slice(label.as_bytes());
+            packet.extend(label.as_bytes());
         }
-        packet.extend_from_slice(&[0, 0, 12, 0x80, 1]); // PTR, unicast response requested
+        packet.extend([0, 0, 12, 0x80, 1]);
     }
     packet
+}
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Name(Vec<String>);
+impl Name {
+    fn identity(&self) -> String {
+        self.0
+            .iter()
+            .map(|s| s.replace('\\', "\\\\").replace('.', "\\."))
+            .collect::<Vec<_>>()
+            .join(".")
+    }
+    fn service(&self) -> Option<ServiceKind> {
+        if self.0.len() != 4 || self.0[2] != "_tcp" || self.0[3] != "local" {
+            return None;
+        }
+        match self.0[1].as_str() {
+            "_adb" => Some(ServiceKind::AdbLegacy),
+            "_adb-tls-connect" => Some(ServiceKind::AdbTlsConnect),
+            "_adb-tls-pairing" => Some(ServiceKind::AdbTlsPairing),
+            _ => None,
+        }
+    }
+}
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Srv {
+    owner: Name,
+    target: Name,
+    priority: u16,
+    weight: u16,
+    port: u16,
+}
+#[derive(Clone, Debug)]
+pub enum Record {
+    Srv(Srv, u32),
+    Address(Name, Ipv4Addr, u32),
 }
 fn u16_at(data: &[u8], pos: usize) -> Option<u16> {
     Some(u16::from_be_bytes(data.get(pos..pos + 2)?.try_into().ok()?))
 }
-fn name(data: &[u8], cursor: &mut usize) -> Option<String> {
+fn name(data: &[u8], cursor: &mut usize) -> Option<Name> {
     let mut pos = *cursor;
     let mut jumped = false;
     let mut labels = Vec::new();
@@ -48,13 +83,13 @@ fn name(data: &[u8], cursor: &mut usize) -> Option<String> {
             if !jumped {
                 *cursor = pos;
             }
-            return Some(labels.join("."));
+            return Some(Name(labels));
         }
         let label = std::str::from_utf8(data.get(pos..pos + len as usize)?).ok()?;
         if label.chars().any(|c| c.is_control()) {
             return None;
         }
-        labels.push(label.to_string());
+        labels.push(label.to_ascii_lowercase());
         pos += len as usize;
         if labels.iter().map(|s| s.len() + 1).sum::<usize>() > 255 {
             return None;
@@ -62,14 +97,14 @@ fn name(data: &[u8], cursor: &mut usize) -> Option<String> {
     }
     None
 }
-pub fn records(data: &[u8]) -> Option<Vec<(AdvertisedService, u32)>> {
-    if data.len() < 12 || data.len() > 8192 || u16_at(data, 2)? & 0x8000 == 0 {
+pub fn records(data: &[u8]) -> Option<Vec<Record>> {
+    if data.len() < 12 || data.len() > 8192 || u16_at(data, 2)? & 0x800f != 0x8000 {
         return None;
     }
     let questions = u16_at(data, 4)? as usize;
-    let records =
+    let count =
         (u16_at(data, 6)? as usize) + (u16_at(data, 8)? as usize) + (u16_at(data, 10)? as usize);
-    if questions > 32 || records > 128 {
+    if questions > 32 || count > 128 {
         return None;
     }
     let mut pos = 12;
@@ -78,9 +113,9 @@ pub fn records(data: &[u8]) -> Option<Vec<(AdvertisedService, u32)>> {
         pos = pos.checked_add(4)?;
         data.get(..pos)?;
     }
-    let mut services = Vec::new();
-    for _ in 0..records {
-        let owner = name(data, &mut pos)?.to_ascii_lowercase();
+    let mut result = Vec::new();
+    for _ in 0..count {
+        let owner = name(data, &mut pos)?;
         let kind = u16_at(data, pos)?;
         let class = u16_at(data, pos + 2)? & 0x7fff;
         let ttl = u32::from_be_bytes(data.get(pos + 4..pos + 8)?.try_into().ok()?);
@@ -88,74 +123,145 @@ pub fn records(data: &[u8]) -> Option<Vec<(AdvertisedService, u32)>> {
         pos += 10;
         let end = pos.checked_add(len)?;
         data.get(pos..end)?;
-        if kind == 33 && class == 1 && len >= 7 {
-            for (suffix, kind) in [
-                (SERVICES[0], ServiceKind::AdbLegacy),
-                (SERVICES[1], ServiceKind::AdbTlsConnect),
-                (SERVICES[2], ServiceKind::AdbTlsPairing),
-            ] {
-                if let Some(_instance) = owner.strip_suffix(&format!(".{suffix}")) {
-                    let port = u16_at(data, pos + 4)?;
-                    let mut target_pos = pos + 6;
-                    let target = name(data, &mut target_pos)?;
-                    if target_pos > end
-                        || !target.to_ascii_lowercase().ends_with(".local")
-                        || port == 0
-                    {
-                        continue;
-                    }
-                    services.push((
-                        AdvertisedService {
-                            kind,
-                            port: Some(port),
-                            instance: Some(owner.clone()),
-                        },
-                        ttl,
-                    ));
-                }
+        if class == 1 && kind == 33 && len >= 7 && owner.service().is_some() {
+            let mut cursor = pos + 6;
+            let target = name(data, &mut cursor)?;
+            if cursor != end || target.0.last().map(String::as_str) != Some("local") {
+                return None;
             }
+            let port = u16_at(data, pos + 4)?;
+            if port != 0 {
+                result.push(Record::Srv(
+                    Srv {
+                        owner,
+                        target,
+                        priority: u16_at(data, pos)?,
+                        weight: u16_at(data, pos + 2)?,
+                        port,
+                    },
+                    ttl,
+                ));
+            }
+        } else if class == 1 && kind == 1 && len == 4 {
+            result.push(Record::Address(
+                owner,
+                Ipv4Addr::from(<[u8; 4]>::try_from(&data[pos..end]).ok()?),
+                ttl,
+            ));
         }
         pos = end;
     }
-    Some(services)
+    Some(result)
 }
-/// Apply one response including goodbye records and changed dynamic ports.
-/// No endpoint is resolved through DNS: a service remains bound to its IPv4 advertiser.
-pub fn collect(result: &mut Vec<Candidate>, data: &[u8], peer: Ipv4Addr) {
-    let Some(records) = records(data) else {
-        return;
-    };
-    for (service, _) in &records {
-        if let Some(candidate) = result.iter_mut().find(|c| c.address == peer) {
-            candidate
-                .services
-                .retain(|s| s.instance != service.instance);
+#[derive(Default)]
+pub struct SnapshotCache {
+    services: Vec<(Ipv4Addr, Srv, u64)>,
+    addresses: Vec<(Ipv4Addr, Name, Ipv4Addr, u64)>,
+    dial: Vec<(Candidate, u64)>,
+}
+fn expiry(now: u64, ttl: u32) -> u64 {
+    now.saturating_add((ttl as u64).saturating_mul(1000).min(30_000))
+}
+impl SnapshotCache {
+    pub fn mdns(&mut self, data: &[u8], peer: Ipv4Addr, now: u64) {
+        self.prune(now);
+        let Some(records) = records(data) else {
+            return;
+        };
+        // Replace a positive RRset once per owner, retaining multiple records in the same packet.
+        for record in &records {
+            match record {
+                Record::Srv(s, ttl) if *ttl > 0 => self
+                    .services
+                    .retain(|(p, old, _)| *p != peer || old.owner != s.owner),
+                Record::Address(n, _, ttl) if *ttl > 0 => self
+                    .addresses
+                    .retain(|(p, old, _, _)| *p != peer || old != n),
+                _ => {}
+            }
+        }
+        for record in records {
+            match record {
+                Record::Srv(s, 0) => self.services.retain(|(p, old, _)| *p != peer || *old != s),
+                Record::Srv(s, ttl) if self.services.len() < 512 => {
+                    self.services.push((peer, s, expiry(now, ttl)))
+                }
+                Record::Address(n, ip, 0) => self
+                    .addresses
+                    .retain(|(p, old, addr, _)| *p != peer || *old != n || *addr != ip),
+                Record::Address(n, ip, ttl) if self.addresses.len() < 256 => {
+                    self.addresses.push((peer, n, ip, expiry(now, ttl)))
+                }
+                _ => {}
+            }
         }
     }
-    let mut active: Vec<_> = records
-        .into_iter()
-        .filter(|(_, ttl)| *ttl != 0)
-        .map(|(s, _)| s)
-        .take(16)
-        .collect();
-    if !active.is_empty() {
-        if let Some(candidate) = result.iter_mut().find(|c| c.address == peer) {
-            candidate.services.append(&mut active);
-            candidate.services.truncate(16);
-        } else if result.len() < 64 {
-            let label = active[0]
-                .instance
-                .as_ref()
-                .and_then(|s| s.split("._adb").next())
-                .unwrap_or("Android device")
-                .to_string();
-            result.push(Candidate {
-                id: String::new(),
-                label,
-                address: peer,
-                services: active,
-            });
+    pub fn dial(&mut self, candidate: Candidate, now: u64) {
+        self.prune(now);
+        if let Some(old) = self
+            .dial
+            .iter_mut()
+            .find(|(c, _)| c.address == candidate.address)
+        {
+            *old = (candidate, now.saturating_add(30_000));
+        } else if self.dial.len() < 64 {
+            self.dial.push((candidate, now.saturating_add(30_000)));
         }
     }
-    result.retain(|c| !c.services.is_empty());
+    fn prune(&mut self, now: u64) {
+        self.services.retain(|(_, _, expires)| *expires > now);
+        self.addresses.retain(|(_, _, _, expires)| *expires > now);
+        self.dial.retain(|(_, expires)| *expires > now);
+    }
+    pub fn snapshot(&mut self, now: u64) -> Vec<Candidate> {
+        self.prune(now);
+        let mut result: Vec<Candidate> = Vec::new();
+        for (peer, srv, until) in &self.services {
+            let addresses: Vec<_> = self
+                .addresses
+                .iter()
+                .filter(|(p, n, _, _)| p == peer && *n == srv.target)
+                .collect();
+            let resolved =
+                !addresses.is_empty() && addresses.iter().all(|(_, _, ip, _)| ip == peer);
+            let until = addresses
+                .iter()
+                .map(|(_, _, _, e)| *e)
+                .fold(*until, u64::min);
+            let service = AdvertisedService {
+                kind: srv.owner.service().expect("parsed service"),
+                port: resolved.then_some(srv.port),
+                instance: Some(srv.owner.identity()),
+                valid_until_monotonic_ms: Some(until),
+            };
+            if let Some(c) = result.iter_mut().find(|c| c.address == *peer) {
+                if !c.services.contains(&service) && c.services.len() < 16 {
+                    c.services.push(service);
+                }
+            } else if result.len() < 64 {
+                result.push(Candidate {
+                    id: String::new(),
+                    label: srv.owner.0[0].clone(),
+                    address: *peer,
+                    services: vec![service],
+                });
+            }
+        }
+        for (candidate, until) in &self.dial {
+            let mut candidate = candidate.clone();
+            for s in &mut candidate.services {
+                s.valid_until_monotonic_ms = Some(*until);
+            }
+            if let Some(c) = result.iter_mut().find(|c| c.address == candidate.address) {
+                for s in candidate.services {
+                    if !c.services.contains(&s) && c.services.len() < 16 {
+                        c.services.push(s);
+                    }
+                }
+            } else if result.len() < 64 {
+                result.push(candidate);
+            }
+        }
+        result
+    }
 }

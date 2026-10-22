@@ -1,4 +1,5 @@
 mod mcp;
+mod onboarding;
 use serde_json::{json, Value};
 use std::{
     io::{self, Read},
@@ -80,9 +81,17 @@ fn run() -> Result<i32, &'static str> {
         if args[1] == "--version" {
             println!("tv-control {}", env!("CARGO_PKG_VERSION"));
         } else {
-            println!("tv-control validate|capabilities|mcp CONFIG\ntv-control execute CONFIG REQUEST.json|-\ntv-control workflow CONFIG ALIAS REQUEST_ID TTL_MS\nNo daemon is installed. No TV discovery, pairing or connection setup is performed.");
+            println!("tv-control setup [--json|--dry-run]\ntv-control interfaces|discover [--interface NAME] [--json]\ntv-control doctor|connect-chatgpt CONFIG [--json]\ntv-control validate|capabilities|mcp CONFIG\ntv-control execute CONFIG REQUEST.json|-\ntv-control workflow CONFIG ALIAS REQUEST_ID TTL_MS\nDiscovery runs only when explicitly requested. Setup never starts ADB, pairs devices or creates a tunnel.");
         }
         return Ok(0);
+    }
+    if args.get(1).is_some_and(|s| {
+        matches!(
+            s.as_str(),
+            "interfaces" | "discover" | "setup" | "doctor" | "connect-chatgpt"
+        )
+    }) {
+        return onboarding::run(&args[1], &args[2..]);
     }
     if args.len() < 3 {
         return Err("usage_requires_command_and_configuration");
@@ -156,7 +165,11 @@ fn main() {
     match run() {
         Ok(code) => std::process::exit(code),
         Err(code) => {
-            eprintln!("tv-control: {code}");
+            if std::env::args().any(|s| s == "--json") {
+                println!("{}", json!({"status":"error","code":code}));
+            } else {
+                eprintln!("tv-control: {code}");
+            }
             std::process::exit(1);
         }
     }

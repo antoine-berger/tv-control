@@ -63,3 +63,5 @@ impl MediaCatalogue for Router {
     }
 }
 pub mod discovery;
+
+pub mod setup;

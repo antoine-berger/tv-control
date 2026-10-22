@@ -119,6 +119,7 @@ pub fn parse_ssdp(data: &[u8], peer: Ipv4Addr) -> Option<Candidate> {
             kind: ServiceKind::Dial,
             port: None,
             instance: None,
+            valid_until_monotonic_ms: None,
         }],
     })
 }
@@ -133,6 +134,8 @@ impl NetworkDiscovery for LocalDiscovery {
     ) -> PortResult<Vec<Candidate>> {
         ctx.check()?;
         let mdns = socket(interface).map_err(|_| Failure::before("discovery_socket_failed"))?;
+        mdns.set_multicast_ttl_v4(255)
+            .map_err(|_| Failure::before("mdns_socket_failed"))?;
         let ssdp = socket(interface).map_err(|_| Failure::before("discovery_socket_failed"))?;
         mdns.send_to(&dns::query(), ("224.0.0.251", 5353))
             .map_err(|_| Failure::before("mdns_send_failed"))?;
@@ -140,7 +143,7 @@ impl NetworkDiscovery for LocalDiscovery {
         ssdp.send_to(SSDP_QUERY, ("239.255.255.250", 1900))
             .map_err(|_| Failure::before("ssdp_send_failed"))?;
         let stop = ctx.clock.monotonic_ms() + ctx.remaining_ms().saturating_sub(50);
-        let mut result = Vec::new();
+        let mut cache = dns::SnapshotCache::default();
         let mut packet = [0u8; 8193];
         let mut received = 0;
         while ctx.clock.monotonic_ms() < stop && received < 256 {
@@ -153,10 +156,10 @@ impl NetworkDiscovery for LocalDiscovery {
                             continue;
                         }
                         if is_mdns && peer.port() == 5353 {
-                            dns::collect(&mut result, &packet[..n], *peer.ip());
-                        } else if !is_mdns && result.len() < 64 {
+                            cache.mdns(&packet[..n], *peer.ip(), ctx.clock.monotonic_ms());
+                        } else if !is_mdns {
                             if let Some(candidate) = parse_ssdp(&packet[..n], *peer.ip()) {
-                                result.push(candidate);
+                                cache.dial(candidate, ctx.clock.monotonic_ms());
                             }
                         }
                     }
@@ -167,6 +170,6 @@ impl NetworkDiscovery for LocalDiscovery {
             }
             ctx.wait(5)?;
         }
-        Ok(result)
+        Ok(cache.snapshot(ctx.clock.monotonic_ms()))
     }
 }

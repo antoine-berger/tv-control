@@ -46,6 +46,8 @@ pub enum Device {
     Adb {
         coordination_group: String,
         endpoint: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        discovery_service: Option<String>,
         server_host: String,
         server_port: u16,
         media_app: Option<String>,
@@ -184,6 +186,7 @@ impl Config {
                     server_port,
                     media_app,
                     volume_max_index,
+                    discovery_service,
                     ..
                 } => {
                     let addr: std::net::SocketAddr =
@@ -202,6 +205,12 @@ impl Config {
                         .is_some_and(|a| !self.apps.contains_key(a))
                     {
                         return Err("unknown_media_app");
+                    }
+                    if discovery_service
+                        .as_ref()
+                        .is_some_and(|s| s.len() > 1024 || s.chars().any(|c| c.is_control()))
+                    {
+                        return Err("invalid_discovery_service");
                     }
                     if volume_max_index.is_some_and(|m| m == 0 || m > 1000) {
                         return Err("invalid_volume_scale");

@@ -8,6 +8,15 @@ observed state, verified postconditions and uncertain outcomes.
 user-to-TV latency are not qualified. The MCP server runs over local stdio; this
 repository does not provide a connected ChatGPT plugin or hosted endpoint.
 
+## Guided installation and setup
+
+See [download, guided setup and direct ChatGPT connection](docs/ONBOARDING.md).
+The CLI provides `setup`, `interfaces`, `discover`, `doctor` and
+`connect-chatgpt`, with `--json` for agents and offline fixtures for evaluation.
+Setup previews a private configuration and requires confirmation before saving.
+It does not grant debugging access or create a tunnel/plugin. Discovery is an
+explicit bounded operation; advertisement is not proof of control capability.
+
 ## Quick start
 
 Requires Linux or macOS, a stable Rust toolchain and a native linker. From a
@@ -71,8 +80,9 @@ examples, receipts and exit codes, or [MCP integration](docs/MCP.md) for host se
 Coordination and deduplication are bounded, in memory and local to one process.
 They do not survive a restart or synchronize separate CLI invocations. ADB requires
 a dedicated daemon: a version preflight rejects known mismatches, but replacement
-between the check and invocation remains a risk. No device discovery, pairing,
-installation or router configuration is performed by the controller.
+between the check and invocation remains a risk. The explicit discovery command sends bounded local queries; ordinary control
+commands never discover, pair or install anything. Router configuration remains
+manual.
 
 The ten-second end-to-end target is unproven. Checked-in macOS benchmarks measure
 an older controller build and local fixtures, excluding the TV, ADB daemon and

@@ -13,7 +13,13 @@ output.parent.mkdir(parents=True, exist_ok=True)
 files = [(binary, "tv-control"), (root / "LICENSE", "LICENSE"),
          (root / "README.md", "README.md"),
          (root / "examples/config.json", "examples/config.json"),
-         (root / "examples/mcp.json", "examples/mcp.json")]
+         (root / "examples/mcp.json", "examples/mcp.json"),
+         (root / "examples/discovery.json", "examples/discovery.json"),
+         (root / "docs/ONBOARDING.md", "docs/ONBOARDING.md")]
+for name in ("ACCEPTANCE", "ADAPTERS", "ADR", "CLI", "CONFIGURATION", "DEVELOPMENT", "MCP", "REVIEW", "ROUTER"):
+    files.append((root / "docs" / f"{name}.md", f"docs/{name}.md"))
+files.extend([(root / "PLAN.md", "PLAN.md"), (root / "benchmarks/README.md", "benchmarks/README.md"),
+              (root / "benchmarks/host-macos-arm64.json", "benchmarks/host-macos-arm64.json")])
 with tarfile.open(output, "w:gz") as archive:
     for path, name in files:
         info = archive.gettarinfo(str(path), name)

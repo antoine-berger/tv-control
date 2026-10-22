@@ -125,3 +125,9 @@ cancellation or timeout returns `outcome_unknown`. Process cleanup cannot undo a
 TV command or stop a player that buffers before starting. A lost response after
 dispatch is also uncertain for the caller. Do not automatically replay an
 uncertain mutation, including after a restart; inspect current state first.
+
+## Guided onboarding
+
+`interfaces`, `discover`, `setup`, `doctor` and `connect-chatgpt` provide the guided
+setup and agent JSON interface. See [the complete onboarding reference](ONBOARDING.md)
+for options, dry runs, authorization boundaries and offline examples.
