@@ -73,6 +73,15 @@ pub struct Store {
     expected_bytes: Option<Vec<u8>>,
     source: Option<File>,
 }
+impl Drop for Store {
+    fn drop(&mut self) {
+        // Release the session explicitly. A concurrent fork can briefly retain
+        // the same open-file description even with close-on-exec enabled.
+        unsafe {
+            libc::flock(self._lock.as_raw_fd(), libc::LOCK_UN);
+        }
+    }
+}
 fn private_file(file: &File) -> Result<fs::Metadata, &'static str> {
     let m = file.metadata().map_err(|_| "checkpoint_unreadable")?;
     if !m.is_file() || m.uid() != unsafe { libc::geteuid() } || m.permissions().mode() & 0o077 != 0
@@ -83,6 +92,15 @@ fn private_file(file: &File) -> Result<fs::Metadata, &'static str> {
         return Err("checkpoint_multiple_links");
     }
     Ok(m)
+}
+fn lock_error(errno: Option<i32>) -> &'static str {
+    if errno.is_some_and(|n| n == libc::EWOULDBLOCK || n == libc::EAGAIN) {
+        "checkpoint_busy"
+    } else if errno == Some(libc::EINTR) {
+        "checkpoint_lock_interrupted"
+    } else {
+        "checkpoint_lock_failed"
+    }
 }
 impl Store {
     /// Finish only the exact duplicate links left by our initial atomic publication.
@@ -227,7 +245,7 @@ impl Store {
         private_file(&lock)?;
         // Advisory lock is released by the OS after a crash; no stale PID deletion.
         if unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
-            return Err("checkpoint_busy");
+            return Err(lock_error(std::io::Error::last_os_error().raw_os_error()));
         }
         Ok(Self {
             path,
@@ -332,5 +350,25 @@ impl Store {
             }
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn lock_contention_is_distinct_from_interruption_and_other_errors() {
+        assert_eq!(
+            super::lock_error(Some(libc::EWOULDBLOCK)),
+            "checkpoint_busy"
+        );
+        assert_eq!(
+            super::lock_error(Some(libc::EINTR)),
+            "checkpoint_lock_interrupted"
+        );
+        assert_eq!(
+            super::lock_error(Some(libc::EINVAL)),
+            "checkpoint_lock_failed"
+        );
+        assert_eq!(super::lock_error(None), "checkpoint_lock_failed");
     }
 }

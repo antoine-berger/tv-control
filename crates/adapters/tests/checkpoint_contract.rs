@@ -185,3 +185,37 @@ fn interrupted_initial_publication_recovers_only_known_duplicate_links() {
     assert!(unknown.exists());
     assert_eq!(fs::read(path).unwrap(), bytes);
 }
+#[test]
+fn ending_session_unlocks_even_when_a_fork_temporarily_inherits_descriptor() {
+    let temp = Temporary::new();
+    let path = temp.0.join("state.json");
+    let store = Store::open(&path).unwrap();
+    let mut pipe = [0; 2];
+    assert_eq!(unsafe { libc::pipe(pipe.as_mut_ptr()) }, 0);
+    let pid = unsafe { libc::fork() };
+    assert!(pid >= 0);
+    if pid == 0 {
+        // After fork in a threaded test process, use async-signal-safe syscalls only.
+        unsafe {
+            libc::close(pipe[1]);
+            let mut byte = 0u8;
+            libc::read(pipe[0], &mut byte as *mut _ as *mut libc::c_void, 1);
+            libc::_exit(0);
+        }
+    }
+    unsafe {
+        libc::close(pipe[0]);
+    }
+    drop(store);
+    let acquired = Store::open(&path);
+    unsafe {
+        let byte = 1u8;
+        libc::write(pipe[1], &byte as *const _ as *const libc::c_void, 1);
+        libc::close(pipe[1]);
+        libc::waitpid(pid, std::ptr::null_mut(), 0);
+    }
+    assert!(
+        acquired.is_ok(),
+        "session lock stayed inherited after its owner ended"
+    );
+}
