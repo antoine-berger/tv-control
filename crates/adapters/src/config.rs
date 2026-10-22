@@ -95,7 +95,8 @@ impl Config {
             || !(1..=10_000).contains(&p.max_budget_ms)
             || !(1..=500).contains(&p.verification_poll_ms)
             || !(1..=50).contains(&p.process_poll_ms)
-            || !(1024..=1_048_576).contains(&p.max_output_bytes)
+            // The output budget also carries MCP schemas and JSON-RPC envelopes.
+            || !(4096..=1_048_576).contains(&p.max_output_bytes)
             || !(1024..=65536).contains(&p.max_frame_bytes)
             || !(1..=8).contains(&p.max_inflight)
             || !(1..=4096).contains(&p.dedup_entries)

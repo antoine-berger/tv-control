@@ -177,6 +177,48 @@ class MCP(unittest.TestCase):
         self.assertEqual(result["result"]["structuredContent"]["status"], "busy")
         self.assertEqual(self.receive()["id"], 2)
 
+    def test_minimum_output_config_handshake_tools_list_and_ping(self):
+        cfg = json.loads(self.config_path.read_text())
+        cfg["preferences"]["max_output_bytes"] = 4096
+        cfg["preferences"]["max_frame_bytes"] = 1024
+        path = pathlib.Path(self.tmp.name) / "minimum-output.json"
+        path.write_text(json.dumps(cfg))
+        proc = subprocess.Popen([BINARY, "mcp", str(path)], stdin=subprocess.PIPE,
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        responses = queue.Queue()
+        def consume():
+            for line in proc.stdout:
+                responses.put(line)
+        reader = threading.Thread(target=consume, daemon=True)
+        reader.start()
+        def exchange(frame):
+            proc.stdin.write(json.dumps(frame).encode()+b"\n")
+            proc.stdin.flush()
+            data = responses.get(timeout=3)
+            self.assertLessEqual(len(data), 4096)
+            return json.loads(data)
+        try:
+            result = exchange({"jsonrpc":"2.0","id":1,"method":"initialize","params":{
+                "protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"minimum-test","version":"1"}}})
+            self.assertEqual(result["result"]["protocolVersion"], "2025-11-25")
+            proc.stdin.write(b'{"jsonrpc":"2.0","method":"notifications/initialized"}\n')
+            proc.stdin.flush()
+            result = exchange({"jsonrpc":"2.0","id":2,"method":"tools/list"})
+            self.assertEqual({t["name"] for t in result["result"]["tools"]}, {"tv_control", "tv_capabilities"})
+            self.assertEqual(exchange({"jsonrpc":"2.0","id":3,"method":"ping"})["result"], {})
+            self.assertIsNone(proc.poll())
+        finally:
+            proc.stdin.close()
+            try:
+                proc.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait(timeout=2)
+            reader.join(timeout=1)
+            proc.stdout.close()
+            proc.stderr.close()
+            self.assertFalse(reader.is_alive())
+
     def test_unread_stdout_has_bounded_teardown(self):
         environment = os.environ.copy()
         environment["TV_LIBRARY_TOKEN"] = "fixture_only_not_a_credential"

@@ -302,3 +302,15 @@ fn duplicate_targets_must_share_coordination_group() {
     }
     assert!(cfg.validate().is_ok());
 }
+
+#[test]
+fn configuration_output_floor_reserves_room_for_mcp_schema() {
+    let mut cfg = config();
+    for size in [1024, 4095] {
+        cfg.preferences.max_output_bytes = size;
+        assert_eq!(cfg.validate(), Err("invalid_resource_policy"));
+    }
+    cfg.preferences.max_output_bytes = 4096;
+    cfg.preferences.max_frame_bytes = 1024;
+    assert_eq!(cfg.validate(), Ok(()));
+}
