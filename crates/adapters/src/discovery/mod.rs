@@ -134,6 +134,7 @@ impl NetworkDiscovery for LocalDiscovery {
     fn discover(
         &self,
         interface: &LocalInterface,
+        window_end_monotonic_ms: u64,
         ctx: &Context<'_>,
     ) -> PortResult<Vec<Candidate>> {
         ctx.check()?;
@@ -146,34 +147,59 @@ impl NetworkDiscovery for LocalDiscovery {
         ctx.check()?;
         ssdp.send_to(SSDP_QUERY, ("239.255.255.250", 1900))
             .map_err(|e| io_failure("ssdp_send_failed", e))?;
-        let stop = ctx.clock.monotonic_ms() + ctx.remaining_ms().saturating_sub(50);
-        let mut cache = dns::SnapshotCache::default();
-        let mut packet = [0u8; 8193];
-        let mut received = 0;
-        while ctx.clock.monotonic_ms() < stop && received < 256 {
-            ctx.check()?;
-            for (socket, is_mdns) in [(&mdns, true), (&ssdp, false)] {
-                match socket.recv_from(&mut packet) {
-                    Ok((n, SocketAddr::V4(peer))) => {
-                        received += 1;
-                        if !interface.contains(*peer.ip()) || n > 8192 {
-                            continue;
-                        }
-                        if is_mdns && peer.port() == 5353 {
-                            cache.mdns(&packet[..n], *peer.ip(), ctx.clock.monotonic_ms());
-                        } else if !is_mdns {
-                            if let Some(candidate) = parse_ssdp(&packet[..n], *peer.ip()) {
-                                cache.dial(candidate, ctx.clock.monotonic_ms());
-                            }
+        receive_snapshot(
+            interface,
+            window_end_monotonic_ms,
+            ctx,
+            |is_mdns, packet| {
+                if is_mdns {
+                    mdns.recv_from(packet)
+                } else {
+                    ssdp.recv_from(packet)
+                }
+            },
+        )
+    }
+}
+/// Receive-only bounded snapshot; datagram I/O is injected for deterministic contracts.
+pub fn receive_snapshot(
+    interface: &LocalInterface,
+    window_end_monotonic_ms: u64,
+    ctx: &Context<'_>,
+    mut receive: impl FnMut(bool, &mut [u8]) -> io::Result<(usize, SocketAddr)>,
+) -> PortResult<Vec<Candidate>> {
+    ctx.check()?;
+    let mut cache = dns::SnapshotCache::default();
+    let mut packet = [0u8; 8193];
+    let mut received = 0;
+    while ctx.clock.monotonic_ms() < window_end_monotonic_ms && received < 256 {
+        ctx.check()?;
+        for is_mdns in [true, false] {
+            match receive(is_mdns, &mut packet) {
+                Ok((n, SocketAddr::V4(peer))) => {
+                    received += 1;
+                    if !interface.contains(*peer.ip()) || n > 8192 {
+                        continue;
+                    }
+                    if is_mdns && peer.port() == 5353 {
+                        cache.mdns(&packet[..n], *peer.ip(), ctx.clock.monotonic_ms());
+                    } else if !is_mdns {
+                        if let Some(candidate) = parse_ssdp(&packet[..n], *peer.ip()) {
+                            cache.dial(candidate, ctx.clock.monotonic_ms());
                         }
                     }
-                    Ok(_) => {}
-                    Err(e) if e.kind() == io::ErrorKind::WouldBlock => {}
-                    Err(e) => return Err(io_failure("discovery_receive_failed", e)),
                 }
+                Ok(_) => {}
+                Err(e) if e.kind() == io::ErrorKind::WouldBlock => {}
+                Err(e) => return Err(io_failure("discovery_receive_failed", e)),
             }
-            ctx.wait(5)?;
         }
-        Ok(cache.snapshot(ctx.clock.monotonic_ms()))
+        ctx.wait(
+            window_end_monotonic_ms
+                .saturating_sub(ctx.clock.monotonic_ms())
+                .min(5),
+        )?;
     }
+    ctx.check()?;
+    Ok(cache.snapshot(ctx.clock.monotonic_ms()))
 }

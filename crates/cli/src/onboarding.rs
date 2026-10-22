@@ -45,7 +45,7 @@ impl Options {
                 "--guided" => out.guided = true,
                 key @ ("--fixture" | "--interface" | "--duration-ms" | "--device" | "--output"
                 | "--adb" | "--curl" | "--server-port" | "--manual-endpoint"
-                | "--manual-kind" | "--tunnel-id" | "--checkpoint") => {
+                | "--manual-kind" | "--tunnel-id" | "--checkpoint" | "--name") => {
                     i += 1;
                     let value = args.get(i).ok_or("option_value_missing")?;
                     if value.starts_with("--")
@@ -161,8 +161,24 @@ fn service_name(kind: ServiceKind) -> &'static str {
         ServiceKind::Dial => "dial_advertisement_only",
     }
 }
+fn display_label(c: &Candidate) -> &str {
+    if c.services.iter().any(|s| {
+        matches!(
+            s.kind,
+            ServiceKind::AdbLegacy | ServiceKind::AdbTlsConnect | ServiceKind::AdbTlsPairing
+        )
+    }) {
+        if c.label.to_ascii_lowercase().starts_with("adb-") || c.label.is_empty() {
+            "Android device (ADB)"
+        } else {
+            &c.label
+        }
+    } else {
+        "Unidentified media device"
+    }
+}
 fn candidate_json(c: &Candidate) -> Value {
-    json!({"id":c.id,"label":c.label,"address":c.address.to_string(),"evidence":"advertised_not_verified","authorized":null,"control_verified":false,"services":c.services.iter().map(|s|json!({"kind":service_name(s.kind),"port":s.port,"instance":s.instance})).collect::<Vec<_>>()})
+    json!({"id":c.id,"label":display_label(c),"diagnostic_label":c.label,"address":c.address.to_string(),"evidence":"advertised_not_verified","authorized":null,"control_verified":false,"services":c.services.iter().map(|s|json!({"kind":service_name(s.kind),"port":s.port,"instance":s.instance})).collect::<Vec<_>>()})
 }
 #[cfg(test)]
 fn discover(
@@ -211,15 +227,33 @@ fn discover_on(
             "discovery_duration_out_of_range",
         ));
     }
+    // Start both bounds only after interface selection and all human input.
+    let window_end = clock.monotonic_ms().saturating_add(duration);
     let flag = CancelFlag::default();
     let ctx = Context {
         clock,
         cancellation: &flag,
-        deadline_monotonic_ms: clock.monotonic_ms() + duration,
+        deadline_monotonic_ms: window_end.saturating_add(250),
     };
-    onboarding::discover(port, selected, &ctx)
+    onboarding::discover(port, selected, window_end, &ctx)
 }
 fn discovery_error(error: tv_domain::Failure, interface: &str, as_json: bool) {
+    if error.code == "expired" || error.code == "cancelled" {
+        let message = if error.code == "expired" {
+            "TV search exceeded its time limit. Retry setup or use the manual fallback."
+        } else {
+            "TV search cancelled."
+        };
+        if as_json {
+            emit(
+                json!({"status":if error.code=="expired"{"timeout"}else{"cancelled"},"code":error.code,"interface":interface,"message":message}),
+                true,
+            );
+        } else {
+            eprintln!("{message}");
+        }
+        return;
+    }
     if as_json {
         emit(
             json!({"status":"error","code":error.code,"os_error":error.os_error,"interface":interface,"cause":"not_established","next_steps":["Discovery failed. Resume setup to retry explicitly, or use its guided manual endpoint fallback.","No TV authorization or connection was performed."]}),
@@ -375,11 +409,9 @@ fn setup_command(input: &Options) -> Result<i32, &'static str> {
     let clock = SystemClock::default();
     let port = source(input)?;
     let mut progress = progress::Progress::open(input)?;
-    let resumed = if let Some(progress) = progress.as_mut() {
-        progress.restore(&mut owned, &*port)?
-    } else {
-        false
-    };
+    if let Some(progress) = progress.as_mut() {
+        progress.restore(&mut owned, &*port)?;
+    }
     let options = &owned;
     let interface = select_interface(options, &*port)?;
     if let Some(progress) = progress.as_mut() {
@@ -389,39 +421,35 @@ fn setup_command(input: &Options) -> Result<i32, &'static str> {
     let candidates = if manual {
         vec![]
     } else {
-        let query = if (resumed || options.guided) && !options.json {
-            match prompt(&format!("Find TVs on {interface}? Type yes to query this LAN, manual to enter a known TV endpoint, or q to stop:"))?.as_str() {
-                "yes" => true,
-                "manual" => { manual=true; false },
-                _ => return Ok(2),
-            }
-        } else {
-            true
-        };
-        if !query {
-            vec![]
-        } else {
-            match discover_on(options, &*port, &clock, &interface) {
-                Ok(candidates) => candidates,
-                Err(error) => {
-                    discovery_error(error, &interface, options.json);
-                    if options.json {
-                        return Ok(1);
-                    }
-                    if !matches!(
-                        error.code,
-                        "mdns_send_failed"
-                            | "ssdp_send_failed"
-                            | "discovery_socket_failed"
-                            | "mdns_socket_failed"
-                            | "discovery_receive_failed"
-                    ) {
-                        return Err(error.code);
-                    }
-                    if prompt("Enter this TV's connection details instead? Type manual, or Enter to stop:")?!="manual" {return Ok(2);}
-                    manual = true;
-                    vec![]
+        if !options.json {
+            eprintln!("Searching for TVs on {interface}... (Ctrl-C to cancel)");
+        }
+        match discover_on(options, &*port, &clock, &interface) {
+            Ok(candidates) => candidates,
+            Err(error) => {
+                discovery_error(error, &interface, options.json);
+                if options.json {
+                    return Ok(1);
                 }
+                if !matches!(
+                    error.code,
+                    "mdns_send_failed"
+                        | "ssdp_send_failed"
+                        | "discovery_socket_failed"
+                        | "mdns_socket_failed"
+                        | "discovery_receive_failed"
+                        | "expired"
+                ) {
+                    return Err(error.code);
+                }
+                if prompt(
+                    "Enter this TV's connection details instead? Type manual, or Enter to stop:",
+                )? != "manual"
+                {
+                    return Ok(2);
+                }
+                manual = true;
+                vec![]
             }
         }
     };
@@ -435,6 +463,9 @@ fn setup_command(input: &Options) -> Result<i32, &'static str> {
             "The saved display is no longer advertised at that address. Choose a current display."
         );
         owned.values.remove("--device");
+        if input.get("--name").is_none() {
+            owned.values.remove("--name");
+        }
         if let Some(progress) = progress.as_mut() {
             progress.clear_target()?;
         }
@@ -471,12 +502,22 @@ fn setup_command(input: &Options) -> Result<i32, &'static str> {
     } else {
         let n = choose(
             &candidates,
-            |c| format!("{} ({})", c.label, c.address),
+            |c| format!("{} ({})", display_label(c), c.address),
             "Choose the display:",
         )?;
         candidates[n].clone()
     };
     let mut plan = onboarding::plan_setup(candidate, clock.monotonic_ms());
+    if plan.readiness == SetupReadiness::DiscoveryExpired {
+        if let Some(progress) = progress.as_mut() {
+            progress.target(&plan, false)?;
+        }
+        emit(
+            json!({"status":"discovery_expired_rediscover","message":"The display advertisement expired while you were choosing. Run the same installer again to refresh the search; your selection is saved.","control_verified":false,"executed":false,"configuration_saved":false}),
+            options.json,
+        );
+        return Ok(2);
+    }
     if plan.endpoint.is_none()
         && !options.json
         && matches!(
@@ -512,7 +553,26 @@ fn setup_command(input: &Options) -> Result<i32, &'static str> {
         .unwrap_or("15037")
         .parse()
         .map_err(|_| "invalid_server_port")?;
-    let config = setup::configuration(&plan, adb, curl, server_port)?;
+    let mut config = setup::configuration(&plan, adb, curl, server_port)?;
+    let name = if let Some(name) = options.get("--name") {
+        Some(name.to_string())
+    } else if options.guided && !options.json {
+        let default = display_label(&plan.candidate);
+        let value = prompt(&format!("Local name [{default}] (Enter to keep):"))?;
+        Some(if value.is_empty() {
+            default.to_string()
+        } else {
+            value
+        })
+    } else {
+        None
+    };
+    if let Some(tv_adapters::config::Device::Adb { display_name, .. }) =
+        config.devices.values_mut().next()
+    {
+        *display_name = name;
+    }
+    config.validate()?;
     if let Some(progress) = progress.as_mut() {
         progress.dependencies(&config)?;
     }
@@ -541,7 +601,12 @@ fn setup_command(input: &Options) -> Result<i32, &'static str> {
             return Ok(2);
         }
     }
-    ensure_fresh(&plan, &clock)?;
+    if let Err(error) = ensure_fresh(&plan, &clock) {
+        if !options.json {
+            eprintln!("The display advertisement expired before saving. Run the same installer again to refresh the search; your setup progress is saved.");
+        }
+        return Err(error);
+    }
     let status = setup::publish(&output, &bytes, options.resume)?;
     if let Some(progress) = progress.as_mut() {
         progress.completed()?;
@@ -639,6 +704,7 @@ pub fn run(command: &str, args: &[String]) -> Result<i32, &'static str> {
             "--manual-endpoint",
             "--manual-kind",
             "--checkpoint",
+            "--name",
         ],
     };
     if options
@@ -694,7 +760,7 @@ pub fn run(command: &str, args: &[String]) -> Result<i32, &'static str> {
             } else {
                 println!("{} display candidate(s), all unverified:", candidates.len());
                 for c in candidates {
-                    println!("  {}  {} ({})", c.id, c.label, c.address);
+                    println!("  {}  {} ({})", c.id, display_label(&c), c.address);
                 }
             }
             Ok(0)
@@ -786,5 +852,55 @@ mod tests {
             ensure_fresh(&plan, &clock),
             Err("discovery_expired_rediscover")
         );
+    }
+    #[test]
+    fn search_window_and_hard_deadline_start_after_long_human_delay() {
+        struct Probe;
+        impl NetworkDiscovery for Probe {
+            fn interfaces(&self) -> tv_domain::PortResult<Vec<LocalInterface>> {
+                Ok(vec![LocalInterface {
+                    name: "lan".into(),
+                    address: Ipv4Addr::new(192, 0, 2, 1),
+                    netmask: Ipv4Addr::new(255, 255, 255, 0),
+                }])
+            }
+            fn discover(
+                &self,
+                _: &LocalInterface,
+                end: u64,
+                ctx: &Context<'_>,
+            ) -> tv_domain::PortResult<Vec<Candidate>> {
+                assert_eq!(ctx.clock.monotonic_ms(), 31_000);
+                assert_eq!(end, 33_000);
+                assert_eq!(ctx.deadline_monotonic_ms, 33_250);
+                ctx.check()?;
+                Ok(vec![])
+            }
+        }
+        let clock = MenuClock(AtomicU64::new(0));
+        clock.sleep_ms(31_000);
+        assert!(discover_on(&Options::default(), &Probe, &clock, "lan")
+            .unwrap()
+            .is_empty());
+    }
+    #[test]
+    fn opaque_adb_and_ssdp_server_values_are_not_presented_as_friendly_names() {
+        let mut candidate = Candidate {
+            id: "screen".into(),
+            label: "adb-deadbeef".into(),
+            address: Ipv4Addr::new(192, 0, 2, 10),
+            services: vec![AdvertisedService {
+                kind: ServiceKind::AdbLegacy,
+                port: Some(5555),
+                instance: None,
+                valid_until_monotonic_ms: None,
+            }],
+        };
+        assert_eq!(display_label(&candidate), "Android device (ADB)");
+        candidate.label = "Living room".into();
+        assert_eq!(display_label(&candidate), "Living room");
+        candidate.services[0].kind = ServiceKind::Dial;
+        candidate.label = "Linux2.6 UPnP1.1 server1.1".into();
+        assert_eq!(display_label(&candidate), "Unidentified media device");
     }
 }

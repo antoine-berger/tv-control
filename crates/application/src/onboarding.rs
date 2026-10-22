@@ -3,12 +3,17 @@ use crate::Context;
 use tv_domain::{onboarding::*, Failure, PortResult};
 pub trait NetworkDiscovery: Send + Sync {
     fn interfaces(&self) -> PortResult<Vec<LocalInterface>>;
-    fn discover(&self, interface: &LocalInterface, ctx: &Context<'_>)
-        -> PortResult<Vec<Candidate>>;
+    fn discover(
+        &self,
+        interface: &LocalInterface,
+        window_end_monotonic_ms: u64,
+        ctx: &Context<'_>,
+    ) -> PortResult<Vec<Candidate>>;
 }
 pub fn discover(
     port: &dyn NetworkDiscovery,
     interface: &str,
+    window_end_monotonic_ms: u64,
     ctx: &Context<'_>,
 ) -> PortResult<Vec<Candidate>> {
     ctx.check()?;
@@ -21,7 +26,7 @@ pub fn discover(
         return Err(Failure::before("interface_missing_or_ambiguous"));
     }
     let chosen = matches[0];
-    let raw = port.discover(chosen, ctx)?;
+    let raw = port.discover(chosen, window_end_monotonic_ms, ctx)?;
     ctx.check()?;
     let mut result: Vec<Candidate> = Vec::new();
     for mut candidate in raw.into_iter().take(256) {
@@ -43,7 +48,9 @@ pub fn discover(
             candidate.label = candidate
                 .label
                 .chars()
-                .filter(|c| c.is_alphanumeric() || " ._()-".contains(*c))
+                // Preserve diagnostic punctuation (notably SSDP SERVER versions).
+                // Labels are data, never commands; terminal controls remain excluded.
+                .filter(|c| !c.is_control())
                 .take(80)
                 .collect();
             if candidate.label.is_empty() {

@@ -53,6 +53,7 @@ python3 -W error::ResourceWarning scripts/test_installer.py
 python3 -W error::ResourceWarning scripts/test_mcp.py target/release/tv-control
 python3 -W error::ResourceWarning scripts/test_onboarding.py target/release/tv-control
 python3 -W error::ResourceWarning scripts/test_install_flow.py target/release/tv-control
+python3 -W error::ResourceWarning scripts/test_zero_arg_ux.py target/release/tv-control
 ./target/release/tv-control validate examples/config.json
 python3 scripts/audit_publication.py
 ```

@@ -25,8 +25,12 @@ flow are verified. Point `latest` to that same commit, then check that the raw U
 returns HTTP 200 and exactly the published script bytes, with the matching internal
 version. Keep the versioned releases and their assets unchanged.
 
+Discovery displays a short Searching for TVs message and supports Ctrl-C.
+A local display name can be chosen after selection; this changes configuration
+metadata only and never renames the remote device.
+
 The wizard selects the only LAN interface when there is one, or asks which LAN
-to use. It asks before querying that LAN and before saving configuration. TV
+to use. It searches that LAN directly and asks before saving configuration. TV
 advertisements are unverified candidates. Network failure shows the stage and a
 numeric OS error when available, then offers manual TV connection details in the
 same wizard. The OS cause is not inferred from a generic failure code.
@@ -44,8 +48,8 @@ restart. Configuration defaults to `$HOME/.config/tv-control/tv-control.local.js
 validated interface, display choice, explicit manual endpoint and dependency
 paths. It contains no credentials or claims of device/tunnel authorization.
 
-The saved interface/address is checked again. Discovery is repeated only after a
-new explicit confirmation; snapshots and dynamic ports are not trusted across
+The saved interface/address is checked again. Resuming setup repeats the bounded discovery on the selected LAN without an
+extra confirmation; snapshots and dynamic ports are not trusted across
 processes. A disappeared display offers a fresh selection. A manual endpoint is
 reconfirmed before reuse. An already saved valid private configuration is kept,
 without discovery or rewriting it.

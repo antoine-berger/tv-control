@@ -44,6 +44,8 @@ pub struct Executables {
 #[serde(tag = "adapter", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Device {
     Adb {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        display_name: Option<String>,
         coordination_group: String,
         endpoint: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -187,8 +189,15 @@ impl Config {
                     media_app,
                     volume_max_index,
                     discovery_service,
+                    display_name,
                     ..
                 } => {
+                    if display_name
+                        .as_ref()
+                        .is_some_and(|s| !valid_display_name(s))
+                    {
+                        return Err("invalid_display_name");
+                    }
                     let addr: std::net::SocketAddr =
                         endpoint.parse().map_err(|_| "invalid_adb_endpoint")?;
                     if addr.port() == 0 || addr.ip().is_unspecified() || addr.ip().is_multicast() {
@@ -341,4 +350,9 @@ where
         }
     }
     deserializer.deserialize_map(Unique(std::marker::PhantomData))
+}
+
+/// User-facing local metadata only; never used as a remote command or identifier.
+pub fn valid_display_name(name: &str) -> bool {
+    !name.trim().is_empty() && name.chars().count() <= 80 && !name.chars().any(char::is_control)
 }

@@ -6,7 +6,7 @@ use std::{
 use tv_adapters::discovery::{
     dns::{self, SnapshotCache},
     fixture::FixtureDiscovery,
-    parse_ssdp,
+    parse_ssdp, receive_snapshot,
 };
 use tv_application::{
     onboarding::{discover, plan_setup, NetworkDiscovery},
@@ -15,6 +15,88 @@ use tv_application::{
 use tv_domain::{onboarding::*, PortResult};
 fn ip() -> Ipv4Addr {
     Ipv4Addr::new(192, 0, 2, 10)
+}
+struct LateWake {
+    time: AtomicU64,
+    overshoot: u64,
+    cancel: AtomicBool,
+}
+impl Clock for LateWake {
+    fn unix_ms(&self) -> u64 {
+        0
+    }
+    fn monotonic_ms(&self) -> u64 {
+        self.time.load(Ordering::SeqCst)
+    }
+    fn sleep_ms(&self, ms: u64) {
+        self.time.fetch_add(ms + self.overshoot, Ordering::SeqCst);
+    }
+}
+impl Cancellation for LateWake {
+    fn is_cancelled(&self) -> bool {
+        self.cancel.load(Ordering::SeqCst)
+    }
+}
+#[test]
+fn receive_window_ends_normally_after_a_late_wake_with_or_without_results() {
+    for with_packet in [false, true] {
+        let clock = LateWake {
+            time: AtomicU64::new(0),
+            overshoot: 120,
+            cancel: AtomicBool::new(false),
+        };
+        let ctx = Context {
+            clock: &clock,
+            cancellation: &clock,
+            deadline_monotonic_ms: 350,
+        };
+        let packet = response(dns::SERVICES[0], 5555, 120);
+        let mut sent = false;
+        let result = receive_snapshot(&interface(), 100, &ctx, |mdns, out| {
+            if mdns && with_packet && !sent {
+                sent = true;
+                out[..packet.len()].copy_from_slice(&packet);
+                Ok((packet.len(), (ip(), 5353).into()))
+            } else {
+                Err(std::io::ErrorKind::WouldBlock.into())
+            }
+        })
+        .unwrap();
+        assert_eq!(result.len(), usize::from(with_packet));
+        assert!(clock.monotonic_ms() >= 100);
+        assert!(clock.monotonic_ms() < 350);
+    }
+}
+#[test]
+fn receive_window_never_masks_a_real_deadline_or_cancellation() {
+    let clock = LateWake {
+        time: AtomicU64::new(0),
+        overshoot: 120,
+        cancel: AtomicBool::new(false),
+    };
+    let ctx = Context {
+        clock: &clock,
+        cancellation: &clock,
+        deadline_monotonic_ms: 100,
+    };
+    assert_eq!(
+        receive_snapshot(&interface(), 100, &ctx, |_, _| Err(
+            std::io::ErrorKind::WouldBlock.into()
+        ))
+        .unwrap_err()
+        .code,
+        "expired"
+    );
+    clock.time.store(0, Ordering::SeqCst);
+    assert_eq!(
+        receive_snapshot(&interface(), 100, &ctx, |_, _| {
+            clock.cancel.store(true, Ordering::SeqCst);
+            Err(std::io::ErrorKind::WouldBlock.into())
+        })
+        .unwrap_err()
+        .code,
+        "cancelled"
+    );
 }
 fn interface() -> LocalInterface {
     LocalInterface {
@@ -222,7 +304,12 @@ impl NetworkDiscovery for Port {
     fn interfaces(&self) -> PortResult<Vec<LocalInterface>> {
         Ok(vec![interface()])
     }
-    fn discover(&self, _: &LocalInterface, ctx: &Context<'_>) -> PortResult<Vec<Candidate>> {
+    fn discover(
+        &self,
+        _: &LocalInterface,
+        _: u64,
+        ctx: &Context<'_>,
+    ) -> PortResult<Vec<Candidate>> {
         if self.advance {
             ctx.clock.sleep_ms(101);
         }
@@ -250,13 +337,15 @@ fn policy_deduplicates_sanitizes_and_limits_to_chosen_subnet() {
         advance: false,
     };
     let fake = Fake::new();
-    let result = discover(&port, "lan-fixture@192.0.2.1", &fake.ctx()).unwrap();
+    let result = discover(&port, "lan-fixture@192.0.2.1", 100, &fake.ctx()).unwrap();
     assert_eq!(result.len(), 1);
     assert_eq!(result[0].services.len(), 1);
     assert_eq!(result[0].id, "screen_192_0_2_10");
     assert!(!result[0].label.chars().any(|c| c.is_control()));
     assert_eq!(
-        discover(&port, "missing", &fake.ctx()).unwrap_err().code,
+        discover(&port, "missing", 100, &fake.ctx())
+            .unwrap_err()
+            .code,
         "interface_missing_or_ambiguous"
     );
 }
@@ -269,7 +358,7 @@ fn cancellation_and_deadline_bound_entire_discovery() {
         advance: false,
     };
     assert_eq!(
-        discover(&port, "lan-fixture", &fake.ctx())
+        discover(&port, "lan-fixture", 100, &fake.ctx())
             .unwrap_err()
             .code,
         "cancelled"
@@ -280,7 +369,7 @@ fn cancellation_and_deadline_bound_entire_discovery() {
         advance: true,
     };
     assert_eq!(
-        discover(&port, "lan-fixture", &fake.ctx())
+        discover(&port, "lan-fixture", 100, &fake.ctx())
             .unwrap_err()
             .code,
         "expired"
@@ -292,7 +381,7 @@ fn offline_wire_fixture_uses_real_parser() {
     let fixture = FixtureDiscovery::from_json(&serde_json::to_vec(&data).unwrap()).unwrap();
     let fake = Fake::new();
     assert_eq!(
-        discover(&fixture, "lan-fixture", &fake.ctx())
+        discover(&fixture, "lan-fixture", 100, &fake.ctx())
             .unwrap()
             .len(),
         1

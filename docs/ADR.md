@@ -83,8 +83,8 @@ arguments and enters that wizard after confirmation, reusing an intact installat
 or updating an older version. Advanced noninteractive behavior stays explicit.
 
 Checkpoints store local choices and configuration progress only. They do not
-store credentials, discovery snapshots or authorization claims. Network consent
-is renewed before a resumed discovery; saved interfaces and target availability
+store credentials, discovery snapshots or authorization claims. Starting or resuming setup requests bounded discovery on the chosen LAN;
+there is no extra search confirmation. Saved interfaces and target availability
 are revalidated. Recovery preserves corrupt data and handles recognized temporary
 hard links from interrupted initial publication. Content and open-file identity
 protect against accidental replacement or in-place edits during a session.

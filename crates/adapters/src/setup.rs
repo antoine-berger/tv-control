@@ -40,6 +40,7 @@ pub fn configuration(
     config.devices.insert(
         "screen".into(),
         Device::Adb {
+            display_name: None,
             coordination_group: "screen".into(),
             endpoint,
             server_host: "127.0.0.1".into(),

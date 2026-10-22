@@ -37,6 +37,7 @@ jobs:
       - run: python3 -W error::ResourceWarning scripts/test_mcp.py target/release/tv-control
       - run: python3 -W error::ResourceWarning scripts/test_onboarding.py target/release/tv-control
       - run: python3 -W error::ResourceWarning scripts/test_install_flow.py target/release/tv-control
+      - run: python3 -W error::ResourceWarning scripts/test_zero_arg_ux.py target/release/tv-control
       - run: target/release/tv-control validate examples/config.json
       - if: runner.os == 'macOS'
         run: |

@@ -39,6 +39,7 @@ enum FixtureStage {
     MdnsSend,
     SsdpSend,
     Receive,
+    Deadline,
 }
 impl FixtureDiscovery {
     pub fn from_json(bytes: &[u8]) -> PortResult<Self> {
@@ -65,7 +66,12 @@ impl NetworkDiscovery for FixtureDiscovery {
             })
             .collect())
     }
-    fn discover(&self, _: &LocalInterface, ctx: &Context<'_>) -> PortResult<Vec<Candidate>> {
+    fn discover(
+        &self,
+        _: &LocalInterface,
+        _: u64,
+        ctx: &Context<'_>,
+    ) -> PortResult<Vec<Candidate>> {
         ctx.check()?;
         if let Some(failure) = &self.failure {
             let code = match failure.stage {
@@ -73,6 +79,7 @@ impl NetworkDiscovery for FixtureDiscovery {
                 FixtureStage::MdnsSend => "mdns_send_failed",
                 FixtureStage::SsdpSend => "ssdp_send_failed",
                 FixtureStage::Receive => "discovery_receive_failed",
+                FixtureStage::Deadline => "expired",
             };
             return Err(Failure::before(code).with_os_error(failure.os_error));
         }

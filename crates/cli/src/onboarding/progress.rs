@@ -105,6 +105,7 @@ impl Progress {
             eprintln!("The saved interface/address changed. Choose the LAN again.");
             self.state.interface = None;
             self.state.device = None;
+            self.state.display_name = None;
             self.state.manual_endpoint = None;
             self.state.manual_kind = None;
             self.save()?;
@@ -113,6 +114,7 @@ impl Progress {
         for (key, value) in [
             ("--interface", self.state.interface.clone()),
             ("--device", self.state.device.clone()),
+            ("--name", self.state.display_name.clone()),
             (
                 "--adb",
                 self.state
@@ -191,10 +193,14 @@ impl Progress {
     pub fn dependencies(&mut self, config: &Config) -> Result<(), &'static str> {
         self.state.adb = Some(config.executables.adb.clone());
         self.state.curl = Some(config.executables.curl.clone());
-        if let Some(tv_adapters::config::Device::Adb { server_port, .. }) =
-            config.devices.values().next()
+        if let Some(tv_adapters::config::Device::Adb {
+            server_port,
+            display_name,
+            ..
+        }) = config.devices.values().next()
         {
             self.state.server_port = Some(*server_port);
+            self.state.display_name = display_name.clone();
         }
         self.save()
     }
@@ -204,6 +210,7 @@ impl Progress {
     }
     pub fn clear_target(&mut self) -> Result<(), &'static str> {
         self.state.device = None;
+        self.state.display_name = None;
         self.state.manual_endpoint = None;
         self.state.manual_kind = None;
         self.save()
