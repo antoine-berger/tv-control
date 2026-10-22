@@ -7,7 +7,7 @@ A small Rust controller for Android TV and Jellyfin, with a CLI and two MCP tool
 Run in a terminal on macOS or Linux (ARM64 or x86-64):
 
 ```sh
-curl -fsSL https://github.com/antoine-berger/tv-control/releases/download/v0.2.3/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/antoine-berger/tv-control/latest/install.sh | sh
 ```
 
 The installer asks for confirmation, checks an existing installation and opens the
@@ -15,6 +15,9 @@ setup wizard. Run the same command again to resume after an interruption. Local
 setup progress is saved privately; a changed network or display is checked again.
 Existing configuration is preserved. No version, output path or setup flags are
 needed for this flow.
+
+The `latest` download channel points to a published, validated release and may
+serve a prerelease. The script keeps its release version pinned internally.
 
 This command executes downloaded code. [Inspection and checksum verification](docs/INSTALLATION.md)
 are available before execution. Maintained Android Platform Tools are required

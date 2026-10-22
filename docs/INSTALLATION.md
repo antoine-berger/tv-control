@@ -3,7 +3,7 @@
 ## Guided installation
 
 ```sh
-curl -fsSL https://github.com/antoine-berger/tv-control/releases/download/v0.2.3/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/antoine-berger/tv-control/latest/install.sh | sh
 ```
 
 The script defaults to the version shipped with that URL. It detects the host
@@ -12,6 +12,18 @@ updates its own files when needed, then runs the wizard. Repeating the same
 command reuses an intact current version without downloading it again. An older
 installation is updated after confirmation; previous payloads and external
 configuration are retained. A modified or unowned installation is refused.
+
+### Download channel
+
+The `latest` branch points to an existing published release commit. Its script is
+identical to that release's installer asset and keeps the asset version pinned.
+This channel may distribute validated prereleases; it does not change their status.
+
+Promote the channel only after the release's required CI/review checks pass, its
+assets are published and their public downloads/checksums and fixture-based install
+flow are verified. Point `latest` to that same commit, then check that the raw URL
+returns HTTP 200 and exactly the published script bytes, with the matching internal
+version. Keep the versioned releases and their assets unchanged.
 
 The wizard selects the only LAN interface when there is one, or asks which LAN
 to use. It asks before querying that LAN and before saving configuration. TV
