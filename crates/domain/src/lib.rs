@@ -32,6 +32,7 @@ pub struct Observed {
     pub connected: bool,
     pub active_app: Option<String>,
     pub playback: Playback,
+    pub playback_evidence: PlaybackEvidence,
     pub media_id: Option<String>,
     pub position_ticks: Option<u64>,
     pub volume_index: Option<u16>,
@@ -42,12 +43,21 @@ impl Default for Observed {
             connected: false,
             active_app: None,
             playback: Playback::Unknown,
+            playback_evidence: PlaybackEvidence::PositionProgressRequired,
             media_id: None,
             position_ticks: None,
             volume_index: None,
         }
     }
 }
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PlaybackEvidence {
+    NativeState,
+    PositionProgressRequired,
+}
+/// Jellyfin media positions use ticks of 100 ns.
+pub const MEDIA_TICKS_PER_MILLISECOND: u64 = 10_000;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MediaPlan {

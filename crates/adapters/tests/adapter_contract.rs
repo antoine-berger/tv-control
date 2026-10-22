@@ -256,3 +256,49 @@ fn foreground_requires_exact_package_and_unique_resumed_activity() {
     );
     assert_eq!(parse_foreground("mResumedActivity: ActivityRecord{a u0 org.example.player/.Main t1}\ntopResumedActivity: ActivityRecord{b u0 org.other.player/.Main t2}").unwrap_err().code,"foreground_ambiguous");
 }
+
+#[test]
+fn jellyfin_absent_and_null_positions_require_progress_evidence() {
+    for body in [
+        r#"[{"Id":"session","DeviceId":"example_device","UserId":"example_user","SupportsRemoteControl":true,"NowPlayingItem":{"Id":"episode"},"PlayState":{"IsPaused":false}}]"#,
+        r#"[{"Id":"session","DeviceId":"example_device","UserId":"example_user","SupportsRemoteControl":true,"NowPlayingItem":{"Id":"episode"},"PlayState":{"IsPaused":false,"PositionTicks":null}}]"#,
+    ] {
+        let cfg = config();
+        let http = HttpMock::new(vec![(200, VERSION), (200, body)]);
+        let clock = SystemClock::default();
+        let flag = CancelFlag::default();
+        let value = Jellyfin::new(&cfg, &http)
+            .observe("media_screen", &context(&clock, &flag))
+            .unwrap();
+        assert_eq!(value.position_ticks, None);
+        assert_eq!(
+            value.playback_evidence,
+            PlaybackEvidence::PositionProgressRequired
+        );
+    }
+}
+
+#[test]
+fn duplicate_targets_must_share_coordination_group() {
+    use tv_adapters::config::Device;
+    let mut cfg = config();
+    let mut duplicate = cfg.devices["screen"].clone();
+    if let Device::Adb {
+        coordination_group, ..
+    } = &mut duplicate
+    {
+        *coordination_group = "other_group".into();
+    }
+    cfg.devices.insert("alias_screen".into(), duplicate);
+    assert_eq!(
+        cfg.validate(),
+        Err("duplicate_target_requires_shared_coordination_group")
+    );
+    if let Device::Adb {
+        coordination_group, ..
+    } = cfg.devices.get_mut("alias_screen").unwrap()
+    {
+        *coordination_group = "screen".into();
+    }
+    assert!(cfg.validate().is_ok());
+}

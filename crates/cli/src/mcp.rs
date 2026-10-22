@@ -2,22 +2,19 @@
 use serde_json::{json, Value};
 use std::{
     collections::HashMap,
-    io::{self, BufRead, Read, Write},
     sync::{Arc, Mutex},
     thread,
+    time::Duration,
 };
+use tv_adapters::stdio::{FrameReader, Input, Output};
 use tv_adapters::{config::Config, runtime::CancelFlag, wire};
 use tv_application::Control;
 use tv_domain::Status;
 
-fn send(out: &Mutex<io::Stdout>, value: Value) {
-    if let Ok(mut out) = out.lock() {
-        let _ = serde_json::to_writer(&mut *out, &value);
-        let _ = out.write_all(b"\n");
-        let _ = out.flush();
-    }
+fn send(out: &Output, value: Value) {
+    out.send(value);
 }
-fn error(out: &Mutex<io::Stdout>, id: Value, code: i32, message: &str) {
+fn error(out: &Output, id: Value, code: i32, message: &str) {
     send(
         out,
         json!({"jsonrpc":"2.0","id":id,"error":{"code":code,"message":message}}),
@@ -44,28 +41,35 @@ pub fn tools() -> Value {
     ]})
 }
 pub fn serve(control: Arc<dyn Control>, config: Arc<Config>) -> Result<(), &'static str> {
-    let out = Arc::new(Mutex::new(io::stdout()));
+    let mut input = FrameReader::stdin().map_err(|_| "mcp_input_failed")?;
+    let (out, output_worker) = Output::start(
+        config.preferences.max_queued_responses,
+        config.preferences.max_output_bytes,
+        config.preferences.output_timeout_ms,
+        config.preferences.process_poll_ms,
+    )
+    .map_err(|_| "mcp_output_failed")?;
     let active: Arc<Mutex<HashMap<String, Arc<CancelFlag>>>> = Arc::new(Mutex::new(HashMap::new()));
     let mut handles = Vec::new();
-    let input = io::stdin();
-    let mut input = input.lock();
     let mut initialized = false;
     let mut ready = false;
     loop {
+        if out.is_stopped() {
+            break;
+        }
         handles.retain(|h: &thread::JoinHandle<()>| !h.is_finished());
-        let mut bytes = Vec::new();
-        let n = input
-            .by_ref()
-            .take(config.preferences.max_frame_bytes as u64 + 1)
-            .read_until(b'\n', &mut bytes)
-            .map_err(|_| "mcp_input_failed")?;
-        if n == 0 {
-            break;
-        }
-        if n > config.preferences.max_frame_bytes {
-            error(&out, Value::Null, -32600, "frame_too_large");
-            break;
-        }
+        let bytes = match input.next(config.preferences.max_frame_bytes) {
+            Ok(Input::Frame(bytes)) => bytes,
+            Ok(Input::Idle) => {
+                thread::sleep(Duration::from_millis(config.preferences.process_poll_ms));
+                continue;
+            }
+            Ok(Input::TooLarge) => {
+                error(&out, Value::Null, -32600, "frame_too_large");
+                break;
+            }
+            Ok(Input::Closed) | Err(_) => break,
+        };
         let message: Value = match serde_json::from_slice(&bytes) {
             Ok(v) => v,
             Err(_) => {
@@ -156,10 +160,17 @@ pub fn serve(control: Arc<dyn Control>, config: Arc<Config>) -> Result<(), &'sta
                         continue;
                     }
                 };
+                let expires = request.expires_at_unix_ms;
                 let key = id.to_string();
                 let flag = Arc::new(CancelFlag::default());
                 {
-                    let mut map = active.lock().map_err(|_| "mcp_state_failed")?;
+                    let mut map = match active.lock() {
+                        Ok(map) => map,
+                        Err(_) => {
+                            out.shutdown();
+                            break;
+                        }
+                    };
                     if map.contains_key(&key) {
                         error(&out, id, -32600, "duplicate_rpc_id");
                         continue;
@@ -176,7 +187,12 @@ pub fn serve(control: Arc<dyn Control>, config: Arc<Config>) -> Result<(), &'sta
                 handles.push(thread::spawn(move || {
                     let result = control.execute(request.into(), &*flag);
                     let failed = !matches!(result.status, Status::Observed | Status::Verified);
-                    send(&out, tool_result(id, wire::receipt(&result), failed));
+                    let frame = tool_result(id, wire::receipt(&result), failed);
+                    if failed {
+                        out.send(frame);
+                    } else {
+                        out.send_before(frame, expires);
+                    }
                     if let Ok(mut map) = active.lock() {
                         map.remove(&key);
                     }
@@ -185,6 +201,7 @@ pub fn serve(control: Arc<dyn Control>, config: Arc<Config>) -> Result<(), &'sta
             _ => error(&out, id, -32601, "method_not_found"),
         }
     }
+    out.shutdown();
     if let Ok(map) = active.lock() {
         for flag in map.values() {
             flag.cancel();
@@ -193,5 +210,6 @@ pub fn serve(control: Arc<dyn Control>, config: Arc<Config>) -> Result<(), &'sta
     for handle in handles {
         let _ = handle.join();
     }
+    let _ = output_worker.join();
     Ok(())
 }

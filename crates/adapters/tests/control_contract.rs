@@ -83,6 +83,7 @@ fn service(states: Vec<Observed>) -> Service<Device, Catalogue, MemoryState, Tim
         policy: Policy {
             max_budget_ms: 10_000,
             verification_poll_ms: 10,
+            resume_position_tolerance_ms: 0,
         },
     }
 }
@@ -385,4 +386,135 @@ fn concurrent_same_id_reserves_once_then_replays_receipt() {
         store.reserve(&request(Action::Observe), 2),
         Reservation::Cached(_)
     ));
+}
+
+#[test]
+fn missing_position_never_inherits_native_evidence() {
+    let mut missing = state(Playback::Playing, 0);
+    missing.position_ticks = None;
+    missing.playback_evidence = PlaybackEvidence::PositionProgressRequired;
+    let s = service(vec![missing]);
+    assert_eq!(
+        s.execute(request(Action::Resume), &CancelFlag::default())
+            .status,
+        Status::OutcomeUnknown
+    );
+    let mut native = state(Playback::Playing, 0);
+    native.position_ticks = None;
+    native.playback_evidence = PlaybackEvidence::NativeState;
+    let s = service(vec![native]);
+    assert_eq!(
+        s.execute(request(Action::Resume), &CancelFlag::default())
+            .status,
+        Status::Verified
+    );
+    assert_eq!(s.devices.calls.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn resume_media_far_ahead_is_not_a_correct_seek() {
+    let s = service(vec![
+        state(Playback::Stopped, 0),
+        state(Playback::Playing, 1_000_000),
+        state(Playback::Playing, 1_000_010),
+    ]);
+    let r = s.execute(
+        request(Action::ResumeMedia {
+            media: "series".into(),
+        }),
+        &CancelFlag::default(),
+    );
+    assert_eq!(r.status, Status::OutcomeUnknown);
+    assert_eq!(r.code, "resume_position_not_confirmed");
+}
+
+#[test]
+fn resume_media_tolerance_accounts_for_elapsed_time() {
+    let mut s = service(vec![
+        state(Playback::Stopped, 0),
+        state(Playback::Playing, 100_000),
+        state(Playback::Playing, 200_000),
+    ]);
+    s.devices.read_ms = 10;
+    assert_eq!(
+        s.execute(
+            request(Action::ResumeMedia {
+                media: "series".into()
+            }),
+            &CancelFlag::default()
+        )
+        .status,
+        Status::Verified
+    );
+}
+
+#[test]
+fn configured_wait_is_complete_cancellable_and_deadline_bounded() {
+    let time = Time::default();
+    let flag = CancelFlag::default();
+    let ctx = Context {
+        clock: &time,
+        cancellation: &flag,
+        deadline_monotonic_ms: 1000,
+    };
+    ctx.wait(500).unwrap();
+    assert_eq!(time.monotonic_ms(), 500);
+    struct CancelAt(Time);
+    impl Cancellation for CancelAt {
+        fn is_cancelled(&self) -> bool {
+            self.0.monotonic_ms() >= 625
+        }
+    }
+    let cancel = CancelAt(time.clone());
+    let ctx = Context {
+        clock: &time,
+        cancellation: &cancel,
+        deadline_monotonic_ms: 1000,
+    };
+    assert_eq!(ctx.wait(500).unwrap_err().code, "cancelled");
+    assert_eq!(time.monotonic_ms(), 650);
+    let ctx = Context {
+        clock: &time,
+        cancellation: &flag,
+        deadline_monotonic_ms: 700,
+    };
+    assert_eq!(ctx.wait(500).unwrap_err().code, "expired");
+    assert_eq!(time.monotonic_ms(), 700);
+}
+
+#[test]
+fn aliases_sharing_a_physical_group_reserve_once() {
+    let store = Arc::new(
+        MemoryState::new(4, 1000).with_resource_groups(
+            [
+                ("first".into(), "physical_screen".into()),
+                ("second".into(), "physical_screen".into()),
+            ]
+            .into_iter()
+            .collect(),
+        ),
+    );
+    let barrier = Arc::new(std::sync::Barrier::new(2));
+    let acquired = Arc::new(AtomicUsize::new(0));
+    let mut workers = Vec::new();
+    for alias in ["first", "second"] {
+        let store = store.clone();
+        let barrier = barrier.clone();
+        let acquired = acquired.clone();
+        workers.push(std::thread::spawn(move || {
+            let req = Request {
+                id: alias.into(),
+                device: alias.into(),
+                ..request(Action::Observe)
+            };
+            barrier.wait();
+            if matches!(store.reserve(&req, 0), Reservation::Acquired) {
+                acquired.fetch_add(1, Ordering::SeqCst);
+            }
+        }));
+    }
+    for worker in workers {
+        worker.join().unwrap();
+    }
+    assert_eq!(acquired.load(Ordering::SeqCst), 1);
 }

@@ -38,6 +38,9 @@ fn service(cfg: Arc<Config>) -> Arc<dyn Control> {
         config: cfg.clone(),
         process,
         http,
+        adb_probe: Arc::new(tv_adapters::adb_server::SmartSocketProbe {
+            poll_ms: cfg.preferences.process_poll_ms,
+        }),
     };
     Arc::new(Service {
         devices: router.clone(),
@@ -45,11 +48,18 @@ fn service(cfg: Arc<Config>) -> Arc<dyn Control> {
         state: MemoryState::new(
             cfg.preferences.dedup_entries,
             cfg.preferences.dedup_retention_ms,
+        )
+        .with_resource_groups(
+            cfg.devices
+                .iter()
+                .map(|(alias, device)| (alias.clone(), device.coordination_group().to_string()))
+                .collect(),
         ),
         clock: SystemClock::default(),
         policy: Policy {
             max_budget_ms: cfg.preferences.max_budget_ms,
             verification_poll_ms: cfg.preferences.verification_poll_ms,
+            resume_position_tolerance_ms: cfg.preferences.resume_position_tolerance_ms,
         },
     })
 }

@@ -52,11 +52,13 @@ struct Entry {
     action: Action,
     receipt: Option<Receipt>,
     completed_at: u64,
+    resource: String,
 }
 pub struct MemoryState {
     entries: Mutex<HashMap<String, Entry>>,
     capacity: usize,
     retention_ms: u64,
+    resource_groups: std::collections::BTreeMap<String, String>,
 }
 impl MemoryState {
     pub fn new(capacity: usize, retention_ms: u64) -> Self {
@@ -64,7 +66,15 @@ impl MemoryState {
             entries: Mutex::new(HashMap::new()),
             capacity,
             retention_ms,
+            resource_groups: Default::default(),
         }
+    }
+    pub fn with_resource_groups(
+        mut self,
+        groups: std::collections::BTreeMap<String, String>,
+    ) -> Self {
+        self.resource_groups = groups;
+        self
     }
 }
 impl StateStore for MemoryState {
@@ -85,9 +95,10 @@ impl StateStore for MemoryState {
                 .map(Reservation::Cached)
                 .unwrap_or(Reservation::Busy);
         }
+        let resource = self.resource_groups.get(&req.device).unwrap_or(&req.device);
         if entries
             .values()
-            .any(|e| e.device == req.device && e.receipt.is_none())
+            .any(|e| &e.resource == resource && e.receipt.is_none())
         {
             return Reservation::Busy;
         }
@@ -102,6 +113,7 @@ impl StateStore for MemoryState {
                 action: req.action.clone(),
                 receipt: None,
                 completed_at: 0,
+                resource: resource.clone(),
             },
         );
         Reservation::Acquired

@@ -1,4 +1,5 @@
 {
+  "source_commit": "97c25965954b25085f9d2ae62f8a8d151a1e3ba7",
   "scope": "host_only_no_device_no_chat_no_adb_daemon_no_tunnel",
   "system": "Darwin",
   "machine": "arm64",

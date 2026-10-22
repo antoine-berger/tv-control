@@ -94,6 +94,11 @@ initialized notification, ping, tools/list, tools/call and cancellation
 notifications. It offers `tv_capabilities` and `tv_control`. JSON-RPC is one
 message per line; stdout contains protocol messages only. Oversize frames are
 rejected and terminate the connection. Workers and response state are bounded.
+Both stdio directions are nonblocking. `max_queued_responses` bounds the output
+queue and `output_timeout_ms` bounds writes; backpressure closes the transport and
+cancels active work instead of blocking the input reader. Successful tool replies
+also retain the request's original expiry. A lost response after dispatch is still
+an uncertain outcome for the caller.
 
 `examples/mcp.json` is a generic desktop client configuration example. Hosts have
 different import formats; it is not an installed plugin. A hosted chat cannot
@@ -105,7 +110,7 @@ No bridge, token, pairing, daemon or router service is provisioned by this repo.
 
 | Adapter | Implemented | Qualification and limits |
 | --- | --- | --- |
-| ADB executable | Explicit existing target; state, TV app launch, targeted media pause/play; optional calibrated music stream index | Existing authorized server required. No server start, connect, pairing, key generation, installation or scan. Android vendor output must match parsers. |
+| ADB executable | Explicit existing target; state, TV app launch, targeted media pause/play; optional calibrated music stream index | Existing authorized, compatible, exclusively owned server required. No explicit setup actions. See version-preflight race below. Android vendor output must match parsers. |
 | Jellyfin HTTP | Patched-server check, exact user/device session selection, pause/unpause, configured series resume at stored ticks, postcondition reads | Mock integration qualified first. Requires an existing credential and compatible client. No library mutation or token creation. |
 | YouTube / YouTube Music | Generic app launch and native media controls only when configured and supported | No search, lyrics, song/video mode, account navigation or service-specific Cast adapter. |
 | Cast / Remote v2 / UIAutomator | Extension points only | Not implemented; not advertised as working backends. |
@@ -125,11 +130,20 @@ Android TV clients can implement Pause/Unpause as toggles: state is checked
 immediately before sending once. A simultaneous physical remote action can
 still race this check; there is no compare-and-set API.
 
+Playback evidence is explicit: native Android PlaybackState and a Jellyfin pause
+flag are not interchangeable. Missing/null Jellyfin positions cannot verify resume.
+Matching resume positions must lie within configured `resume_position_tolerance_ms`
+around the requested ticks, enlarged only by elapsed time since dispatch. Far-ahead
+playback is an unknown outcome, not a correct seek.
+
 ## Deadlines, cancellation and duplicates
 
 * One absolute deadline covers reservations, reads, catalogue lookup, subprocess
   input/output, dispatch and verification. It is converted to monotonic time.
   Device contention returns `busy` rather than queueing behind another operation.
+  Aliases share a configured `coordination_group` for the same physical screen,
+  including across ADB and Jellyfin. Exact duplicate targets with different groups
+  are rejected. Cross-protocol identity is not automatically discovered.
 * Subprocess pipes are nonblocking and bounded. Each invocation owns a Unix
   process group, terminated on timeout/cancellation/exit cleanup. Executables
   are trusted administrator configuration, not a sandbox for hostile programs.
@@ -167,6 +181,17 @@ TCP debugging is not encrypted by RSA authorization; an Internet tunnel does not
 encrypt that separate LAN leg. Keep the ADB server on loopback and select an
 explicit target. Run under a dedicated unprivileged account where practical.
 Never publish real configuration, keys, dumps, captures or viewing history.
+
+The ADB executable is manager-capable: AOSP may kill/restart an incompatible
+daemon even for a device-read command. Before every connected invocation, this
+adapter compares local `adb version` with a read-only smart-socket `host:version`
+probe and rejects known mismatches without issuing a device command. A fake-server
+regression verifies this. **A replacement between probe and invocation remains a
+TOCTOU limitation.** Use an isolated daemon exclusively owned by the controller;
+do not point this adapter at an unrelated or concurrently replaced server. A
+non-manager transport is needed for a stronger unconditional no-restart contract.
+Targeted media controls also reject tags duplicated across any package because
+Android's monitor interface selects by tag alone.
 
 ## Router and performance
 

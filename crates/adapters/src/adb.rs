@@ -9,10 +9,19 @@ use tv_domain::*;
 pub struct Adb<'a> {
     config: &'a Config,
     process: &'a dyn Process,
+    probe: &'a dyn crate::adb_server::ServerProbe,
 }
 impl<'a> Adb<'a> {
-    pub fn new(config: &'a Config, process: &'a dyn Process) -> Self {
-        Self { config, process }
+    pub fn new(
+        config: &'a Config,
+        process: &'a dyn Process,
+        probe: &'a dyn crate::adb_server::ServerProbe,
+    ) -> Self {
+        Self {
+            config,
+            process,
+            probe,
+        }
     }
     fn call(
         &self,
@@ -31,6 +40,31 @@ impl<'a> Adb<'a> {
         else {
             return Err(Failure::before("unsupported"));
         };
+        // `adb version` is local-only. A manager-capable client must not reach a
+        // known incompatible server, because AOSP may issue host:kill on mismatch.
+        let version = self.process.run(
+            Invocation {
+                program: self.config.executables.adb.clone(),
+                args: vec!["version".into()],
+                env: BTreeMap::new(),
+                stdin: Vec::new(),
+                mutating: false,
+            },
+            ctx,
+        )?;
+        let client_protocol = std::str::from_utf8(&version.stdout)
+            .ok()
+            .and_then(|s| {
+                s.lines().find_map(|line| {
+                    line.strip_prefix("Android Debug Bridge version 1.0.")
+                        .and_then(|s| s.trim().parse::<u32>().ok())
+                })
+            })
+            .filter(|_| version.success)
+            .ok_or(Failure::before("adb_client_protocol_unavailable"))?;
+        if self.probe.version(server_host, *server_port, ctx)? != client_protocol {
+            return Err(Failure::before("adb_server_protocol_mismatch"));
+        }
         let mut arguments: Vec<std::ffi::OsString> = [
             "-H",
             server_host,
@@ -111,6 +145,7 @@ impl<'a> Adb<'a> {
         let mut observed = Observed {
             connected: true,
             active_app,
+            playback_evidence: PlaybackEvidence::NativeState,
             ..Observed::default()
         };
         if let Some(app) = media_app {
@@ -201,21 +236,30 @@ impl<'a> Adb<'a> {
                     false,
                     ctx,
                 )?;
-                let mut tags = output.lines().filter_map(|line| {
-                    let (tag, pkg) = line.trim().strip_prefix("tag=")?.split_once(", package=")?;
-                    (pkg.trim() == package
-                        && !tag.is_empty()
-                        && tag.len() <= 128
-                        && tag
-                            .bytes()
-                            .all(|b| b.is_ascii_alphanumeric() || b"_.:-".contains(&b)))
-                    .then_some(tag)
-                });
+                let all_tags: Vec<_> = output
+                    .lines()
+                    .filter_map(|line| {
+                        let (tag, pkg) =
+                            line.trim().strip_prefix("tag=")?.split_once(", package=")?;
+                        (!tag.is_empty()
+                            && tag.len() <= 128
+                            && tag
+                                .bytes()
+                                .all(|b| b.is_ascii_alphanumeric() || b"_.:-".contains(&b)))
+                        .then_some((tag, pkg.trim()))
+                    })
+                    .collect();
+                let mut tags = all_tags
+                    .iter()
+                    .filter_map(|(tag, pkg)| (*pkg == package).then_some(*tag));
                 let tag = tags
                     .next()
                     .ok_or(Failure::before("media_session_not_found"))?;
                 if tags.next().is_some() {
                     return Err(Failure::before("media_session_ambiguous"));
+                }
+                if all_tags.iter().filter(|(other, _)| *other == tag).count() != 1 {
+                    return Err(Failure::before("media_tag_ambiguous"));
                 }
                 let command = if *action == Action::Pause {
                     b"pause\nq\n".as_slice()

@@ -17,6 +17,8 @@ Controller-only synthetic results cannot establish chat→TV ten-second performa
 ## Initial native host observation
 
 The checked-in `host-macos-arm64.json` records one Rust 1.99.1 release build:
+this snapshot predates the independent-review changes and identifies its source
+commit explicitly. It does not measure the new stdio/probe overhead.
 603,456 binary bytes, idle RSS maximum 2,129,920 bytes, server RSS peak 3,063,808
 bytes over 20 loopback Jellyfin command fixtures, and idle-window CPU average
 0.064% of one core. The 20 fixture round trips had median 140.96 ms, p95 170.56 ms

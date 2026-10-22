@@ -3,6 +3,7 @@
 Never contacts a TV, discovers devices, or uses an existing credential.
 """
 import json
+import fcntl
 import os
 import pathlib
 import queue
@@ -12,6 +13,7 @@ import tempfile
 import threading
 import time
 import unittest
+from urllib.parse import parse_qs, urlsplit
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 BINARY = "target/debug/tv-control"
@@ -22,6 +24,8 @@ class Fixture(BaseHTTPRequestHandler):
     position = 200
     post_count = 0
     slow = False
+    position_mode = "progressing"
+    ignore_seek = False
     def log_message(self, *_):
         pass
     def do_GET(self):
@@ -30,10 +34,14 @@ class Fixture(BaseHTTPRequestHandler):
         if self.path == "/System/Info/Public":
             value = {"Version": "12.0.0"}
         elif self.path.startswith("/Sessions?"):
-            Fixture.position += 10
+            if Fixture.position_mode == "progressing":
+                Fixture.position += 10
+            state = {"IsPaused":Fixture.paused}
+            if Fixture.position_mode != "missing":
+                state["PositionTicks"] = None if Fixture.position_mode == "null" else Fixture.position
             value = [{"Id":"session", "DeviceId":"example_device", "UserId":"example_user",
                       "SupportsRemoteControl":True,"NowPlayingItem":{"Id":"episode"},
-                      "PlayState":{"IsPaused":Fixture.paused,"PositionTicks":Fixture.position}}]
+                      "PlayState":state}]
         elif self.path.startswith("/UserItems/Resume?"):
             value = {"Items":[{"Id":"episode","SeriesId":"example_series","UserData":{"PlaybackPositionTicks":100}}]}
         else:
@@ -55,6 +63,8 @@ class Fixture(BaseHTTPRequestHandler):
             Fixture.paused = False
         elif self.path.startswith("/Sessions/session/Playing?"):
             Fixture.paused = False
+            query = parse_qs(urlsplit(self.path).query)
+            Fixture.position = 1_000_000_000 if Fixture.ignore_seek else int(query["startPositionTicks"][0])
         else:
             self.send_error(404)
             return
@@ -67,6 +77,8 @@ class MCP(unittest.TestCase):
         Fixture.paused = False
         Fixture.post_count = 0
         Fixture.slow = False
+        Fixture.position_mode = "progressing"
+        Fixture.ignore_seek = False
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), Fixture)
         threading.Thread(target=self.server.serve_forever, daemon=True).start()
         self.tmp = tempfile.TemporaryDirectory()
@@ -76,6 +88,7 @@ class MCP(unittest.TestCase):
         cfg["preferences"]["verification_poll_ms"] = 5
         path = pathlib.Path(self.tmp.name) / "fixture.json"
         path.write_text(json.dumps(cfg))
+        self.config_path = path
         env = os.environ.copy()
         env["TV_LIBRARY_TOKEN"] = "fixture_only_not_a_credential"
         self.proc = subprocess.Popen([BINARY, "mcp", str(path)], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env)
@@ -102,8 +115,8 @@ class MCP(unittest.TestCase):
     def send(self, value):
         self.proc.stdin.write(json.dumps(value) + "\n")
         self.proc.stdin.flush()
-    def receive(self):
-        return self.responses.get(timeout=3)
+    def receive(self, timeout=3):
+        return self.responses.get(timeout=timeout)
     def call(self, rpc_id, action, key="operation", ttl=1500):
         self.send({"jsonrpc":"2.0","id":rpc_id,"method":"tools/call","params":{"name":"tv_control","arguments":{
             "request_id":key,"device":"media_screen","action":action,"expires_at_unix_ms":int(time.time()*1000)+ttl}}})
@@ -126,6 +139,22 @@ class MCP(unittest.TestCase):
         value = self.receive()["result"]["structuredContent"]
         self.assertEqual(value["status"], "verified")
         self.assertEqual(value["observed"]["media_id"], "episode")
+
+    def test_resume_position_evidence_modes(self):
+        for index, mode in enumerate(["missing", "null", "frozen"]):
+            Fixture.position_mode = mode
+            Fixture.paused = True
+            self.call(index+2, {"type":"resume"}, key="evidence_"+mode, ttl=2500)
+            value = self.receive(timeout=6)["result"]["structuredContent"]
+            self.assertEqual(value["status"], "outcome_unknown", mode)
+            self.assertFalse(value["cached"])
+
+    def test_resume_media_rejects_ignored_seek(self):
+        Fixture.ignore_seek = True
+        self.call(2, {"type":"resume_media","media":"series"})
+        value = self.receive()["result"]["structuredContent"]
+        self.assertEqual(value["status"], "outcome_unknown")
+        self.assertEqual(value["code"], "resume_position_not_confirmed")
     def test_expired_request_never_dispatches(self):
         self.call(2, {"type":"pause"}, ttl=-1)
         self.assertEqual(self.receive()["result"]["structuredContent"]["status"], "expired")
@@ -147,6 +176,84 @@ class MCP(unittest.TestCase):
         self.assertEqual(result["id"], 3)
         self.assertEqual(result["result"]["structuredContent"]["status"], "busy")
         self.assertEqual(self.receive()["id"], 2)
+
+    def test_unread_stdout_has_bounded_teardown(self):
+        environment = os.environ.copy()
+        environment["TV_LIBRARY_TOKEN"] = "fixture_only_not_a_credential"
+        proc = subprocess.Popen([BINARY, "mcp", str(self.config_path)], stdin=subprocess.PIPE,
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=environment)
+        writer = None
+        try:
+            proc.stdin.write(json.dumps({"jsonrpc":"2.0","id":1,"method":"initialize","params":{
+                "protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"backpressure-test","version":"1"}}}).encode()+b"\n")
+            proc.stdin.flush()
+            self.assertIn(b'"result"', proc.stdout.readline())
+            # Stop reading stdout. A blocking transport would deadlock while this producer fills stdin.
+            frames = [{"jsonrpc":"2.0","method":"notifications/initialized"}]
+            frames += [{"jsonrpc":"2.0","id":i+2,"method":"tools/list"} for i in range(2000)]
+            frames += [{"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":2}}]
+            data = b"".join(json.dumps(frame).encode()+b"\n" for frame in frames)
+            def produce():
+                try:
+                    proc.stdin.write(data)
+                    proc.stdin.flush()
+                except (BrokenPipeError, OSError):
+                    pass
+            writer = threading.Thread(target=produce, daemon=True)
+            started = time.monotonic()
+            writer.start()
+            proc.wait(timeout=3)
+            writer.join(timeout=1)
+            self.assertFalse(writer.is_alive())
+            self.assertLess(time.monotonic()-started, 3)
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait(timeout=2)
+            if writer:
+                writer.join(timeout=1)
+            for stream in [proc.stdin, proc.stdout, proc.stderr]:
+                try:
+                    stream.close()
+                except BrokenPipeError:
+                    pass
+
+    def test_inherited_stdout_status_flags_are_restored(self):
+        for nonblocking in (False, True):
+            with self.subTest(nonblocking=nonblocking):
+                self.check_stdout_flags_restored(nonblocking)
+
+    def check_stdout_flags_restored(self, nonblocking):
+        read_fd, write_fd = os.pipe()
+        # Darwin adds kernel-only FWASWRITTEN (0x10000) on first write, even
+        # from plain os.write; F_SETFL cannot clear it. Prime before recording
+        # the complete baseline rather than masking any bits from the assertion.
+        os.write(write_fd, b"x")
+        self.assertEqual(os.read(read_fd, 1), b"x")
+        if nonblocking:
+            fcntl.fcntl(write_fd, fcntl.F_SETFL,
+                        fcntl.fcntl(write_fd, fcntl.F_GETFL) | os.O_NONBLOCK)
+        flags = fcntl.fcntl(write_fd, fcntl.F_GETFL)
+        proc = subprocess.Popen([BINARY,"mcp",str(self.config_path)],stdin=subprocess.PIPE,
+                                stdout=write_fd,stderr=subprocess.PIPE)
+        reader = os.fdopen(read_fd,"rb")
+        try:
+            proc.stdin.write(json.dumps({"jsonrpc":"2.0","id":1,"method":"initialize","params":{
+                "protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"flags-test","version":"1"}}}).encode()+b"\n")
+            proc.stdin.flush()
+            self.assertIn(b'"result"',reader.readline())
+            proc.stdin.close()
+            proc.wait(timeout=3)
+            self.assertEqual(fcntl.fcntl(write_fd,fcntl.F_GETFL),flags)
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait(timeout=2)
+            reader.close()
+            os.close(write_fd)
+            proc.stderr.close()
+            if not proc.stdin.closed:
+                proc.stdin.close()
 
 if __name__ == "__main__":
     if len(sys.argv) > 1 and not sys.argv[1].startswith("-"):

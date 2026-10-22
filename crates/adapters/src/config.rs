@@ -30,6 +30,9 @@ pub struct Preferences {
     pub max_inflight: usize,
     pub dedup_entries: usize,
     pub dedup_retention_ms: u64,
+    pub resume_position_tolerance_ms: u64,
+    pub max_queued_responses: usize,
+    pub output_timeout_ms: u64,
 }
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -41,6 +44,7 @@ pub struct Executables {
 #[serde(tag = "adapter", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Device {
     Adb {
+        coordination_group: String,
         endpoint: String,
         server_host: String,
         server_port: u16,
@@ -48,6 +52,7 @@ pub enum Device {
         volume_max_index: Option<u16>,
     },
     Jellyfin {
+        coordination_group: String,
         server: String,
         user_id: String,
         device_id: String,
@@ -96,6 +101,9 @@ impl Config {
             || !(1..=4096).contains(&p.dedup_entries)
             || p.dedup_retention_ms < p.max_budget_ms
             || p.dedup_retention_ms > 86_400_000
+            || p.resume_position_tolerance_ms > 10_000
+            || !(1..=64).contains(&p.max_queued_responses)
+            || !(1..=10_000).contains(&p.output_timeout_ms)
         {
             return Err("invalid_resource_policy");
         }
@@ -138,7 +146,36 @@ impl Config {
                 return Err("invalid_secret_reference");
             }
         }
+        let mut targets = BTreeMap::<String, String>::new();
         for device in self.devices.values() {
+            if !identifier(device.coordination_group()) {
+                return Err("invalid_coordination_group");
+            }
+            let identity = match device {
+                Device::Adb { endpoint, .. } => format!(
+                    "adb:{}",
+                    endpoint
+                        .parse::<std::net::SocketAddr>()
+                        .map_err(|_| "invalid_adb_endpoint")?
+                ),
+                Device::Jellyfin {
+                    server, device_id, ..
+                } => format!(
+                    "jellyfin:{}:{}",
+                    self.servers
+                        .get(server)
+                        .ok_or("unknown_server")?
+                        .base_url
+                        .to_ascii_lowercase(),
+                    device_id
+                ),
+            };
+            if targets
+                .insert(identity, device.coordination_group().to_string())
+                .is_some_and(|previous| previous != device.coordination_group())
+            {
+                return Err("duplicate_target_requires_shared_coordination_group");
+            }
             match device {
                 Device::Adb {
                     endpoint,
@@ -146,6 +183,7 @@ impl Config {
                     server_port,
                     media_app,
                     volume_max_index,
+                    ..
                 } => {
                     let addr: std::net::SocketAddr =
                         endpoint.parse().map_err(|_| "invalid_adb_endpoint")?;
@@ -172,6 +210,7 @@ impl Config {
                     server,
                     user_id,
                     device_id,
+                    ..
                 } => {
                     if !self.servers.contains_key(server)
                         || !opaque_id(user_id)
@@ -200,6 +239,18 @@ impl Config {
             }
         }
         Ok(())
+    }
+}
+impl Device {
+    pub fn coordination_group(&self) -> &str {
+        match self {
+            Self::Adb {
+                coordination_group, ..
+            }
+            | Self::Jellyfin {
+                coordination_group, ..
+            } => coordination_group,
+        }
     }
 }
 pub fn package(s: &str) -> bool {

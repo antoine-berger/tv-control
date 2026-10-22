@@ -44,7 +44,7 @@ impl Drop for OwnedGroup {
         let _ = self.0.wait();
     }
 }
-fn nonblocking(fd: RawFd) -> io::Result<()> {
+pub(crate) fn nonblocking(fd: RawFd) -> io::Result<()> {
     // SAFETY: fd is borrowed from a live owned Child pipe; fcntl does not retain it.
     let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
     if flags < 0 || unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) } < 0 {

@@ -77,13 +77,19 @@ fn output_is_bounded_and_raw_stderr_is_not_returned() {
     let ctx = Context {
         clock: &clock,
         cancellation: &flag,
-        deadline_monotonic_ms: clock.monotonic_ms() + 1000,
+        // This checks content bounds, not Python's cold startup latency in hosted CI.
+        deadline_monotonic_ms: clock.monotonic_ms() + 5000,
     };
     let e = p
         .run(invocation(false, "print('x'*100000)"), &ctx)
         .err()
         .unwrap();
     assert_eq!(e.code, "process_output_limit");
+    let ctx = Context {
+        clock: &clock,
+        cancellation: &flag,
+        deadline_monotonic_ms: clock.monotonic_ms() + 5000,
+    };
     let out = p
         .run(
             invocation(

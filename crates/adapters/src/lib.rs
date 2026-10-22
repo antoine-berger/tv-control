@@ -1,9 +1,11 @@
 pub mod adb;
+pub mod adb_server;
 pub mod config;
 pub mod http;
 pub mod jellyfin;
 pub mod process;
 pub mod runtime;
+pub mod stdio;
 pub mod wire;
 
 use config::{Config, Device};
@@ -16,6 +18,7 @@ pub struct Router {
     pub config: Arc<Config>,
     pub process: Arc<dyn process::Process>,
     pub http: Arc<dyn http::Http>,
+    pub adb_probe: Arc<dyn adb_server::ServerProbe>,
 }
 impl DeviceControl for Router {
     fn observe(&self, alias: &str, ctx: &Context<'_>) -> PortResult<Observed> {
@@ -25,7 +28,9 @@ impl DeviceControl for Router {
             .get(alias)
             .ok_or(Failure::before("unknown_device"))?
         {
-            Device::Adb { .. } => adb::Adb::new(&self.config, &*self.process).observe(alias, ctx),
+            Device::Adb { .. } => {
+                adb::Adb::new(&self.config, &*self.process, &*self.adb_probe).observe(alias, ctx)
+            }
             Device::Jellyfin { .. } => {
                 jellyfin::Jellyfin::new(&self.config, &*self.http).observe(alias, ctx)
             }
@@ -44,9 +49,8 @@ impl DeviceControl for Router {
             .get(alias)
             .ok_or(Failure::before("unknown_device"))?
         {
-            Device::Adb { .. } => {
-                adb::Adb::new(&self.config, &*self.process).apply(alias, action, ctx)
-            }
+            Device::Adb { .. } => adb::Adb::new(&self.config, &*self.process, &*self.adb_probe)
+                .apply(alias, action, ctx),
             Device::Jellyfin { .. } => {
                 jellyfin::Jellyfin::new(&self.config, &*self.http).apply(alias, action, plan, ctx)
             }

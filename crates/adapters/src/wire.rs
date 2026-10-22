@@ -42,7 +42,8 @@ pub fn receipt(r: &Receipt) -> serde_json::Value {
         Status::Observed=>"observed",Status::Verified=>"verified",Status::Invalid=>"invalid",Status::Busy=>"busy",Status::Unsupported=>"unsupported",
         Status::Expired=>"expired",Status::Cancelled=>"cancelled",Status::Failed=>"failed",Status::OutcomeUnknown=>"outcome_unknown"},
         "code":r.code,"cached":r.cached,"local_elapsed_ms":r.local_elapsed_ms,"timing_scope":"controller_local_not_user_to_tv",
-        "observed":r.observed.as_ref().map(|s|json!({"connected":s.connected,"active_app":s.active_app,"playback": match s.playback {
+        "observed":r.observed.as_ref().map(|s|json!({"connected":s.connected,"active_app":s.active_app,
+            "playback_evidence":match s.playback_evidence {PlaybackEvidence::NativeState=>"native_state",PlaybackEvidence::PositionProgressRequired=>"position_progress_required"},"playback": match s.playback {
             Playback::Unknown=>"unknown",Playback::Stopped=>"stopped",Playback::Paused=>"paused",Playback::Playing=>"playing",Playback::Buffering=>"buffering"},
             "media_id":s.media_id,"position_ticks":s.position_ticks,"volume_index":s.volume_index}))})
 }

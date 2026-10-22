@@ -30,10 +30,15 @@ impl Context<'_> {
             .saturating_sub(self.clock.monotonic_ms())
     }
     pub fn wait(&self, duration: u64) -> PortResult<()> {
-        self.check()?;
-        self.clock
-            .sleep_ms(duration.min(self.remaining_ms()).min(50));
-        self.check()
+        let until = self.clock.monotonic_ms().saturating_add(duration);
+        loop {
+            self.check()?;
+            let left = until.saturating_sub(self.clock.monotonic_ms());
+            if left == 0 {
+                return Ok(());
+            }
+            self.clock.sleep_ms(left.min(self.remaining_ms()).min(50));
+        }
     }
 }
 
@@ -70,6 +75,7 @@ pub trait Control: Send + Sync {
 pub struct Policy {
     pub max_budget_ms: u64,
     pub verification_poll_ms: u64,
+    pub resume_position_tolerance_ms: u64,
 }
 
 pub struct Service<D, M, S, C> {
@@ -99,6 +105,7 @@ impl<D: DeviceControl, M: MediaCatalogue, S: StateStore, C: Clock> Service<D, M,
             return Ok((Status::Verified, before));
         }
         ctx.check()?;
+        let dispatch_started = self.clock.monotonic_ms();
         self.devices
             .apply(&req.device, &req.action, plan.as_ref(), ctx)?;
         let mut previous = None;
@@ -110,6 +117,32 @@ impl<D: DeviceControl, M: MediaCatalogue, S: StateStore, C: Clock> Service<D, M,
                 .map_err(|e| Failure::uncertain(e.code))?;
             // A read that completed after expiry must never become a success.
             ctx.check().map_err(|e| Failure::uncertain(e.code))?;
+            if matches!(req.action, Action::Resume | Action::ResumeMedia { .. })
+                && observed.playback == Playback::Playing
+                && observed.playback_evidence == PlaybackEvidence::PositionProgressRequired
+                && observed.position_ticks.is_none()
+            {
+                return Err(Failure::uncertain("playback_position_unavailable"));
+            }
+            if let Some(plan) = plan.as_ref() {
+                if observed.media_id.as_ref() == Some(&plan.item_id) {
+                    if let Some(position) = observed.position_ticks {
+                        let elapsed = self.clock.monotonic_ms().saturating_sub(dispatch_started);
+                        let tolerance = self
+                            .policy
+                            .resume_position_tolerance_ms
+                            .saturating_mul(MEDIA_TICKS_PER_MILLISECOND);
+                        let lower = plan.position_ticks.saturating_sub(tolerance);
+                        let upper = plan
+                            .position_ticks
+                            .saturating_add(elapsed.saturating_mul(MEDIA_TICKS_PER_MILLISECOND))
+                            .saturating_add(tolerance);
+                        if position < lower || position > upper {
+                            return Err(Failure::uncertain("resume_position_not_confirmed"));
+                        }
+                    }
+                }
+            }
             if desired(&req.action, &observed, plan.as_ref(), previous.as_ref()) {
                 return Ok((Status::Verified, observed));
             }
@@ -216,7 +249,7 @@ fn desired(
         Action::Resume => {
             observed.playback == Playback::Playing
                 && match observed.position_ticks {
-                    None => true, // Native device PlaybackState, rather than a server pause flag.
+                    None => observed.playback_evidence == PlaybackEvidence::NativeState,
                     Some(position) => previous.is_some_and(|old| {
                         old.media_id == observed.media_id
                             && old

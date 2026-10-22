@@ -8,12 +8,16 @@
     "max_frame_bytes": 16384,
     "max_inflight": 2,
     "dedup_entries": 256,
-    "dedup_retention_ms": 60000
+    "dedup_retention_ms": 60000,
+    "resume_position_tolerance_ms": 1500,
+    "max_queued_responses": 8,
+    "output_timeout_ms": 1000
   },
   "executables": { "adb": "/usr/bin/adb", "curl": "/usr/bin/curl" },
   "devices": {
     "screen": {
       "adapter": "adb",
+      "coordination_group": "screen",
       "endpoint": "192.0.2.10:5555",
       "server_host": "127.0.0.1",
       "server_port": 15037,
@@ -22,6 +26,7 @@
     },
     "media_screen": {
       "adapter": "jellyfin",
+      "coordination_group": "screen",
       "server": "library",
       "user_id": "example_user",
       "device_id": "example_device"
