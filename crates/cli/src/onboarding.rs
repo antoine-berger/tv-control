@@ -1,4 +1,5 @@
 //! Human and agent incoming adapters. Setup never spawns ADB or an auth/tunnel client.
+mod progress;
 use serde_json::{json, Value};
 use std::{
     collections::BTreeMap,
@@ -18,7 +19,7 @@ use tv_application::{
     Clock, Context,
 };
 use tv_domain::{onboarding::*, Action, Request, Status};
-#[derive(Default)]
+#[derive(Clone, Default)]
 struct Options {
     values: BTreeMap<String, String>,
     json: bool,
@@ -26,6 +27,8 @@ struct Options {
     confirm: bool,
     resume: bool,
     probe: bool,
+    no_checkpoint: bool,
+    guided: bool,
 }
 impl Options {
     fn parse(args: &[String]) -> Result<Self, &'static str> {
@@ -38,9 +41,11 @@ impl Options {
                 "--confirm" => out.confirm = true,
                 "--resume" => out.resume = true,
                 "--probe" => out.probe = true,
+                "--no-checkpoint" => out.no_checkpoint = true,
+                "--guided" => out.guided = true,
                 key @ ("--fixture" | "--interface" | "--duration-ms" | "--device" | "--output"
                 | "--adb" | "--curl" | "--server-port" | "--manual-endpoint"
-                | "--manual-kind" | "--tunnel-id") => {
+                | "--manual-kind" | "--tunnel-id" | "--checkpoint") => {
                     i += 1;
                     let value = args.get(i).ok_or("option_value_missing")?;
                     if value.starts_with("--")
@@ -159,16 +164,27 @@ fn service_name(kind: ServiceKind) -> &'static str {
 fn candidate_json(c: &Candidate) -> Value {
     json!({"id":c.id,"label":c.label,"address":c.address.to_string(),"evidence":"advertised_not_verified","authorized":null,"control_verified":false,"services":c.services.iter().map(|s|json!({"kind":service_name(s.kind),"port":s.port,"instance":s.instance})).collect::<Vec<_>>()})
 }
+#[cfg(test)]
 fn discover(
     options: &Options,
     port: &dyn NetworkDiscovery,
     clock: &dyn Clock,
 ) -> Result<(String, Vec<Candidate>), &'static str> {
+    let selected = select_interface(options, port)?;
+    let candidates = discover_on(options, port, clock, &selected).map_err(fail)?;
+    Ok((selected, candidates))
+}
+fn select_interface(
+    options: &Options,
+    port: &dyn NetworkDiscovery,
+) -> Result<String, &'static str> {
     let interfaces = port.interfaces().map_err(fail)?;
     let selected = if let Some(name) = options.get("--interface") {
         name.to_string()
     } else if options.json {
         return Err("interface_required");
+    } else if options.guided && interfaces.len() == 1 {
+        format!("{}@{}", interfaces[0].name, interfaces[0].address)
     } else {
         let n = choose(
             &interfaces,
@@ -177,13 +193,23 @@ fn discover(
         )?;
         format!("{}@{}", interfaces[n].name, interfaces[n].address)
     };
+    Ok(selected)
+}
+fn discover_on(
+    options: &Options,
+    port: &dyn NetworkDiscovery,
+    clock: &dyn Clock,
+    selected: &str,
+) -> tv_domain::PortResult<Vec<Candidate>> {
     let duration: u64 = options
         .get("--duration-ms")
         .unwrap_or("2000")
         .parse()
-        .map_err(|_| "invalid_discovery_duration")?;
+        .map_err(|_| tv_domain::Failure::before("invalid_discovery_duration"))?;
     if !(100..=5000).contains(&duration) {
-        return Err("discovery_duration_out_of_range");
+        return Err(tv_domain::Failure::before(
+            "discovery_duration_out_of_range",
+        ));
     }
     let flag = CancelFlag::default();
     let ctx = Context {
@@ -191,8 +217,24 @@ fn discover(
         cancellation: &flag,
         deadline_monotonic_ms: clock.monotonic_ms() + duration,
     };
-    let candidates = onboarding::discover(port, &selected, &ctx).map_err(fail)?;
-    Ok((selected, candidates))
+    onboarding::discover(port, selected, &ctx)
+}
+fn discovery_error(error: tv_domain::Failure, interface: &str, as_json: bool) {
+    if as_json {
+        emit(
+            json!({"status":"error","code":error.code,"os_error":error.os_error,"interface":interface,"cause":"not_established","next_steps":["Discovery failed. Resume setup to retry explicitly, or use its guided manual endpoint fallback.","No TV authorization or connection was performed."]}),
+            true,
+        );
+    } else {
+        eprintln!(
+            "Discovery failed: {} (OS error: {}). The cause is not established.",
+            error.code,
+            error
+                .os_error
+                .map(|n| n.to_string())
+                .unwrap_or_else(|| "unavailable".into())
+        );
+    }
 }
 fn executable(options: &Options, key: &str, name: &str) -> Result<PathBuf, &'static str> {
     use std::os::unix::fs::PermissionsExt;
@@ -305,28 +347,85 @@ fn ensure_fresh(plan: &SetupPlan, clock: &dyn Clock) -> Result<(), &'static str>
     }
     Ok(())
 }
-fn setup_command(options: &Options) -> Result<i32, &'static str> {
-    if options.dry && options.get("--fixture").is_none() {
+fn setup_command(input: &Options) -> Result<i32, &'static str> {
+    let mut owned = input.clone();
+    let output = PathBuf::from(input.get("--output").unwrap_or("tv-control.local.json"));
+    if input.guided && !input.dry && output.symlink_metadata().is_ok() {
+        use std::os::unix::fs::PermissionsExt;
+        let meta = output
+            .symlink_metadata()
+            .map_err(|_| "existing_config_unreadable")?;
+        if !meta.is_file() || meta.permissions().mode() & 0o077 != 0 {
+            return Err("existing_config_not_private");
+        }
+        Config::from_json(&setup::read_bounded(&output)?)?;
+        emit(
+            json!({"status":"already_configured","message":"Your saved configuration is valid. TV authorization and ChatGPT connection still require explicit verification; no network access was performed.","output":output,"control_verified":false,"executed":false}),
+            input.json,
+        );
+        return Ok(0);
+    }
+    if input.dry && input.get("--fixture").is_none() {
         emit(
             json!({"status":"dry_run","message":"Dry run: no discovery, configuration write or connection performed.","next_steps":["Choose an interface, discover displays, choose a device, preview configuration, then confirm saving.","Use --fixture with --dry-run for an offline full preview."],"network_access":false,"writes":false}),
-            options.json,
+            input.json,
         );
         return Ok(0);
     }
     let clock = SystemClock::default();
-    let port = source(options)?;
-    let (interface, candidates) = if options.get("--manual-endpoint").is_some() {
-        (
-            options
-                .get("--interface")
-                .ok_or("interface_required")?
-                .to_string(),
-            vec![],
-        )
+    let port = source(input)?;
+    let mut progress = progress::Progress::open(input)?;
+    let resumed = if let Some(progress) = progress.as_mut() {
+        progress.restore(&mut owned, &*port)?
     } else {
-        discover(options, &*port, &clock)?
+        false
     };
-    let candidate = if options.get("--manual-endpoint").is_some() || candidates.is_empty() {
+    let options = &owned;
+    let interface = select_interface(options, &*port)?;
+    if let Some(progress) = progress.as_mut() {
+        progress.interface(&interface, &*port)?;
+    }
+    let mut manual = options.get("--manual-endpoint").is_some();
+    let candidates = if manual {
+        vec![]
+    } else {
+        let query = if (resumed || options.guided) && !options.json {
+            match prompt(&format!("Find TVs on {interface}? Type yes to query this LAN, manual to enter a known TV endpoint, or q to stop:"))?.as_str() {
+                "yes" => true,
+                "manual" => { manual=true; false },
+                _ => return Ok(2),
+            }
+        } else {
+            true
+        };
+        if !query {
+            vec![]
+        } else {
+            match discover_on(options, &*port, &clock, &interface) {
+                Ok(candidates) => candidates,
+                Err(error) => {
+                    discovery_error(error, &interface, options.json);
+                    if options.json {
+                        return Ok(1);
+                    }
+                    if !matches!(
+                        error.code,
+                        "mdns_send_failed"
+                            | "ssdp_send_failed"
+                            | "discovery_socket_failed"
+                            | "mdns_socket_failed"
+                            | "discovery_receive_failed"
+                    ) {
+                        return Err(error.code);
+                    }
+                    if prompt("Enter this TV's connection details instead? Type manual, or Enter to stop:")?!="manual" {return Ok(2);}
+                    manual = true;
+                    vec![]
+                }
+            }
+        }
+    };
+    let candidate = if manual || candidates.is_empty() {
         if options.json && options.get("--manual-endpoint").is_none() {
             emit(
                 json!({"status":"no_devices_found","message":"No displays advertised. No configuration saved.","next_steps":guidance(),"candidates":[],"interface":interface}),
@@ -377,6 +476,7 @@ fn setup_command(options: &Options) -> Result<i32, &'static str> {
             let manual_port=candidate.services[0].port;
             if plan.candidate.services.iter().any(|s|s.kind==ServiceKind::AdbTlsPairing && s.port==manual_port) {return Err("pairing_port_cannot_be_control_endpoint");}
             plan=onboarding::plan_setup(candidate,clock.monotonic_ms());
+            manual=true;
         }
     }
     if plan.endpoint.is_none() {
@@ -386,6 +486,9 @@ fn setup_command(options: &Options) -> Result<i32, &'static str> {
         );
         return Ok(2);
     }
+    if let Some(progress) = progress.as_mut() {
+        progress.target(&plan, manual)?;
+    }
     let adb = executable(options, "--adb", "adb")?;
     let curl = executable(options, "--curl", "curl")?;
     let server_port: u16 = options
@@ -394,6 +497,9 @@ fn setup_command(options: &Options) -> Result<i32, &'static str> {
         .parse()
         .map_err(|_| "invalid_server_port")?;
     let config = setup::configuration(&plan, adb, curl, server_port)?;
+    if let Some(progress) = progress.as_mut() {
+        progress.dependencies(&config)?;
+    }
     let mut bytes =
         serde_json::to_vec_pretty(&config).map_err(|_| "configuration_encode_failed")?;
     bytes.push(b'\n');
@@ -421,6 +527,16 @@ fn setup_command(options: &Options) -> Result<i32, &'static str> {
     }
     ensure_fresh(&plan, &clock)?;
     let status = setup::publish(&output, &bytes, options.resume)?;
+    if let Some(progress) = progress.as_mut() {
+        progress.completed()?;
+    }
+    if options.guided {
+        emit(
+            json!({"status":status,"message":"TV configuration saved. TV authorization and ChatGPT connection still need explicit verification; neither was performed.","output":output,"control_verified":false,"executed":false}),
+            options.json,
+        );
+        return Ok(0);
+    }
     let binary = std::env::current_exe().map_err(|_| "executable_unavailable")?;
     let commands = json!([
         [
@@ -506,6 +622,7 @@ pub fn run(command: &str, args: &[String]) -> Result<i32, &'static str> {
             "--server-port",
             "--manual-endpoint",
             "--manual-kind",
+            "--checkpoint",
         ],
     };
     if options
@@ -513,7 +630,8 @@ pub fn run(command: &str, args: &[String]) -> Result<i32, &'static str> {
         .keys()
         .any(|key| !allowed.contains(&key.as_str()))
         || (options.probe && command != "doctor")
-        || ((options.confirm || options.resume) && command != "setup")
+        || ((options.confirm || options.resume || options.no_checkpoint || options.guided)
+            && command != "setup")
     {
         return Err("option_not_supported_for_command");
     }
@@ -544,7 +662,14 @@ pub fn run(command: &str, args: &[String]) -> Result<i32, &'static str> {
             }
             let port = source(&options)?;
             let clock = SystemClock::default();
-            let (interface, candidates) = discover(&options, &*port, &clock)?;
+            let interface = select_interface(&options, &*port)?;
+            let candidates = match discover_on(&options, &*port, &clock, &interface) {
+                Ok(candidates) => candidates,
+                Err(error) => {
+                    discovery_error(error, &interface, options.json);
+                    return Ok(1);
+                }
+            };
             if options.json {
                 emit(
                     json!({"status":"discovered","interface":interface,"simulation":options.get("--fixture").is_some(),"candidates":candidates.iter().map(candidate_json).collect::<Vec<_>>(),"next_steps":if candidates.is_empty(){guidance()}else{vec!["Choose a candidate with setup; discovery does not verify control or grant access."]}}),

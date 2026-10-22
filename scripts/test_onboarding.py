@@ -31,25 +31,25 @@ class Onboarding(unittest.TestCase):
   for device,status in [('screen_192_0_2_20','pairing_required'),('screen_192_0_2_30','debugging_required')]:
    args=self.base.copy();args[args.index('--device')+1]=device;p=self.run_cli('setup',*args,'--json','--confirm');self.assertEqual(p.returncode,2);self.assertEqual(p.value['status'],status);self.assertFalse(self.output.exists())
  def test_interactive_confirmation_and_cancellation(self):
-  args=['--fixture',str(ROOT/'examples/discovery.json'),'--adb',str(self.adb),'--curl',str(self.adb),'--output',str(self.output)]
+  args=['--no-checkpoint','--fixture',str(ROOT/'examples/discovery.json'),'--adb',str(self.adb),'--curl',str(self.adb),'--output',str(self.output)]
   p=self.run_cli('setup',*args,input='1\n1\nno\n');self.assertEqual(p.returncode,2,p.stderr);self.assertFalse(self.output.exists());self.assertIn('Save this private configuration?',p.stderr)
   p=self.run_cli('setup',*args,input='');self.assertEqual(p.returncode,1);self.assertIn('setup_cancelled',p.stderr);self.assertFalse(self.output.exists())
   p=self.run_cli('setup',*args,input='1\n1\nyes\n');self.assertEqual(p.returncode,0,p.stderr);self.assertTrue(self.output.exists())
  def test_selected_dial_display_offers_guided_port_fallback(self):
-  args=['--fixture',str(ROOT/'examples/discovery.json'),'--adb',str(self.adb),'--curl',str(self.adb),'--output',str(self.output)]
+  args=['--no-checkpoint','--fixture',str(ROOT/'examples/discovery.json'),'--adb',str(self.adb),'--curl',str(self.adb),'--output',str(self.output)]
   p=self.run_cli('setup',*args,input='1\n3\nmanual\n5555\nlegacy\nyes\n');self.assertEqual(p.returncode,0,p.stderr);self.assertTrue(self.output.exists())
   config=json.loads(self.output.read_text());self.assertEqual(config['devices']['screen']['endpoint'],'192.0.2.30:5555');self.assertIn('connection port',p.stderr)
  def test_selected_unresolved_display_does_not_use_pairing_port(self):
   data=json.loads((ROOT/'examples/discovery.json').read_text());data['packets'][0]['hex']=data['packets'][0]['hex'][:-2]+'14'
   fixture=self.dir/'unresolved.json';fixture.write_text(json.dumps(data))
-  args=['--fixture',str(fixture),'--adb',str(self.adb),'--curl',str(self.adb),'--output',str(self.output)]
+  args=['--no-checkpoint','--fixture',str(fixture),'--adb',str(self.adb),'--curl',str(self.adb),'--output',str(self.output)]
   p=self.run_cli('setup',*args,input='1\n1\nmanual\n5555\nlegacy\nyes\n');self.assertEqual(p.returncode,0,p.stderr);self.assertTrue(self.output.exists())
   self.output.unlink()
   p=self.run_cli('setup',*args,input='1\n2\n');self.assertEqual(p.returncode,2,p.stderr);self.assertFalse(self.output.exists());self.assertIn('device setup is required',p.stdout)
  def test_empty_discovery_and_guided_manual_fallback(self):
   data=json.loads((ROOT/'examples/discovery.json').read_text());data['packets']=[];fixture=self.dir/'empty.json';fixture.write_text(json.dumps(data))
   p=self.run_cli('setup','--fixture',str(fixture),'--interface','lan-fixture','--json');self.assertEqual(p.value['status'],'no_devices_found')
-  p=self.run_cli('setup','--fixture',str(fixture),'--adb',str(self.adb),'--curl',str(self.adb),'--output',str(self.output),input='1\n192.0.2.10:5555\nlegacy\nyes\n');self.assertEqual(p.returncode,0,p.stderr);self.assertTrue(self.output.exists())
+  p=self.run_cli('setup','--no-checkpoint','--fixture',str(fixture),'--adb',str(self.adb),'--curl',str(self.adb),'--output',str(self.output),input='1\n192.0.2.10:5555\nlegacy\nyes\n');self.assertEqual(p.returncode,0,p.stderr);self.assertTrue(self.output.exists())
  def test_json_requires_explicit_interface_and_selection(self):
   p=self.run_cli('discover','--fixture',str(ROOT/'examples/discovery.json'),'--json');self.assertEqual(p.value['code'],'interface_required')
   p=self.run_cli('setup','--fixture',str(ROOT/'examples/discovery.json'),'--interface','lan-fixture','--json');self.assertEqual(p.value['status'],'device_selection_required');self.assertEqual(p.returncode,2)
@@ -67,4 +67,22 @@ class Onboarding(unittest.TestCase):
  def test_dependency_and_invalid_option_errors_are_structured(self):
   args=self.base.copy();args[args.index('--adb')+1]=str(self.dir/'missing');p=self.run_cli('setup',*args,'--json');self.assertEqual(p.value['code'],'adb_missing_install_official_platform_tools')
   p=self.run_cli('setup','--unknown','--json');self.assertEqual(p.value['code'],'unknown_onboarding_option')
+ def failing_fixture(self):
+  data=json.loads((ROOT/'examples/discovery.json').read_text());data['failure']={'stage':'mdns_send','os_error':13};fixture=self.dir/'network-fixture.json';fixture.write_text(json.dumps(data));return fixture,data
+ def guided_args(self,fixture):
+  return ['--guided','--fixture',str(fixture),'--adb',str(self.adb),'--curl',str(self.adb),'--output',str(self.output)]
+ def test_discovery_errno_is_one_json_error_without_raw_messages(self):
+  fixture,_=self.failing_fixture();p=self.run_cli('discover','--fixture',str(fixture),'--interface','lan-fixture','--json');self.assertEqual(p.returncode,1);self.assertEqual(p.value['code'],'mdns_send_failed');self.assertEqual(p.value['os_error'],13);self.assertEqual(p.value['cause'],'not_established')
+ def test_guided_resume_after_network_failure_and_existing_config_without_network(self):
+  fixture,data=self.failing_fixture();args=self.guided_args(fixture)
+  p=self.run_cli('setup',*args,input='yes\n\n');self.assertEqual(p.returncode,2,p.stderr);self.assertIn('OS error: 13',p.stderr);self.assertFalse(self.output.exists())
+  checkpoint=self.output.with_name(self.output.name+'.setup-state.json');state=json.loads(checkpoint.read_text());self.assertEqual(state['interface'],'lan-fixture@192.0.2.1');self.assertEqual(stat.S_IMODE(checkpoint.stat().st_mode),0o600)
+  data.pop('failure');fixture.write_text(json.dumps(data));p=self.run_cli('setup',*args,input='yes\n1\nyes\n');self.assertEqual(p.returncode,0,p.stderr);self.assertIn('Resuming local setup',p.stderr);self.assertNotIn('Choose the LAN interface',p.stderr);original=self.output.read_bytes()
+  data['failure']={'stage':'mdns_send','os_error':13};fixture.write_text(json.dumps(data));p=self.run_cli('setup',*args);self.assertEqual(p.returncode,0,p.stderr);self.assertIn('saved configuration is valid',p.stdout);self.assertEqual(p.stderr,'');self.assertEqual(self.output.read_bytes(),original)
+ def test_network_failure_offers_manual_fallback_in_same_wizard(self):
+  fixture,_=self.failing_fixture();p=self.run_cli('setup',*self.guided_args(fixture),input='yes\nmanual\n192.0.2.10:5555\nlegacy\nyes\n');self.assertEqual(p.returncode,0,p.stderr);self.assertEqual(json.loads(self.output.read_text())['devices']['screen']['endpoint'],'192.0.2.10:5555')
+ def test_resume_revalidates_interface_and_preserves_corrupt_checkpoint(self):
+  fixture,data=self.failing_fixture();args=self.guided_args(fixture);self.run_cli('setup',*args,input='yes\n\n');checkpoint=self.output.with_name(self.output.name+'.setup-state.json')
+  data['interfaces'][0]['address']='192.0.2.2';fixture.write_text(json.dumps(data));p=self.run_cli('setup',*args,input='q\n');self.assertEqual(p.returncode,1);self.assertIn('saved interface/address changed',p.stderr);self.assertEqual(json.loads(checkpoint.read_text())['interface'],'lan-fixture@192.0.2.2');self.assertFalse(self.output.exists())
+  checkpoint.write_text('{partial');p=self.run_cli('setup',*args);self.assertEqual(p.returncode,1);self.assertIn('checkpoint_corrupt_use_new_path',p.stderr);self.assertEqual(checkpoint.read_text(),'{partial');self.assertFalse(self.output.exists())
 if __name__=='__main__':unittest.main()

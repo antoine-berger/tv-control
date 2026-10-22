@@ -5,8 +5,10 @@
 main() {
 set -eu
 umask 077
-DEFAULT_VERSION=v0.2.2
+DEFAULT_VERSION=v0.2.3
 RELEASE_ROOT=https://github.com/antoine-berger/tv-control/releases/download
+guided=no
+if [ "$#" -eq 0 ]; then guided=yes; fi
 version=$DEFAULT_VERSION
 version_supplied=no
 prefix=
@@ -18,6 +20,7 @@ update=no
 noninteractive=no
 interactive=no
 setup_requested=no
+if [ "$guided" = yes ]; then interactive=yes; setup_requested=yes; fi
 json=no
 dry=no
 work=
@@ -29,7 +32,7 @@ uid=
 usage() {
     cat <<'EOF'
 Usage: sh install.sh [options]
-  --version vX.Y.Z       Pin a release (default v0.2.2; never resolves latest)
+  --version vX.Y.Z       Pin a release (default v0.2.3; never resolves latest)
   --prefix ABSOLUTE_DIR  Dedicated install root (default ~/.local/share/tv-control)
   --non-interactive     Install without prompts; never runs setup or device access
   --interactive         Ask before installation; optionally offer guided setup
@@ -187,6 +190,19 @@ verify_installation() {
     find "$prefix" -type d -print | LC_ALL=C sort > "$work/actual-dirs"
     cmp -s "$work/expected-dirs.sorted" "$work/actual-dirs" || fail unexpected_installation_directories
 }
+run_setup() {
+        config_parent=${XDG_CONFIG_HOME:-$HOME/.config}/tv-control
+        case "$config_parent" in /*) ;; *) fail config_directory_must_be_absolute ;; esac
+        check_ancestors "$config_parent"; mkdir -p "$config_parent"
+        # Installation is complete before the long-running wizard. A crash in setup
+        # must not leave an installer lock or staging directory behind.
+        if [ -n "$work" ]; then
+            case "$work" in "$parent"/.tv-control-stage.*) rm -rf "$work" ;; *) fail unsafe_stage ;; esac
+            work=
+        fi
+        if [ "$lock_owned" = yes ]; then rmdir "$lock"; lock_owned=no; fi
+        "$prefix/versions/$version/tv-control" setup --guided --resume --output "$config_parent/tv-control.local.json" <&3 >&3 2>&3 3<&-
+}
 if [ "$dry" = yes ]; then result planned 'Dry run: no download, installation, setup or authentication performed.'; exit 0; fi
 if [ "$interactive" = yes ]; then
     # Test the redirect in a subshell: failed exec redirects can terminate dash.
@@ -217,8 +233,14 @@ if [ "$mode" = uninstall ]; then
     exit 0
 fi
 if [ -e "$prefix" ]; then
-    [ "$update" = yes ] || fail installation_exists_use_update
     verify_installation
+    if [ "$setup_requested" = yes ] && [ "$active" = "$version" ]; then
+        result already_installed 'Existing installation verified; resuming setup.'
+        run_setup
+        exit 0
+    fi
+    if [ "$guided" = yes ]; then update=yes; fi
+    [ "$update" = yes ] || fail installation_exists_use_update
 else
     [ "$update" = no ] || fail installation_missing
 fi
@@ -317,7 +339,7 @@ else
     activation=
 fi
 result installed 'Installed a verified release. No setup, device access or authentication was performed.'
-if [ "$json" != yes ]; then
+if [ "$json" != yes ] && [ "$guided" != yes ]; then
     printf 'Executable: %s/tv-control\nAdd the installation directory to PATH yourself if desired; no shell startup file was changed.\n' "$prefix"
 fi
 if [ "$interactive" = yes ]; then
@@ -326,10 +348,7 @@ if [ "$interactive" = yes ]; then
         if IFS= read -r answer <&3 && [ "$answer" = y ]; then setup_requested=yes; fi
     fi
     if [ "$setup_requested" = yes ]; then
-        config_parent=${XDG_CONFIG_HOME:-$HOME/.config}/tv-control
-        case "$config_parent" in /*) ;; *) fail config_directory_must_be_absolute ;; esac
-        check_ancestors "$config_parent"; mkdir -p "$config_parent"
-        "$prefix/tv-control" setup --output "$config_parent/tv-control.local.json" <&3 >&3 2>&3 3<&-
+        run_setup
     fi
 fi
 }

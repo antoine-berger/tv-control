@@ -65,3 +65,4 @@ impl MediaCatalogue for Router {
 pub mod discovery;
 
 pub mod setup;
+pub mod setup_checkpoint;

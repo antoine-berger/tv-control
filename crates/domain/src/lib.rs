@@ -99,19 +99,27 @@ pub enum Effect {
 pub struct Failure {
     pub code: &'static str,
     pub effect: Effect,
+    /// Optional numeric operating-system evidence; never a raw message or credential.
+    pub os_error: Option<i32>,
 }
 impl Failure {
     pub const fn before(code: &'static str) -> Self {
         Self {
             code,
             effect: Effect::None,
+            os_error: None,
         }
     }
     pub const fn uncertain(code: &'static str) -> Self {
         Self {
             code,
             effect: Effect::MayHaveChanged,
+            os_error: None,
         }
+    }
+    pub const fn with_os_error(mut self, code: Option<i32>) -> Self {
+        self.os_error = code;
+        self
     }
 }
 pub type PortResult<T> = Result<T, Failure>;

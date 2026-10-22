@@ -24,6 +24,21 @@ struct Packet {
 pub struct FixtureDiscovery {
     interfaces: Vec<Interface>,
     packets: Vec<Packet>,
+    failure: Option<FixtureFailure>,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FixtureFailure {
+    stage: FixtureStage,
+    os_error: Option<i32>,
+}
+#[derive(Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum FixtureStage {
+    Socket,
+    MdnsSend,
+    SsdpSend,
+    Receive,
 }
 impl FixtureDiscovery {
     pub fn from_json(bytes: &[u8]) -> PortResult<Self> {
@@ -51,6 +66,16 @@ impl NetworkDiscovery for FixtureDiscovery {
             .collect())
     }
     fn discover(&self, _: &LocalInterface, ctx: &Context<'_>) -> PortResult<Vec<Candidate>> {
+        ctx.check()?;
+        if let Some(failure) = &self.failure {
+            let code = match failure.stage {
+                FixtureStage::Socket => "discovery_socket_failed",
+                FixtureStage::MdnsSend => "mdns_send_failed",
+                FixtureStage::SsdpSend => "ssdp_send_failed",
+                FixtureStage::Receive => "discovery_receive_failed",
+            };
+            return Err(Failure::before(code).with_os_error(failure.os_error));
+        }
         let mut cache = dns::SnapshotCache::default();
         for packet in &self.packets {
             ctx.check()?;

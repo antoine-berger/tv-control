@@ -11,6 +11,10 @@ use tv_application::{onboarding::NetworkDiscovery, Context};
 use tv_domain::{onboarding::*, Failure, PortResult};
 pub const SSDP_QUERY: &[u8] = b"M-SEARCH * HTTP/1.1\r\nHOST: 239.255.255.250:1900\r\nMAN: \"ssdp:discover\"\r\nMX: 1\r\nST: urn:dial-multiscreen-org:service:dial:1\r\n\r\n";
 pub struct LocalDiscovery;
+/// Preserve numeric evidence without exposing arbitrary OS messages or packet contents.
+pub fn io_failure(stage: &'static str, error: io::Error) -> Failure {
+    Failure::before(stage).with_os_error(error.raw_os_error())
+}
 pub fn interfaces() -> PortResult<Vec<LocalInterface>> {
     let mut root = std::ptr::null_mut();
     // SAFETY: getifaddrs writes a linked list; a guard frees it exactly once.
@@ -133,15 +137,15 @@ impl NetworkDiscovery for LocalDiscovery {
         ctx: &Context<'_>,
     ) -> PortResult<Vec<Candidate>> {
         ctx.check()?;
-        let mdns = socket(interface).map_err(|_| Failure::before("discovery_socket_failed"))?;
+        let mdns = socket(interface).map_err(|e| io_failure("discovery_socket_failed", e))?;
         mdns.set_multicast_ttl_v4(255)
-            .map_err(|_| Failure::before("mdns_socket_failed"))?;
-        let ssdp = socket(interface).map_err(|_| Failure::before("discovery_socket_failed"))?;
+            .map_err(|e| io_failure("mdns_socket_failed", e))?;
+        let ssdp = socket(interface).map_err(|e| io_failure("discovery_socket_failed", e))?;
         mdns.send_to(&dns::query(), ("224.0.0.251", 5353))
-            .map_err(|_| Failure::before("mdns_send_failed"))?;
+            .map_err(|e| io_failure("mdns_send_failed", e))?;
         ctx.check()?;
         ssdp.send_to(SSDP_QUERY, ("239.255.255.250", 1900))
-            .map_err(|_| Failure::before("ssdp_send_failed"))?;
+            .map_err(|e| io_failure("ssdp_send_failed", e))?;
         let stop = ctx.clock.monotonic_ms() + ctx.remaining_ms().saturating_sub(50);
         let mut cache = dns::SnapshotCache::default();
         let mut packet = [0u8; 8193];
@@ -165,7 +169,7 @@ impl NetworkDiscovery for LocalDiscovery {
                     }
                     Ok(_) => {}
                     Err(e) if e.kind() == io::ErrorKind::WouldBlock => {}
-                    Err(_) => return Err(Failure::before("discovery_receive_failed")),
+                    Err(e) => return Err(io_failure("discovery_receive_failed", e)),
                 }
             }
             ctx.wait(5)?;
