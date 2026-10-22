@@ -1,79 +1,75 @@
 # Architecture decisions
 
-## 001 — Rust and strict dependency direction
+## 001 — Dependency direction
 
-Use Rust for a native controller without a GC or embedded browser/model. The
-domain has no dependencies. The application defines `Control`, `DeviceControl`,
-`MediaCatalogue`, `StateStore`, `Clock` and `Cancellation` ports. Adapters implement
-them; the binary composes them. A metadata check enforces the inner dependencies.
-Resource suitability is measured, not inferred from the language alone.
+The Rust domain has no dependencies. The application depends only on the domain
+and defines `Control`, `DeviceControl`, `MediaCatalogue`, `StateStore`, `Clock`
+and `Cancellation` ports. Adapters implement those ports and the binary composes
+them. This keeps protocol, filesystem and environment details out of use cases.
+The [architecture check](../scripts/check_architecture.py) enforces the inner
+crate boundaries. Resource suitability still requires measurement.
 
-## 002 — Reuse maintained transports
+## 002 — External maintained transports
 
-Invoke configured ADB and curl executables. ADB authentication, smart sockets and
-TLS are not reimplemented. curl supplies system TLS and is optional for an ADB-only
-installation. Their RSS, CPU, binaries and any ADB daemon/tunnel are separate costs
-from the Rust controller. The router must provide compatible maintained versions.
-Do not assume an old vendor ADB supports modern pairing or TLS.
+Use configured ADB and curl executables rather than reimplement authentication,
+smart-socket device transport or TLS. Their binaries, processes and any daemon or
+tunnel have costs separate from the controller. ADB includes a read-only version
+probe but remains manager-capable; [dedicated daemon ownership](ADAPTERS.md#adb-daemon-ownership)
+is required. Router packages must be qualified rather than assumed compatible.
 
-## 003 — A bounded synchronous core
+## 003 — Bounded synchronous execution
 
-Use synchronous ports, bounded MCP workers and nonblocking Unix subprocess pipes.
-This avoids an async runtime and reader thread per pipe. libc is confined to
-nonblocking flags and process-group cleanup in the process adapter; unsafe calls
-have ownership comments. No unsafe code is in domain/application. Process groups
-are cleanup, not a security boundary for adversarial executables.
+Use synchronous application ports, bounded MCP workers and nonblocking Unix
+subprocess/stdio I/O. This avoids an async runtime and a reader thread per pipe.
+Unsafe code is confined to adapter-level Unix descriptor/process operations, with
+ownership comments; there is no unsafe domain/application code. Process-group
+cleanup limits local work but is not a sandbox for hostile executables.
 
-## 004 — Deadline is an input contract
+## 004 — Caller-owned deadline
 
-The client supplies an absolute expiry. Convert the remaining budget once to a
-monotonic deadline and check before each operation and after reads. No per-step
-timeout resets the budget. Reservations refuse contention instead of queueing;
-future locking adapters must remain within the same Context. The controller cannot
-recover a missing or fabricated user-submission timestamp from a hosted chat.
-Subprocess spawn and OS scheduling themselves are not hard real-time primitives.
+Accept an absolute expiry and convert its remaining budget once to monotonic
+time. Check it throughout the operation; do not reset timeouts per step.
+Reservations refuse contention rather than queueing mutations. Hosted-chat
+submission time must come from the caller. Process creation and OS scheduling are
+not hard real-time primitives. See [deadlines](CLI.md#deadlines-and-retries).
 
-## 005 — Observation rather than dispatch proves success
+## 005 — State evidence determines success
 
-A 204 or successful subprocess exit is an acknowledgement only. Defined state
-postconditions must be observed before expiry. Jellyfin resume-media requires
-matching media and position progress. No native app launch implies content playback.
-After possible dispatch, cancellation/transport loss/timeout is `outcome_unknown`.
-There is no automatic repeat, fallback key sequence or forced rollback.
+A subprocess exit or HTTP acknowledgement does not prove the requested effect.
+Observe the defined postcondition before expiry. App foreground state proves app
+launch only, and Jellyfin playback needs position evidence. After possible
+dispatch, cancellation or timeout is uncertain. Do not automatically retry, send
+fallback keys or force rollback. See [playback evidence](ADAPTERS.md#playback-evidence).
 
-## 006 — Bounded volatile coordination, honestly scoped
+## 006 — Volatile coordination
 
-An atomic reservation covers request identity and per-device exclusion. The memory
-store retains completed receipts and never evicts in-flight entries. Duplicated
-in-flight calls return busy; completed identical calls replay a marked receipt.
-Changed actions using an ID conflict. A full store refuses new operations.
-The cache is process-local and is lost on restart. Durable idempotency requires a
-future journal/lease adapter and is not claimed by this release. Device locks also
-do not coordinate unrelated controllers or physical remotes.
+Atomically reserve request identity and a physical-device coordination group.
+Retain bounded completed receipts without evicting live entries. Replay completed
+identical calls with a cache marker; reject conflicts and capacity exhaustion.
+State is process-local and lost on restart. Durable idempotency and cross-process
+coordination require future journal/lease adapters. Physical remotes remain outside
+these locks.
 
-## 007 — Configuration carries installation details, not executable logic
+## 007 — Declarative configuration
 
-Use strict JSON with unique aliases and explicit references between devices,
-applications, servers, media and workflows. The CLI loads and validates it before
-composition. Protocol paths, enum names and validation bounds live in code; there
-are no personal device addresses, accounts, titles or filesystem defaults in the
-domain. Workflows currently expand to one configured resume-media intent.
-New behavior requires code and contract tests, not executable strings in JSON.
+Use strict JSON, unique aliases and explicit device/app/server/media/workflow
+references. Configuration contains installation details and secret references,
+not executable logic. Workflows expand to one configured series-resume action.
+New behavior requires code and contract tests. See the
+[configuration reference](CONFIGURATION.md).
 
-## 008 — Narrow transport, separately authorized deployment
+## 008 — Local transport first
 
-MCP stdio is the first incoming adapter, with a CLI for scripts and diagnostics.
-There is no network listener or public endpoint. ChatGPT hosted access needs a
-separate supported connection and permissions. Tunnel setup, service installation,
-tokens, pairing and router configuration are out of the executable's control path.
-No SLO for hosted transport is inferred from local fixture measurements.
+Provide CLI and MCP stdio adapters without a network listener. Hosted access,
+tunnels, installation, pairing, persistent credentials and router configuration
+need separate integration work and authorization. Local fixture performance does
+not establish an end-to-end service-level guarantee. See [MCP integration](MCP.md).
 
-## 009 — Reuse rather than claim invention
+## 009 — Existing automation work
 
-[Browser Use](https://github.com/browser-use/browser-use) demonstrates optional
-vision, grouped actions and reusable sessions. [agent-browser](https://github.com/vercel-labs/agent-browser)
-demonstrates a compact snapshot/batch interface. [brickproof-adb](https://github.com/st412m/brickproof-adb)
-already implements UI dumps and selector-based DPAD navigation. This project does
-not invent those capabilities, embed them or claim their performance on a TV.
-The MVP focuses on typed media intents, deadlines, qualified adapters and evidence.
-Any source reuse must preserve its upstream licence and be reviewed separately.
+[Browser Use](https://github.com/browser-use/browser-use),
+[agent-browser](https://github.com/vercel-labs/agent-browser) and
+[brickproof-adb](https://github.com/st412m/brickproof-adb) are related automation
+projects. Their browser/vision or UI-navigation capabilities are not embedded
+backends here, and their performance cannot be attributed to this controller.
+Any future source reuse needs a separate license and integration review.

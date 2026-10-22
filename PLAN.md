@@ -1,23 +1,26 @@
-# Delivery checklist
+# Qualification status
 
-Goals tooling is not exposed in the task's execution interface. No `/goal`
-activation is claimed. This checklist records the implementation scope.
+Implemented behavior and deployment qualification are separate. Use current
+[CI results](https://github.com/antoine-berger/tv-control/actions) for automated
+checks and record the tested source commit for any hardware result.
 
-- [x] Independent domain and application crates with outbound ports.
-- [x] Typed, bounded configuration with secret references and no personal defaults.
-- [x] CLI and narrow cancellable MCP stdio transport.
-- [x] Explicit maintained ADB executable adapter; version guard with documented server-replacement limitation.
-- [x] Jellyfin adapter and mock contracts, exact identity and patched baseline checks.
-- [x] Deadline, postcondition, uncertain-result and coordination tests.
-- [x] Final format/lint/test and architecture checks after hardening.
-- [x] ARM64 musl crossbuild and static ELF inspection.
-- [x] Host binary/RSS/CPU/latency measurements, scope explicitly labelled.
-- [x] Tracked-content privacy audit and initial public repository publication.
-- [ ] Independent review and CI success on the pushed commit.
-- [x] Read-only hardware preflight (initial commit only; 430 ms local wall time).
-- [ ] Bounded reversible hardware tests on the corrected build.
-- [ ] Hosted main-chat integration and user-to-TV latency acceptance.
-- [ ] Installed router ABI inspection, smoke test and resource qualification.
+| Area | Evidence and remaining work |
+| --- | --- |
+| Controller core | Typed intents, deadlines, postconditions and bounded volatile coordination; contract tests cover these behaviors |
+| CLI and MCP | Local CLI and bounded cancellable stdio server; loopback integration fixtures |
+| ADB | Explicit-target executable adapter with version preflight; dedicated daemon required and check/use race remains |
+| Jellyfin | Exact session/media selection, version gate and position evidence; mock and loopback contracts |
+| Native builds | Linux/macOS CI; see current run status rather than assuming a past run covers a new commit |
+| ARM64 packaging | musl cross-build and static ELF inspection; installed-router execution remains untested |
+| Host performance | Historical macOS snapshot for the initial build; no measurements of later corrections |
+| Hardware | Initial read-only preflight is historical evidence only; qualification of corrected builds requires separately recorded results |
+| Hosted integration | No connected ChatGPT plugin or bridge; local MCP operation does not establish hosted access |
+| End-to-end latency | Ten-second user-submission-to-physical-effect and displayed-confirmation target remains unproven |
+| Router resources | Firmware ABI, smoke test and complete controller/ADB/curl/tunnel resource costs remain unqualified |
 
-The remaining hardware and integration items are independent qualification steps. Publishing a build or
-passing fixture tests does not complete them.
+The [review notes](docs/REVIEW.md) identify corrected regressions and the remaining
+ADB limitation. The [acceptance protocol](docs/ACCEPTANCE.md) defines evidence for
+hardware and latency claims. [Router packaging](docs/ROUTER.md) and the
+[benchmark scope](benchmarks/README.md) describe what their existing artifacts
+can establish. No installation or hardware qualification follows automatically
+from publication or a successful fixture.

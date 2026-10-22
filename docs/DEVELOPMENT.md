@@ -1,0 +1,93 @@
+# Development
+
+Build on Linux or macOS with a stable Rust toolchain and native linker. Python 3
+is used for repository checks and stdio integration fixtures. CI tests native Linux
+and macOS builds and cross-builds the ARM64 musl candidate; it does not run on a
+router or TV. See [quick start](../README.md#quick-start) for the release build.
+
+## Architecture
+
+```text
+CLI / MCP stdio -> Control port -> application service
+                                      |
+                 device | catalogue | state | clock | cancellation ports
+                                      |
+                   ADB | Jellyfin/curl | memory | system adapters
+
+Dependency direction: domain <- application <- adapters <- CLI composition
+```
+
+| Crate | Responsibility |
+| --- | --- |
+| `tv-domain` | Actions, requests, observed evidence and receipts; no dependencies |
+| `tv-application` | Use cases, deadlines, postconditions and ports; depends only on the domain |
+| `tv-adapters` | Configuration, serialization, ADB, curl, bounded subprocesses/stdio and memory state |
+| `tv-control` | CLI composition and MCP request handling |
+
+The application has no JSON, environment, filesystem, ADB or HTTP knowledge.
+`scripts/check_architecture.py` enforces the domain/application dependency boundary.
+Direct third-party dependencies are Serde, serde_json and libc; `Cargo.lock` pins
+the dependency graph. The binary embeds no model, browser, Rust async runtime or
+HTTP/TLS stack. ADB and curl remain external runtime dependencies for their
+respective adapters.
+
+## Checks
+
+Run from the repository root:
+
+```sh
+cargo fmt --all --check
+cargo clippy --locked --workspace --all-targets -- -D warnings
+cargo test --locked --workspace
+cargo build --locked --release
+python3 scripts/check_architecture.py
+python3 -W error::ResourceWarning scripts/test_mcp.py target/release/tv-control
+./target/release/tv-control validate examples/config.json
+python3 scripts/audit_publication.py
+```
+
+The automated suite uses fake clocks, injected ports, fake executables and loopback
+HTTP/ADB fixtures. It does not require a real TV, Jellyfin account, pairing or a
+router installation. Fixture success does not qualify physical playback.
+
+Subprocess invocations own Unix process groups and bounded nonblocking pipes.
+Cleanup terminates owned processes on cancellation, timeout and exit. Inspect
+ownership and deadline behavior when changing these adapters. Executables are
+trusted configuration; process groups are not a security boundary.
+
+## Changing behavior
+
+Add domain vocabulary only when needed, express behavior through application
+ports, then implement and test adapters. Preserve the distinction between failure
+before dispatch and an uncertain outcome after possible mutation. Acknowledged
+dispatch must not become success without its defined postcondition.
+
+New backends need capability reporting, explicit identity matching, bounded I/O
+and contract tests. New configuration fields need validation and generic examples.
+Keep workflow configuration declarative; it currently expands to one configured
+series-resume intent. See the [architecture decisions](ADR.md) for the rationale
+and [review notes](REVIEW.md) for regressions that must stay covered.
+
+## Measurement and qualification
+
+Use the [benchmark procedure](../benchmarks/README.md) for controller-only host
+measurements and the [acceptance protocol](ACCEPTANCE.md) for hardware/integration
+qualification. Record the source commit and environment with every result. Do not
+reuse old host figures as evidence for a new build, an ADB daemon, a tunnel or
+router firmware. [PLAN.md](../PLAN.md) tracks the remaining qualification scope.
+
+Router packaging has a separate [cross-build recipe](ROUTER.md). No test or
+packaging command installs a service, configures a network or grants TV access.
+
+## Public contributions
+
+Keep real endpoints, credentials, user/device IDs, media history, captures and
+private filesystem paths out of commits and issue reports. Public examples use
+reserved documentation addresses and fictitious identifiers. The publication
+scanner is a baseline check, not a complete secret detector; also review staged
+content and untracked files before publishing.
+
+For bug reports, include the source commit, platform, adapter/client versions,
+sanitized configuration shape and result codes. Describe expected versus
+observed behavior and whether dispatch may have occurred. Never replay an uncertain
+mutation just to reproduce a log.
