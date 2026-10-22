@@ -1,8 +1,11 @@
 #!/bin/sh
 # Auditable user installation; no sudo, shell-profile edits, daemon or implicit discovery.
+# Parse the complete function before running it: a fragmented pipe remains code,
+# never confirmation or wizard input. Interactive input uses the controlling TTY.
+main() {
 set -eu
 umask 077
-DEFAULT_VERSION=v0.2.1
+DEFAULT_VERSION=v0.2.2
 RELEASE_ROOT=https://github.com/antoine-berger/tv-control/releases/download
 version=$DEFAULT_VERSION
 version_supplied=no
@@ -26,7 +29,7 @@ uid=
 usage() {
     cat <<'EOF'
 Usage: sh install.sh [options]
-  --version vX.Y.Z       Pin a release (default v0.2.1; never resolves latest)
+  --version vX.Y.Z       Pin a release (default v0.2.2; never resolves latest)
   --prefix ABSOLUTE_DIR  Dedicated install root (default ~/.local/share/tv-control)
   --non-interactive     Install without prompts; never runs setup or device access
   --interactive         Ask before installation; optionally offer guided setup
@@ -49,12 +52,15 @@ result() {
         printf '{"status":"%s","version":"%s","prefix":"%s","setup_started":false,"path_modified":false}\n' "$1" "$(escape_json "$version")" "$(escape_json "$prefix")"
     else
         printf '%s\n' "$2"
-        printf 'Installation directory: %s\n' "$prefix"
+        if [ "$1" != cancelled ]; then printf 'Installation directory: %s\n' "$prefix"; fi
     fi
 }
 fail() {
     result_emitted=yes
     if [ "$json" = yes ]; then printf '{"status":"error","code":"%s"}\n' "$1"; else printf 'tv-control installer: %s\n' "$1" >&2; fi
+    if [ "$json" != yes ] && [ "$1" = interactive_terminal_required ]; then
+        printf 'Run this interactive command in a terminal, or use --json/--non-interactive without --setup. No installation changes were made.\n' >&2
+    fi
     exit 1
 }
 cleanup() {
@@ -183,8 +189,12 @@ verify_installation() {
 }
 if [ "$dry" = yes ]; then result planned 'Dry run: no download, installation, setup or authentication performed.'; exit 0; fi
 if [ "$interactive" = yes ]; then
-    printf 'Operation: %s; release: %s; directory: %s\nContinue? Type yes: ' "$mode" "$version" "$prefix" >&2
-    IFS= read -r answer || fail cancelled
+    # Test the redirect in a subshell: failed exec redirects can terminate dash.
+    if ! ( : <>/dev/tty ) 2>/dev/null; then fail interactive_terminal_required; fi
+    exec 3<>/dev/tty
+    [ -t 3 ] || fail interactive_terminal_required
+    printf 'Operation: %s; release: %s; directory: %s\nContinue? Type yes: ' "$mode" "$version" "$prefix" >&3
+    IFS= read -r answer <&3 || { result cancelled 'Cancelled; no changes made.'; exit 2; }
     [ "$answer" = yes ] || { result cancelled 'Cancelled; no changes made.'; exit 2; }
 fi
 # Parent creation is user-scoped; no privileged commands are used.
@@ -312,13 +322,15 @@ if [ "$json" != yes ]; then
 fi
 if [ "$interactive" = yes ]; then
     if [ "$setup_requested" != yes ]; then
-        printf 'Run guided setup now? It can query the LAN interface you choose; no pairing/auth is automatic. [y/N]: ' >&2
-        if IFS= read -r answer && [ "$answer" = y ]; then setup_requested=yes; fi
+        printf 'Run guided setup now? It can query the LAN interface you choose; no pairing/auth is automatic. [y/N]: ' >&3
+        if IFS= read -r answer <&3 && [ "$answer" = y ]; then setup_requested=yes; fi
     fi
     if [ "$setup_requested" = yes ]; then
         config_parent=${XDG_CONFIG_HOME:-$HOME/.config}/tv-control
         case "$config_parent" in /*) ;; *) fail config_directory_must_be_absolute ;; esac
         check_ancestors "$config_parent"; mkdir -p "$config_parent"
-        "$prefix/tv-control" setup --output "$config_parent/tv-control.local.json"
+        "$prefix/tv-control" setup --output "$config_parent/tv-control.local.json" <&3 >&3 2>&3 3<&-
     fi
 fi
+}
+main "$@"

@@ -11,7 +11,7 @@ repository does not provide a connected ChatGPT plugin or hosted endpoint.
 ## Guided installation and setup
 
 Start with the [reviewable shell installer](docs/INSTALLATION.md), or the manual
-archive path. Use `sh install.sh --version v0.2.1 --setup` after download, checksum
+archive path. Use `sh install.sh --version v0.2.2 --setup` after download, checksum
 verification and inspection. Agent mode uses `--json` and never launches setup.
 
 See [download, guided setup and direct ChatGPT connection](docs/ONBOARDING.md).

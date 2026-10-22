@@ -1,7 +1,8 @@
 # User-scoped shell installer
 
-The `v0.2.1` patch provides the installer, its SHA-256 file and four platform
-archives. It leaves the existing `v0.2.0` assets unchanged. Releases are pinned;
+The `v0.2.2` patch fixes interactive installation from a pipe and provides the
+installer, its SHA-256 file and four platform archives. It leaves the existing
+`v0.2.0` and `v0.2.1` assets unchanged. Releases are pinned;
 there is no request to a moving `latest` endpoint.
 
 ## Review before execution
@@ -16,28 +17,44 @@ they are not an independent signature or protection against publisher compromise
 An independently obtained archive hash can be pinned with `--sha256 HEX`.
 
 ```sh
-mkdir tv-control-installer-v0.2.1
-cd tv-control-installer-v0.2.1
-curl --fail --location --proto '=https' --proto-redir '=https' --tlsv1.2 --output install.sh https://github.com/antoine-berger/tv-control/releases/download/v0.2.1/install.sh
-curl --fail --location --proto '=https' --proto-redir '=https' --tlsv1.2 --output install.sh.sha256 https://github.com/antoine-berger/tv-control/releases/download/v0.2.1/install.sh.sha256
+mkdir tv-control-installer-v0.2.2
+cd tv-control-installer-v0.2.2
+curl --fail --location --proto '=https' --proto-redir '=https' --tlsv1.2 --output install.sh https://github.com/antoine-berger/tv-control/releases/download/v0.2.2/install.sh
+curl --fail --location --proto '=https' --proto-redir '=https' --tlsv1.2 --output install.sh.sha256 https://github.com/antoine-berger/tv-control/releases/download/v0.2.2/install.sh.sha256
 shasum -a 256 -c install.sh.sha256
 less install.sh
-sh install.sh --version v0.2.1 --setup
+sh install.sh --version v0.2.2 --setup
 ```
 
 On Linux use `sha256sum -c install.sh.sha256` if `shasum` is unavailable.
 Run each step only after the previous one succeeds. `--setup` explicitly starts
 the guided CLI after interactive installation confirmation. It is incompatible
 with `--json` and `--non-interactive`; agents cannot implicitly start discovery.
-For an unattended installation use `sh install.sh --version v0.2.1 --json`.
+For an unattended installation use `sh install.sh --version v0.2.2 --json`.
 
 
-Downloading then executing leaves a review opportunity. A `curl | sh` one-liner
-executes downloaded code before inspection and trusts the same distribution
-channel; it is not the recommended default. The installer requires explicit
-`--non-interactive` when stdin is a pipe. It never invokes sudo or edits shell
-startup files. Tests install only into disposable temporary prefixes; existing user installations
-are not touched.
+Downloading then executing leaves a review opportunity. If you prefer a direct
+URL, this explicitly starts interactive setup from a pinned release:
+
+```sh
+curl --fail --location --proto '=https' --proto-redir '=https' --tlsv1.2 https://github.com/antoine-berger/tv-control/releases/download/v0.2.2/install.sh | sh -s -- --version v0.2.2 --setup
+```
+
+This executes downloaded code without the separate inspection/checksum step and
+trusts GitHub and the publisher. The download-and-review path above remains the
+recommended default. Pipe mode does not imply consent: installation still asks
+for `yes`. Confirmations and the wizard use the controlling terminal
+(`/dev/tty`), never the script stream. The entire installer function is parsed
+before it runs, including when the download arrives in fragments. A missing
+controlling terminal gives `interactive_terminal_required` before any installation
+write. `--interactive` has the same terminal requirement; there is no fallback
+that consumes piped data as answers. `--json` or `--non-interactive` work without
+a terminal and never start setup. `--dry-run` does not open a terminal or write.
+
+The installer never invokes sudo or edits shell startup files. Tests install
+only into disposable temporary prefixes; existing user installations are not
+touched. PTY tests feed code through a separate fragmented pipe and keyboard
+answers through the terminal; the wizard is a harmless native test program.
 
 ## Layout and activation
 
@@ -51,7 +68,7 @@ tv-control/
   .tv-control-owner
   current
   tv-control                 # small launcher
-  versions/v0.2.1/
+  versions/v0.2.2/
     tv-control               # verified release binary
     .receipt
     .manifest
@@ -66,8 +83,8 @@ lock serializes installer operations. This is not a security boundary against a
 hostile process running as the same user, nor a filesystem durability guarantee.
 
 ```sh
-sh install.sh --non-interactive --version v0.2.1
-sh install.sh --non-interactive --version v0.2.1 --update
+sh install.sh --non-interactive --version v0.2.2
+sh install.sh --non-interactive --version v0.2.2 --update
 sh install.sh --non-interactive --uninstall
 ```
 
