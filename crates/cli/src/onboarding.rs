@@ -3,7 +3,7 @@ use serde_json::{json, Value};
 use std::{
     collections::BTreeMap,
     io::{self, BufRead, Read, Write},
-    net::SocketAddrV4,
+    net::{Ipv4Addr, SocketAddrV4},
     path::{Path, PathBuf},
     sync::Arc,
 };
@@ -162,6 +162,7 @@ fn candidate_json(c: &Candidate) -> Value {
 fn discover(
     options: &Options,
     port: &dyn NetworkDiscovery,
+    clock: &dyn Clock,
 ) -> Result<(String, Vec<Candidate>), &'static str> {
     let interfaces = port.interfaces().map_err(fail)?;
     let selected = if let Some(name) = options.get("--interface") {
@@ -184,10 +185,9 @@ fn discover(
     if !(100..=5000).contains(&duration) {
         return Err("discovery_duration_out_of_range");
     }
-    let clock = SystemClock::default();
     let flag = CancelFlag::default();
     let ctx = Context {
-        clock: &clock,
+        clock,
         cancellation: &flag,
         deadline_monotonic_ms: clock.monotonic_ms() + duration,
     };
@@ -241,12 +241,18 @@ fn manual_candidate(
     options: &Options,
     port: &dyn NetworkDiscovery,
     interactive: bool,
+    selected_address: Option<Ipv4Addr>,
 ) -> Result<Candidate, &'static str> {
     let endpoint = if let Some(value) = options.get("--manual-endpoint") {
         value.to_string()
     } else if interactive {
         eprintln!("{}", guidance().join("\n"));
-        prompt("Enter the TV's connection IPv4:port from its debugging settings (not the pairing port), or q:")?
+        if let Some(address) = selected_address {
+            let port:u16=prompt("Enter this display's connection port from its debugging settings (not a pairing port), or q:")?.parse().map_err(|_|"invalid_manual_endpoint")?;
+            format!("{address}:{port}")
+        } else {
+            prompt("Enter the TV's connection IPv4:port from its debugging settings (not the pairing port), or q:")?
+        }
     } else {
         return Err("no_devices_found");
     };
@@ -290,6 +296,15 @@ fn manual_candidate(
         }],
     })
 }
+fn ensure_fresh(plan: &SetupPlan, clock: &dyn Clock) -> Result<(), &'static str> {
+    if plan.candidate.services.iter().any(|s| {
+        s.valid_until_monotonic_ms
+            .is_some_and(|until| until <= clock.monotonic_ms())
+    }) {
+        return Err("discovery_expired_rediscover");
+    }
+    Ok(())
+}
 fn setup_command(options: &Options) -> Result<i32, &'static str> {
     if options.dry && options.get("--fixture").is_none() {
         emit(
@@ -298,7 +313,7 @@ fn setup_command(options: &Options) -> Result<i32, &'static str> {
         );
         return Ok(0);
     }
-    let discovery_started = std::time::Instant::now();
+    let clock = SystemClock::default();
     let port = source(options)?;
     let (interface, candidates) = if options.get("--manual-endpoint").is_some() {
         (
@@ -309,7 +324,7 @@ fn setup_command(options: &Options) -> Result<i32, &'static str> {
             vec![],
         )
     } else {
-        discover(options, &*port)?
+        discover(options, &*port, &clock)?
     };
     let candidate = if options.get("--manual-endpoint").is_some() || candidates.is_empty() {
         if options.json && options.get("--manual-endpoint").is_none() {
@@ -325,7 +340,7 @@ fn setup_command(options: &Options) -> Result<i32, &'static str> {
             ..Options::default()
         };
         bound.values.insert("--interface".into(), interface.clone());
-        manual_candidate(&bound, &*port, !options.json)?
+        manual_candidate(&bound, &*port, !options.json, None)?
     } else if let Some(id) = options.get("--device") {
         candidates
             .iter()
@@ -346,10 +361,27 @@ fn setup_command(options: &Options) -> Result<i32, &'static str> {
         )?;
         candidates[n].clone()
     };
-    let plan = onboarding::plan_setup(candidate, discovery_started.elapsed().as_millis() as u64);
+    let mut plan = onboarding::plan_setup(candidate, clock.monotonic_ms());
+    if plan.endpoint.is_none()
+        && !options.json
+        && matches!(
+            plan.readiness,
+            SetupReadiness::DebuggingRequired | SetupReadiness::AddressUnresolved
+        )
+    {
+        eprintln!("This display has no verified ADB connection endpoint. Pairing ports are never control ports.");
+        if prompt("Enter a connection port from this TV's debugging settings? Type manual, or press Enter to stop:")?=="manual" {
+            let mut bound=Options{values:options.values.clone(),..Options::default()};
+            bound.values.insert("--interface".into(),interface.clone());
+            let candidate=manual_candidate(&bound,&*port,true,Some(plan.candidate.address))?;
+            let manual_port=candidate.services[0].port;
+            if plan.candidate.services.iter().any(|s|s.kind==ServiceKind::AdbTlsPairing && s.port==manual_port) {return Err("pairing_port_cannot_be_control_endpoint");}
+            plan=onboarding::plan_setup(candidate,clock.monotonic_ms());
+        }
+    }
     if plan.endpoint.is_none() {
         emit(
-            json!({"status":readiness(&plan.readiness),"message":"Display detected; device setup is required before a control configuration can be saved.","candidate":candidate_json(&plan.candidate),"next_steps":guidance(),"writes":false}),
+            json!({"status":readiness(&plan.readiness),"message":"Display detected; device setup is required before a control configuration can be saved.","candidate":candidate_json(&plan.candidate),"manual_fallback":{"address":plan.candidate.address.to_string(),"interface":interface,"requires":["connection_port_from_tv_settings_not_pairing_port","explicit_legacy_or_tls_protocol"]},"next_steps":guidance(),"writes":false}),
             options.json,
         );
         return Ok(2);
@@ -387,12 +419,7 @@ fn setup_command(options: &Options) -> Result<i32, &'static str> {
             return Ok(2);
         }
     }
-    if plan.candidate.services.iter().any(|s| {
-        s.valid_until_monotonic_ms
-            .is_some_and(|until| until <= discovery_started.elapsed().as_millis() as u64)
-    }) {
-        return Err("discovery_expired_rediscover");
-    }
+    ensure_fresh(&plan, &clock)?;
     let status = setup::publish(&output, &bytes, options.resume)?;
     let binary = std::env::current_exe().map_err(|_| "executable_unavailable")?;
     let commands = json!([
@@ -516,7 +543,8 @@ pub fn run(command: &str, args: &[String]) -> Result<i32, &'static str> {
                 return Ok(0);
             }
             let port = source(&options)?;
-            let (interface, candidates) = discover(&options, &*port)?;
+            let clock = SystemClock::default();
+            let (interface, candidates) = discover(&options, &*port, &clock)?;
             if options.json {
                 emit(
                     json!({"status":"discovered","interface":interface,"simulation":options.get("--fixture").is_some(),"candidates":candidates.iter().map(candidate_json).collect::<Vec<_>>(),"next_steps":if candidates.is_empty(){guidance()}else{vec!["Choose a candidate with setup; discovery does not verify control or grant access."]}}),
@@ -574,5 +602,48 @@ pub fn run(command: &str, args: &[String]) -> Result<i32, &'static str> {
             }
         }
         _ => Err("unknown_onboarding_command"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    struct MenuClock(AtomicU64);
+    impl Clock for MenuClock {
+        fn unix_ms(&self) -> u64 {
+            0
+        }
+        fn monotonic_ms(&self) -> u64 {
+            self.0.load(Ordering::SeqCst)
+        }
+        fn sleep_ms(&self, ms: u64) {
+            self.0.fetch_add(ms, Ordering::SeqCst);
+        }
+    }
+    #[test]
+    fn slow_interface_choice_does_not_age_a_later_fresh_advertisement() {
+        // Simulate 31 seconds spent at the interface menu before any query/reply.
+        let clock = MenuClock(AtomicU64::new(31_000));
+        let port = FixtureDiscovery::from_json(include_bytes!("../../../examples/discovery.json"))
+            .unwrap();
+        let mut options = Options::default();
+        options
+            .values
+            .insert("--interface".into(), "lan-fixture".into());
+        let (_, candidates) = discover(&options, &port, &clock).unwrap();
+        let candidate = candidates
+            .into_iter()
+            .find(|c| c.id == "screen_192_0_2_10")
+            .unwrap();
+        let plan = onboarding::plan_setup(candidate, clock.monotonic_ms());
+        assert!(plan.endpoint.is_some());
+        clock.sleep_ms(1000); // The user now confirms a still-fresh snapshot.
+        assert_eq!(ensure_fresh(&plan, &clock), Ok(()));
+        clock.sleep_ms(29_000);
+        assert_eq!(
+            ensure_fresh(&plan, &clock),
+            Err("discovery_expired_rediscover")
+        );
     }
 }

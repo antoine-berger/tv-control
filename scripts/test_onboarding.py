@@ -35,6 +35,17 @@ class Onboarding(unittest.TestCase):
   p=self.run_cli('setup',*args,input='1\n1\nno\n');self.assertEqual(p.returncode,2,p.stderr);self.assertFalse(self.output.exists());self.assertIn('Save this private configuration?',p.stderr)
   p=self.run_cli('setup',*args,input='');self.assertEqual(p.returncode,1);self.assertIn('setup_cancelled',p.stderr);self.assertFalse(self.output.exists())
   p=self.run_cli('setup',*args,input='1\n1\nyes\n');self.assertEqual(p.returncode,0,p.stderr);self.assertTrue(self.output.exists())
+ def test_selected_dial_display_offers_guided_port_fallback(self):
+  args=['--fixture',str(ROOT/'examples/discovery.json'),'--adb',str(self.adb),'--curl',str(self.adb),'--output',str(self.output)]
+  p=self.run_cli('setup',*args,input='1\n3\nmanual\n5555\nlegacy\nyes\n');self.assertEqual(p.returncode,0,p.stderr);self.assertTrue(self.output.exists())
+  config=json.loads(self.output.read_text());self.assertEqual(config['devices']['screen']['endpoint'],'192.0.2.30:5555');self.assertIn('connection port',p.stderr)
+ def test_selected_unresolved_display_does_not_use_pairing_port(self):
+  data=json.loads((ROOT/'examples/discovery.json').read_text());data['packets'][0]['hex']=data['packets'][0]['hex'][:-2]+'14'
+  fixture=self.dir/'unresolved.json';fixture.write_text(json.dumps(data))
+  args=['--fixture',str(fixture),'--adb',str(self.adb),'--curl',str(self.adb),'--output',str(self.output)]
+  p=self.run_cli('setup',*args,input='1\n1\nmanual\n5555\nlegacy\nyes\n');self.assertEqual(p.returncode,0,p.stderr);self.assertTrue(self.output.exists())
+  self.output.unlink()
+  p=self.run_cli('setup',*args,input='1\n2\n');self.assertEqual(p.returncode,2,p.stderr);self.assertFalse(self.output.exists());self.assertIn('device setup is required',p.stdout)
  def test_empty_discovery_and_guided_manual_fallback(self):
   data=json.loads((ROOT/'examples/discovery.json').read_text());data['packets']=[];fixture=self.dir/'empty.json';fixture.write_text(json.dumps(data))
   p=self.run_cli('setup','--fixture',str(fixture),'--interface','lan-fixture','--json');self.assertEqual(p.value['status'],'no_devices_found')

@@ -101,8 +101,10 @@ Names are untrusted labels. A name does not establish TV model, OS, compatibilit
 identity or authorization. IPv6, cross-VLAN discovery and universal Fire TV
 coverage are not implemented. Multiple addresses on one interface can be selected
 explicitly as `NAME@IPv4`. Different addresses are not asserted to be one physical
-TV. A pairing-only result needs explicit pairing and rediscovery. DIAL-only results
-need guided debugging setup or manual fallback. Multiple eligible endpoints stay
+TV. A pairing-only result needs explicit pairing and rediscovery. Selecting a DIAL-only
+or unresolved result offers a guided manual connection-port fallback using the
+already selected address; the protocol must be chosen explicitly. Pairing-only
+results never reuse their advertised port for control. Multiple eligible endpoints stay
 ambiguous. Receiver discovery does not implement Cast playback.
 
 Android TV wireless-debugging availability depends on version/vendor; do not
