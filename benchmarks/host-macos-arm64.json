@@ -1,0 +1,45 @@
+{
+  "scope": "host_only_no_device_no_chat_no_adb_daemon_no_tunnel",
+  "system": "Darwin",
+  "machine": "arm64",
+  "compiler": "rustc 1.99.1",
+  "binary_bytes": 603456,
+  "binary_sha256": "77ec34f8625aa374d327f8826eb64e20a375973c3d38efabebc15652b46c55c5",
+  "cold_cli_validation": {
+    "samples": 50,
+    "p50_ms": 5.520375,
+    "p95_ms": 5.8085,
+    "max_ms": 6.538
+  },
+  "warm_stdio_ping": {
+    "samples": 1000,
+    "p50_ms": 0.0195,
+    "p95_ms": 0.0215,
+    "max_ms": 0.120208
+  },
+  "idle": {
+    "rss_samples_bytes": [
+      2129920,
+      2129920,
+      2113536,
+      2113536,
+      1245184
+    ],
+    "rss_max_bytes": 2129920,
+    "child_peak_rss_bytes": 2129920,
+    "wall_seconds": 5.07611975,
+    "cpu_seconds": 0.0032259999999999997,
+    "cpu_percent_one_core": 0.0635524802187734,
+    "cpu_scope": "server_process_startup_initialization_idle_shutdown_average"
+  },
+  "end_to_end_user_to_tv": "not_measured",
+  "router_runtime": "not_tested",
+  "loopback_jellyfin_mcp": {
+    "samples": 20,
+    "p50_ms": 140.9561875,
+    "p95_ms": 170.564333,
+    "max_ms": 179.988792,
+    "server_peak_rss_bytes": 3063808,
+    "scope": "host_stdio_to_loopback_http_fixture_postcondition_no_physical_media"
+  }
+}

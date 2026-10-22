@@ -1,0 +1,11 @@
+/target/
+/.toolchain/
+/.local/
+/benchmarks/local-*.json
+*.local.json
+.env
+*.key
+*.pem
+adbkey*
+/dist/
+__pycache__/

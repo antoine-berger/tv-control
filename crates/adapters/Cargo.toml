@@ -1,0 +1,12 @@
+[package]
+name = "tv-adapters"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+tv-domain.workspace = true
+tv-application.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+libc.workspace = true

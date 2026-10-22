@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "tv-control": {
+      "command": "/opt/tv-control/tv-control",
+      "args": ["mcp", "/etc/tv-control/config.local.json"]
+    }
+  }
+}

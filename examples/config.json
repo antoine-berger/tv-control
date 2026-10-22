@@ -1,0 +1,40 @@
+{
+  "version": 1,
+  "preferences": {
+    "max_budget_ms": 10000,
+    "verification_poll_ms": 50,
+    "process_poll_ms": 5,
+    "max_output_bytes": 65536,
+    "max_frame_bytes": 16384,
+    "max_inflight": 2,
+    "dedup_entries": 256,
+    "dedup_retention_ms": 60000
+  },
+  "executables": { "adb": "/usr/bin/adb", "curl": "/usr/bin/curl" },
+  "devices": {
+    "screen": {
+      "adapter": "adb",
+      "endpoint": "192.0.2.10:5555",
+      "server_host": "127.0.0.1",
+      "server_port": 15037,
+      "media_app": "player",
+      "volume_max_index": null
+    },
+    "media_screen": {
+      "adapter": "jellyfin",
+      "server": "library",
+      "user_id": "example_user",
+      "device_id": "example_device"
+    }
+  },
+  "apps": { "player": { "package": "org.example.player" } },
+  "servers": {
+    "library": {
+      "base_url": "https://media.example.invalid",
+      "token_env": "TV_LIBRARY_TOKEN",
+      "allow_insecure_http": false
+    }
+  },
+  "media": { "series": { "server": "library", "series_id": "example_series" } },
+  "workflows": { "continue_series": { "device": "media_screen", "media": "series" } }
+}

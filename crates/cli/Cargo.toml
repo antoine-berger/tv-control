@@ -1,0 +1,12 @@
+[package]
+name = "tv-control"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+tv-domain.workspace = true
+tv-application.workspace = true
+tv-adapters.workspace = true
+serde.workspace = true
+serde_json.workspace = true
