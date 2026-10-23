@@ -5,7 +5,7 @@ BINARY=str(pathlib.Path(sys.argv.pop(1)).resolve()) if len(sys.argv)>1 else str(
 ROOT=pathlib.Path(__file__).resolve().parent.parent
 class Onboarding(unittest.TestCase):
  def setUp(self):
-  self.tmp=tempfile.TemporaryDirectory(prefix="tv setup's ");self.dir=pathlib.Path(self.tmp.name);self.output=self.dir/"screen's config.local.json"
+  self.tmp=tempfile.TemporaryDirectory(prefix="tv setup's ");self.dir=pathlib.Path(self.tmp.name).resolve();self.output=self.dir/"screen's config.local.json"
   self.adb=self.dir/'fake-adb';self.adb.write_text('#!/bin/sh\nexit 77\n');self.adb.chmod(0o700)
   self.base=['--fixture',str(ROOT/'examples/discovery.json'),'--interface','lan-fixture','--device','screen_192_0_2_10','--adb',str(self.adb),'--curl',str(self.adb),'--output',str(self.output)]
  def tearDown(self):self.tmp.cleanup()
@@ -35,12 +35,28 @@ class Onboarding(unittest.TestCase):
   config=json.loads(self.output.read_text());config['executables']['adb']=str(self.dir/'connection-dependencies'/'adb-37.0.1-linux-amd64'/'adb');self.output.write_text(json.dumps(config))
   p=self.run_cli('setup','--guided','--output',str(self.output),'--json')
   self.assertNotEqual(p.returncode,0);self.assertNotIn('already_configured',p.stdout)
+  if sys.platform=='darwin':self.assertEqual(p.value['code'],'adb_private_installation_platform_mismatch')
  def test_explicit_private_adb_symlink_does_not_escape_verification(self):
   private=self.dir/'connection-dependencies'/'adb-37.0.1-linux-amd64';private.mkdir(parents=True,mode=0o700)
   (private/'adb').symlink_to(self.adb)
   args=list(self.base);args[args.index('--adb')+1]=str(private/'adb')
   p=self.run_cli('setup',*args,'--guided','--name','Fixture',input='q\n')
   self.assertNotEqual(p.returncode,0);self.assertFalse(self.output.exists())
+  if sys.platform=='darwin':self.assertIn('adb_private_installation_platform_mismatch',p.stderr+p.stdout)
+ def test_alias_parent_cannot_hide_private_adb_leaf_symlink(self):
+  private=self.dir/'connection-dependencies'/'adb-37.0.1-linux-amd64';private.mkdir(parents=True,mode=0o700);private.parent.chmod(0o700)
+  (private/'adb').symlink_to(self.adb)
+  alias=self.dir/'parent-alias';alias.symlink_to(self.dir,target_is_directory=True)
+  args=list(self.base);args[args.index('--adb')+1]=str(alias/'connection-dependencies'/'adb-37.0.1-linux-amd64'/'adb')
+  p=self.run_cli('setup',*args,'--guided','--name','Fixture',input='q\n')
+  self.assertNotEqual(p.returncode,0,p.stdout+p.stderr);self.assertFalse(self.output.exists())
+ def test_alias_version_cannot_hide_private_adb_leaf_symlink(self):
+  private=self.dir/'connection-dependencies'/'adb-37.0.1-linux-amd64';private.mkdir(parents=True,mode=0o700);private.parent.chmod(0o700)
+  (private/'adb').symlink_to(self.adb)
+  alias=self.dir/'version-alias';alias.symlink_to(private,target_is_directory=True)
+  args=list(self.base);args[args.index('--adb')+1]=str(alias/'adb')
+  p=self.run_cli('setup',*args,'--guided','--name','Fixture',input='q\n')
+  self.assertNotEqual(p.returncode,0,p.stdout+p.stderr);self.assertFalse(self.output.exists())
  def test_interfaces_and_discovery_use_offline_wire_fixture(self):
   p=self.run_cli('interfaces','--fixture',str(ROOT/'examples/discovery.json'),'--json');self.assertEqual(p.value['interfaces'][0]['name'],'lan-fixture')
   p=self.run_cli('discover','--fixture',str(ROOT/'examples/discovery.json'),'--interface','lan-fixture','--json');self.assertEqual(len(p.value['candidates']),3);self.assertTrue(p.value['simulation']);self.assertTrue(all(not c['control_verified'] for c in p.value['candidates']))

@@ -369,10 +369,41 @@ pub fn verify_adb_path(
     process: &dyn Process,
     ctx: &Context<'_>,
 ) -> Result<(), &'static str> {
-    let state = configuration_parent.join("connection-dependencies");
-    if !binary.starts_with(&state) {
-        return Ok(());
-    }
+    let parent = configuration_parent
+        .canonicalize()
+        .map_err(|_| "tunnel_dependency_directory_missing")?;
+    let state = parent.join("connection-dependencies");
+    // Resolve aliases above the private namespace, never its executable leaf.
+    // Canonicalizing the whole binary would hide a replaced private symlink by
+    // turning it into an apparently external, caller-configured executable.
+    let normalized = if binary.starts_with(&state) {
+        binary.to_owned()
+    } else if let Some(namespace) = binary.ancestors().find(|path| {
+        path.file_name()
+            .is_some_and(|name| name == "connection-dependencies")
+            && path.parent().and_then(|p| p.canonicalize().ok()).as_ref() == Some(&parent)
+    }) {
+        state.join(
+            binary
+                .strip_prefix(namespace)
+                .map_err(|_| "adb_private_installation_path_invalid")?,
+        )
+    } else {
+        // Also recognize an explicit alias to the managed version directory.
+        // Preserve the final component so installed() can reject a leaf symlink.
+        let Some(candidate) = binary
+            .parent()
+            .and_then(|p| p.canonicalize().ok())
+            .and_then(|p| binary.file_name().map(|name| p.join(name)))
+        else {
+            return Ok(());
+        };
+        if !candidate.starts_with(&state) {
+            return Ok(());
+        }
+        candidate
+    };
+    let binary = normalized.as_path();
     if std::env::consts::OS != "linux" {
         return Err("adb_private_installation_platform_mismatch");
     }
@@ -816,7 +847,15 @@ mod tests {
         );
         if std::env::consts::OS == "linux" && std::env::consts::ARCH == "x86_64" {
             verify_adb_path(&binary, &d.0, &p, &ctx).unwrap();
+            let alias = d.0.join("parent-alias");
+            symlink(&d.0, &alias).unwrap();
+            let alias_binary = alias.join(binary.strip_prefix(&d.0).unwrap());
+            verify_adb_path(&alias_binary, &d.0, &p, &ctx).unwrap();
             fs::write(&binary, b"tampered").unwrap();
+            assert_eq!(
+                verify_adb_path(&alias_binary, &d.0, &p, &ctx).unwrap_err(),
+                "tunnel_dependency_file_modified"
+            );
             assert_eq!(
                 verify_adb_path(&binary, &d.0, &p, &ctx).unwrap_err(),
                 "tunnel_dependency_file_modified"

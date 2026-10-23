@@ -3,7 +3,10 @@ use std::{
     net::{TcpListener, TcpStream},
     os::unix::fs::PermissionsExt,
     path::{Path, PathBuf},
-    sync::atomic::{AtomicU64, Ordering},
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Mutex, MutexGuard,
+    },
     time::{Duration, Instant},
 };
 use tv_adapters::{
@@ -11,9 +14,16 @@ use tv_adapters::{
     runtime::{CancelFlag, SystemClock},
 };
 use tv_application::{Clock, Context};
-struct Temp(PathBuf);
+// Parallel fork/exec can temporarily inherit another fixture's writable script
+// or listener descriptors. Isolate fixture lifetimes; explicit concurrency tests
+// still create their own children and exercise the production code unchanged.
+static FIXTURE_LOCK: Mutex<()> = Mutex::new(());
+struct Temp(PathBuf, #[allow(dead_code)] MutexGuard<'static, ()>);
 impl Temp {
     fn new() -> Self {
+        let lock = FIXTURE_LOCK
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
         static NEXT: AtomicU64 = AtomicU64::new(0);
         let path = std::env::temp_dir().join(format!(
             "tv runtime's {}-{}",
@@ -22,7 +32,7 @@ impl Temp {
         ));
         fs::create_dir(&path).unwrap();
         fs::set_permissions(&path, fs::Permissions::from_mode(0o700)).unwrap();
-        Self(path)
+        Self(path, lock)
     }
     fn script(&self, name: &str, body: &str) -> PathBuf {
         let path = self.0.join(name);
@@ -50,6 +60,24 @@ fn unused_port() -> u16 {
         .unwrap()
         .port()
 }
+// Another test's fork may briefly retain this socket until its exec applies
+// CLOEXEC. Require eventual refusal, while child exit/reaping checks stay strict.
+fn assert_listener_eventually_closed(port: u16) -> usize {
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let address = std::net::SocketAddr::from(([127, 0, 0, 1], port));
+    let mut pending = 0;
+    loop {
+        match TcpStream::connect_timeout(&address, Duration::from_millis(50)) {
+            Err(error) if error.kind() == io::ErrorKind::ConnectionRefused => return pending,
+            Err(error) => panic!("unexpected listener cleanup error: {error}"),
+            Ok(stream) => drop(stream),
+        }
+        pending += 1;
+        assert!(Instant::now() < deadline, "owned listener did not close");
+        std::thread::sleep(Duration::from_millis(1));
+    }
+}
+
 const FAKE_ADB: &str = r#"
 import fcntl,json,os,pathlib,socket,sys
 root=pathlib.Path(__file__).parent
@@ -171,15 +199,7 @@ fn owned_loopback_runtime_waits_for_actual_authorization_and_cleans_up() {
         io::Error::last_os_error().raw_os_error(),
         Some(libc::ECHILD)
     );
-    assert_eq!(
-        TcpStream::connect_timeout(
-            &std::net::SocketAddr::from(([127, 0, 0, 1], port)),
-            Duration::from_millis(100),
-        )
-        .unwrap_err()
-        .kind(),
-        io::ErrorKind::ConnectionRefused
-    );
+    assert_listener_eventually_closed(port);
     let events: Vec<serde_json::Value> = fs::read_to_string(temp.0.join("events"))
         .unwrap()
         .lines()
@@ -237,10 +257,7 @@ fn listener_stays_reserved_when_owned_child_closes_its_copy() {
         libc::FD_CLOEXEC
     );
     drop(runtime);
-    assert_eq!(
-        TcpStream::connect(("127.0.0.1", port)).unwrap_err().kind(),
-        io::ErrorKind::ConnectionRefused
-    );
+    assert_listener_eventually_closed(port);
 }
 #[test]
 fn cancellation_during_start_reaps_child_and_releases_reserved_listener() {
@@ -278,10 +295,81 @@ fn cancellation_during_start_reaps_child_and_releases_reserved_listener() {
     assert_eq!(unsafe { libc::kill(pid, 0) }, -1);
     assert_eq!(io::Error::last_os_error().raw_os_error(), Some(libc::ESRCH));
     assert_eq!(
-        TcpStream::connect(("127.0.0.1", port)).unwrap_err().kind(),
-        io::ErrorKind::ConnectionRefused
+        unsafe { libc::waitpid(pid, std::ptr::null_mut(), libc::WNOHANG) },
+        -1
     );
+    assert_eq!(
+        io::Error::last_os_error().raw_os_error(),
+        Some(libc::ECHILD)
+    );
+    assert_listener_eventually_closed(port);
 }
+#[test]
+fn cleanup_waits_for_sibling_fork_to_exec() {
+    use std::{
+        io::Read,
+        os::{
+            fd::AsRawFd,
+            unix::{net::UnixStream, process::CommandExt},
+        },
+        process::Command,
+    };
+    let temp = Temp::new();
+    let runtime_spec = spec(&temp);
+    let port = runtime_spec.port;
+    let clock = SystemClock::default();
+    let cancel = CancelFlag::default();
+    let runtime =
+        OwnedAdbRuntime::start(runtime_spec, true, &context(&clock, &cancel, 5000)).unwrap();
+    let events = fs::read_to_string(temp.0.join("events")).unwrap();
+    let event: serde_json::Value = serde_json::from_str(events.lines().last().unwrap()).unwrap();
+    let fd: i32 = event["args"][1]
+        .as_str()
+        .unwrap()
+        .strip_prefix("acceptfd:")
+        .unwrap()
+        .parse()
+        .unwrap();
+    let (mut ready_parent, ready_child) = UnixStream::pair().unwrap();
+    ready_parent
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .unwrap();
+    let sibling = std::thread::spawn(move || {
+        let mut command = Command::new("/bin/true");
+        // SAFETY: only async-signal-safe write, poll, accept and close occur in
+        // the child. Its inherited listener keeps the port alive until exec.
+        unsafe {
+            command.pre_exec(move || {
+                let byte = [1u8];
+                if libc::write(ready_child.as_raw_fd(), byte.as_ptr().cast(), 1) != 1 {
+                    return Err(io::Error::last_os_error());
+                }
+                let mut poll = libc::pollfd {
+                    fd,
+                    events: libc::POLLIN,
+                    revents: 0,
+                };
+                if libc::poll(&mut poll, 1, 2000) != 1 {
+                    return Err(io::Error::from_raw_os_error(libc::ETIMEDOUT));
+                }
+                let accepted = libc::accept(fd, std::ptr::null_mut(), std::ptr::null_mut());
+                if accepted < 0 {
+                    return Err(io::Error::last_os_error());
+                }
+                libc::close(accepted);
+                Ok(())
+            });
+        }
+        command.spawn().unwrap().wait().unwrap()
+    });
+    ready_parent.read_exact(&mut [0]).unwrap();
+    drop(runtime);
+    // The first cleanup probe releases the paused sibling into exec. An
+    // immediate-refusal oracle fails; the bounded eventual oracle must pass.
+    assert!(assert_listener_eventually_closed(port) > 0);
+    assert!(sibling.join().unwrap().success());
+}
+
 #[test]
 fn foreign_listener_and_existing_owned_session_are_not_adopted_or_stopped() {
     let temp = Temp::new();

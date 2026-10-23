@@ -6,6 +6,8 @@ permissions:
   contents: read
 jobs:
   checks:
+    # Public verification uses the published bytes; it must not rebuild them.
+    if: github.event_name != 'push' || !startsWith(github.ref, 'refs/heads/verify/v')
     strategy:
       fail-fast: false
       matrix:
@@ -24,6 +26,8 @@ jobs:
           shellcheck --version
           shellcheck -s sh install.sh
           busybox sh -n install.sh
+      - run: python3 -W error::ResourceWarning scripts/test_release.py
+      - run: python3 -W error::ResourceWarning scripts/test_verify_public_release.py
       - run: python3 -W error::ResourceWarning scripts/test_installer.py
       - run: cargo fmt --all --check
       - run: cargo clippy --locked --workspace --all-targets -- -D warnings
@@ -52,6 +56,8 @@ jobs:
           name: tv-control-macos-${{ runner.arch }}
           path: dist/*
   static-linux:
+    # Public verification uses the published bytes; it must not rebuild them.
+    if: github.event_name != 'push' || !startsWith(github.ref, 'refs/heads/verify/v')
     strategy:
       fail-fast: false
       matrix:
@@ -79,3 +85,62 @@ jobs:
         with:
           name: tv-control-${{ matrix.asset }}
           path: dist/*
+
+  release-prerelease:
+    needs: [checks, static-linux]
+    # Only an explicit, version-and-full-SHA-bound release branch can publish.
+    # Main and PR builds retain read-only permissions and never enter this job.
+    if: >-
+      github.repository == 'antoine-berger/tv-control' &&
+      github.event_name == 'push' &&
+      github.event.deleted == false &&
+      startsWith(github.ref, 'refs/heads/release/v')
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    concurrency:
+      group: tv-control-prerelease
+      cancel-in-progress: false
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      # Omit github-token, repository and run-id: download only this run's assets.
+      # Keep directories separate so duplicate installers cannot silently overwrite.
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          pattern: tv-control-*
+          path: release-artifacts
+          merge-multiple: false
+          digest-mismatch: error
+      - name: Verify and publish non-latest prerelease
+        run: python3 scripts/release.py release-artifacts --publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CHECKS_RESULT: ${{ needs.checks.result }}
+          STATIC_LINUX_RESULT: ${{ needs.static-linux.result }}
+
+  verify-public-release:
+    if: >-
+      github.repository == 'antoine-berger/tv-control' &&
+      github.event_name == 'push' &&
+      github.event.deleted == false &&
+      startsWith(github.ref, 'refs/heads/verify/v')
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Verify public downloads and native packaged installation
+        run: python3 scripts/verify_public_release.py verify public-release-artifacts

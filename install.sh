@@ -32,7 +32,7 @@ uid=
 usage() {
     cat <<'EOF'
 Usage: sh install.sh [options]
-  --version vX.Y.Z       Pin a release (default v0.2.7; never resolves latest)
+  --version vX.Y.Z       Pin a release (default v0.3.0; never resolves latest)
   --prefix ABSOLUTE_DIR  Dedicated install root (default ~/.local/share/tv-control)
   --non-interactive     Install without prompts; never runs setup or device access
   --interactive         Ask before installation; optionally offer guided setup
@@ -45,7 +45,7 @@ Usage: sh install.sh [options]
   --checksum FILE       Matching SHA-256 file (default FILE.sha256)
   --sha256 HEX          Optional independently supplied expected archive digest
   --help                Show this text
-No sudo, pairing, credentials, tunnel, service or shell startup file changes.
+No sudo or shell startup changes. Guided connection asks before granting access.
 EOF
 }
 escape_json() { printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'; }

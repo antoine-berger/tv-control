@@ -560,14 +560,23 @@ class CompleteJourney(unittest.TestCase):
         self.assertEqual(self.config.read_bytes(),saved_configuration)
         self.assertTrue(self.port_free(), 'uninstall left the approved controller running')
     def test_private_adb_requires_receipt_before_onboard_or_bridge_execution(self):
+        self.assert_private_adb_execution_refused(False)
+    def test_alias_parent_private_adb_requires_receipt_before_runtime_execution(self):
+        self.assert_private_adb_execution_refused(True)
+    def assert_private_adb_execution_refused(self, alias_parent):
         private=self.root/'connection-dependencies/adb-37.0.1-linux-amd64'
         private.mkdir(parents=True,mode=0o700)
         private.parent.chmod(0o700)
         binary=private/'adb';binary.write_bytes((self.bin/'adb').read_bytes());binary.chmod(0o700)
-        config=json.loads(self.config.read_text());config['executables']['adb']=str(binary)
+        selected=binary
+        if alias_parent:
+            alias=self.root/'parent-alias';alias.symlink_to(self.root,target_is_directory=True)
+            selected=alias/binary.relative_to(self.root)
+        config=json.loads(self.config.read_text());config['executables']['adb']=str(selected)
         self.config.write_text(json.dumps(config))
         terminal=self.terminal();terminal.until(r'private ADB identity.*\[y/N\]');terminal.line('y')
         self.assertNotEqual(terminal.wait(),0,terminal.text)
+        if sys.platform=='darwin':self.assertIn('adb_private_installation_platform_mismatch',terminal.text)
         self.assertFalse((self.root/'adb-events.jsonl').exists())
         self.assertFalse((self.root/'tunnel-events.jsonl').exists())
         state=self.root/'connection'
@@ -579,6 +588,7 @@ class CompleteJourney(unittest.TestCase):
         process=subprocess.run([str(BINARY),'bridge',str(self.config),str(state)],env=self.env,
                                capture_output=True,text=True,timeout=5,start_new_session=True)
         self.assertNotEqual(process.returncode,0,process.stdout+process.stderr)
+        if sys.platform=='darwin':self.assertIn('adb_private_installation_platform_mismatch',process.stdout+process.stderr)
         self.assertFalse((self.root/'adb-events.jsonl').exists())
         self.assertFalse((self.root/'tunnel-events.jsonl').exists())
 
