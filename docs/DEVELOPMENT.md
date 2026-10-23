@@ -1,8 +1,8 @@
 # Development
 
-Build on Linux or macOS with a stable Rust toolchain and native linker. Python 3
+Build on Linux or macOS Apple Silicon with a stable Rust toolchain and native linker. Python 3
 is used for repository checks and stdio integration fixtures. CI tests native Linux
-and macOS builds and cross-builds the ARM64 musl candidate; it does not run on a
+and macOS Apple Silicon builds and cross-builds the ARM64 musl candidate; it does not run on a
 router or TV. Build a source checkout with:
 
 ```sh

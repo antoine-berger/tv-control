@@ -7,7 +7,9 @@ curl -fsSL https://raw.githubusercontent.com/antoine-berger/tv-control/latest/in
 ```
 
 The script defaults to the version shipped with that URL. It detects the host
-platform, asks for confirmation, verifies an existing installation, installs or
+platform: macOS Apple Silicon or Linux ARM64/x86-64. macOS Intel is refused before
+download or setup; existing files and historical release assets are preserved.
+It asks for confirmation, verifies an existing installation, installs or
 updates its own files when needed, then runs the wizard. Repeating the same
 command reuses an intact current version without downloading it again. An older
 installation is updated after confirmation; previous payloads and external

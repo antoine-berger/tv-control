@@ -21,8 +21,9 @@ if 'linux-musl' in name:
  assert binary[:6]==b'\x7fELF\x02\x01';machine=struct.unpack_from('<H',binary,18)[0]
  assert machine==({'aarch64':183,'x86_64':62}[name.split('-')[2]])
 elif 'apple-darwin' in name:
+ assert name=='tv-control-aarch64-apple-darwin.tar.gz','unsupported_package_target'
  assert binary[:4]==b'\xcf\xfa\xed\xfe';machine=struct.unpack_from('<I',binary,4)[0]
- assert machine==({'aarch64':0x0100000c,'x86_64':0x01000007}[name.split('-')[2]])
+ assert machine==0x0100000c
 else:raise AssertionError('unqualified package name')
 json.loads(content['examples/config.json']);json.loads(content['examples/discovery.json'])
 if a.smoke:

@@ -20,9 +20,11 @@ and this guide. ADB and the optional tunnel client remain separate dependencies.
 | Host | Release asset |
 | --- | --- |
 | macOS Apple Silicon, 11+ | `tv-control-aarch64-apple-darwin.tar.gz` |
-| macOS Intel, 11+ | `tv-control-x86_64-apple-darwin.tar.gz` |
 | Linux x86-64, static musl | `tv-control-x86_64-linux-musl.tar.gz` |
 | Linux ARM64, static musl | `tv-control-aarch64-linux-musl.tar.gz` |
+
+macOS Intel is unsupported. Its assets in older releases remain historical downloads;
+new installers reject that host before download or setup.
 
 From [the release page](https://github.com/antoine-berger/tv-control/releases/tag/v0.2.3),
 download the selected archive **and its matching `.sha256` file**. Verify before

@@ -4,7 +4,7 @@ A small Rust controller for Android TV and Jellyfin, with a CLI and two MCP tool
 
 ## Install
 
-Run in a terminal on macOS or Linux (ARM64 or x86-64):
+Run in a terminal on macOS Apple Silicon, or Linux ARM64/x86-64:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/antoine-berger/tv-control/latest/install.sh | sh

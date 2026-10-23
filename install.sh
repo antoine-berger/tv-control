@@ -5,7 +5,7 @@
 main() {
 set -eu
 umask 077
-DEFAULT_VERSION=v0.2.5
+DEFAULT_VERSION=v0.2.6
 RELEASE_ROOT=https://github.com/antoine-berger/tv-control/releases/download
 guided=no
 if [ "$#" -eq 0 ]; then guided=yes; fi
@@ -32,7 +32,7 @@ uid=
 usage() {
     cat <<'EOF'
 Usage: sh install.sh [options]
-  --version vX.Y.Z       Pin a release (default v0.2.5; never resolves latest)
+  --version vX.Y.Z       Pin a release (default v0.2.6; never resolves latest)
   --prefix ABSOLUTE_DIR  Dedicated install root (default ~/.local/share/tv-control)
   --non-interactive     Install without prompts; never runs setup or device access
   --interactive         Ask before installation; optionally offer guided setup
@@ -206,6 +206,16 @@ run_setup() {
         case "$version" in v0.2.0|v0.2.1|v0.2.2) ;; *) set -- "$@" --guided ;; esac
         "$prefix/versions/$version/tv-control" "$@" <&3 >&3 2>&3 3<&-
 }
+if [ "$mode" != uninstall ]; then
+    os=$(uname -s); machine=$(uname -m)
+    case "$machine" in arm64|aarch64) architecture=aarch64 ;; x86_64|amd64) architecture=x86_64 ;; *) fail unsupported_architecture ;; esac
+    case "$os:$architecture" in
+        Darwin:aarch64) target=aarch64-apple-darwin ;;
+        Darwin:x86_64) fail macos_intel_unsupported ;;
+        Linux:*) target=$architecture-linux-musl ;;
+        *) fail unsupported_os ;;
+    esac
+fi
 if [ "$dry" = yes ]; then result planned 'Dry run: no download, installation, setup or authentication performed.'; exit 0; fi
 if [ "$interactive" = yes ]; then
     # Test the redirect in a subshell: failed exec redirects can terminate dash.
@@ -252,9 +262,6 @@ if [ -e "$prefix" ]; then
 else
     [ "$update" = no ] || fail installation_missing
 fi
-os=$(uname -s); machine=$(uname -m)
-case "$machine" in arm64|aarch64) architecture=aarch64 ;; x86_64|amd64) architecture=x86_64 ;; *) fail unsupported_architecture ;; esac
-case "$os" in Darwin) target=$architecture-apple-darwin ;; Linux) target=$architecture-linux-musl ;; *) fail unsupported_os ;; esac
 asset=tv-control-$target.tar.gz
 if [ -n "$archive_input" ]; then
     if ! { [ -f "$archive_input" ] && [ ! -L "$archive_input" ]; }; then fail local_archive_missing_or_symlink; fi
@@ -310,7 +317,7 @@ case "$target" in
         ;;
     *-apple-darwin)
         actual_machine=$(printf '%s' "$header" | cut -c1-16)
-        case "$architecture:$actual_machine" in aarch64:cffaedfe0c000001|x86_64:cffaedfe07000001) ;; *) fail binary_architecture_mismatch ;; esac
+        [ "$actual_machine" = cffaedfe0c000001 ] || fail binary_architecture_mismatch
         [ "$(printf '%s' "$header" | cut -c25-32)" = 02000000 ] || fail binary_format_mismatch
         ;;
 esac

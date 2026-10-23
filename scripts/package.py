@@ -9,6 +9,9 @@ import tarfile
 root = pathlib.Path(__file__).resolve().parent.parent
 binary = pathlib.Path(sys.argv[1])
 output = pathlib.Path(sys.argv[2])
+supported = {"tv-control-aarch64-apple-darwin.tar.gz", "tv-control-aarch64-linux-musl.tar.gz", "tv-control-x86_64-linux-musl.tar.gz"}
+if output.name not in supported:
+    raise SystemExit("unsupported_package_target")
 output.parent.mkdir(parents=True, exist_ok=True)
 files = [(binary, "tv-control"), (root / "LICENSE", "LICENSE"),
          (root / "README.md", "README.md"),
