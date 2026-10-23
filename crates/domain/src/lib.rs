@@ -1,4 +1,5 @@
 //! Domain vocabulary. No transport, filesystem, networking, or serialization dependencies.
+pub mod pipeline;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Action {
     Observe,

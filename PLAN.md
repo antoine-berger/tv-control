@@ -15,6 +15,7 @@ checks and record the tested source commit for any hardware result.
 | Host performance | Historical macOS snapshot for the initial build; no measurements of later corrections |
 | Hardware | Initial read-only preflight is historical evidence only; qualification of corrected builds requires separately recorded results |
 | Hosted integration | No connected ChatGPT plugin or bridge; local MCP operation does not establish hosted access |
+| Complete onboarding pipeline | Domain/application evidence policy and fixture contracts implemented; native lifecycle, concise guided presentation, private progress/log adapters and external conversation verification remain in development; see ADR 011 |
 | End-to-end latency | Ten-second user-submission-to-physical-effect and displayed-confirmation target remains unproven |
 | Router resources | Firmware ABI, smoke test and complete controller/ADB/curl/tunnel resource costs remain unqualified |
 
