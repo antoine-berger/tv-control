@@ -1,6 +1,13 @@
 //! Guided prerequisite recovery. Acquiring ADB never invokes it or contacts a TV.
-use super::*;
+use super::presentation::prompt;
+use super::Options;
+use std::path::{Path, PathBuf};
+use tv_adapters::{
+    config::Config,
+    runtime::{CancelFlag, SystemClock},
+};
 use tv_adapters::{dependency_acquisition as dependency, process::BoundedProcess};
+use tv_application::Context;
 
 const SDK_TERMS: &str = "https://developer.android.com/studio/terms";
 fn verify(binary: &Path, configuration_parent: &Path) -> Result<(), &'static str> {
@@ -168,4 +175,33 @@ pub(super) fn adb(options: &Options) -> Result<PathBuf, &'static str> {
             eprintln!("Choose one of the displayed options.");
         }
     }
+}
+
+pub(super) fn executable(
+    options: &Options,
+    key: &str,
+    name: &str,
+) -> Result<PathBuf, &'static str> {
+    use std::os::unix::fs::PermissionsExt;
+    let supplied = options.get(key).map(PathBuf::from);
+    let candidates = if let Some(path) = supplied {
+        vec![path]
+    } else {
+        std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default())
+            .filter(|p| p.is_absolute())
+            .map(|p| p.join(name))
+            .collect()
+    };
+    for path in candidates {
+        if let Ok(meta) = path.metadata() {
+            if meta.is_file() && meta.permissions().mode() & 0o111 != 0 {
+                return path.canonicalize().map_err(|_| "executable_unreadable");
+            }
+        }
+    }
+    Err(if name == "adb" {
+        "adb_missing_install_official_platform_tools"
+    } else {
+        "curl_missing_install_system_package"
+    })
 }

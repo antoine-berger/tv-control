@@ -1,6 +1,11 @@
 //! Wizard progress only: restored choices never authorize network, TV or tunnel access.
-use super::*;
+use super::presentation::prompt;
+use super::{fail, Options};
+use std::path::{Path, PathBuf};
+use tv_adapters::config::Config;
 use tv_adapters::setup_checkpoint::{Checkpoint, Store};
+use tv_application::onboarding::{self, NetworkDiscovery};
+use tv_domain::onboarding::{Candidate, ServiceKind, SetupPlan};
 pub(super) struct Progress {
     store: Store,
     state: Checkpoint,
@@ -249,6 +254,7 @@ fn matches_saved_control_service(candidate: &Candidate, instance: &str, now: u64
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tv_domain::onboarding::AdvertisedService;
 
     #[test]
     fn resume_refuses_a_different_original_anchor_at_the_ttl_boundary() {
