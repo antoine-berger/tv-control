@@ -126,6 +126,60 @@ class MCP(unittest.TestCase):
         self.assertEqual({t["name"] for t in tools}, {"tv_control", "tv_capabilities"})
         self.send({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"tv_control","arguments":{"shell":"anything"}}})
         self.assertEqual(self.receive()["error"]["code"], -32602)
+    def reinitialize(self, rpc_id):
+        self.send({"jsonrpc":"2.0","id":rpc_id,"method":"initialize","params":{
+            "protocolVersion":"2025-11-25","capabilities":{},
+            "clientInfo":{"name":"next-tunnel-client","version":"1"}}})
+        response = self.receive()
+        self.assertEqual(response["id"], rpc_id)
+        self.assertEqual(response["result"]["protocolVersion"], "2025-11-25")
+
+    def test_reinitialize_requires_fresh_notification_each_cycle(self):
+        # Official tunnel-client shares one child across client discovery sessions.
+        for rpc_id in (10, 20, 30):
+            self.reinitialize(rpc_id)
+            self.send({"jsonrpc":"2.0","id":rpc_id+1,"method":"tools/list"})
+            self.assertEqual(self.receive()["error"]["message"], "initialize_first")
+            self.send({"jsonrpc":"2.0","method":"notifications/initialized"})
+            self.send({"jsonrpc":"2.0","id":rpc_id+2,"method":"tools/list"})
+            self.assertEqual(len(self.receive()["result"]["tools"]), 2)
+        self.assertEqual(Fixture.post_count, 0)
+
+    def test_malformed_reinitialize_preserves_validated_session(self):
+        for params in ({}, {"protocolVersion":42,"capabilities":{},
+                           "clientInfo":{"name":"invalid","version":"1"}}):
+            self.send({"jsonrpc":"2.0","id":10,"method":"initialize","params":params})
+            self.assertEqual(self.receive()["error"]["code"], -32602)
+            self.send({"jsonrpc":"2.0","id":11,"method":"tools/list"})
+            self.assertEqual(len(self.receive()["result"]["tools"]), 2)
+        self.reinitialize(12)
+        # Even an interrupted handshake can be replaced by another valid one.
+        self.reinitialize(13)
+        self.send({"jsonrpc":"2.0","method":"notifications/initialized"})
+        self.send({"jsonrpc":"2.0","id":14,"method":"tools/list"})
+        self.assertEqual(len(self.receive()["result"]["tools"]), 2)
+
+    def test_reinitialize_preserves_action_deduplication(self):
+        self.call(2, {"type":"pause"})
+        self.assertEqual(self.receive()["result"]["structuredContent"]["status"], "verified")
+        self.reinitialize(3)
+        self.send({"jsonrpc":"2.0","method":"notifications/initialized"})
+        self.call(4, {"type":"pause"})
+        self.assertTrue(self.receive()["result"]["structuredContent"]["cached"])
+        self.assertEqual(Fixture.post_count, 1)
+
+    def test_reinitialize_preserves_inflight_cancellation(self):
+        Fixture.slow = True
+        self.call(2, {"type":"pause"})
+        time.sleep(0.03)
+        self.reinitialize(3)
+        self.send({"jsonrpc":"2.0","method":"notifications/cancelled",
+                   "params":{"requestId":2,"reason":"test cancellation after reinitialize"}})
+        response = self.receive()
+        self.assertEqual(response["id"], 2)
+        self.assertEqual(response["result"]["structuredContent"]["status"], "cancelled")
+        self.assertEqual(Fixture.post_count, 0)
+
     def test_pause_postcondition_and_dedup(self):
         self.call(2, {"type":"pause"})
         first = self.receive()["result"]["structuredContent"]

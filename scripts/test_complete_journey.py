@@ -23,6 +23,7 @@ import time
 import threading
 import unittest
 from unittest import mock
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 BINARY = pathlib.Path(sys.argv.pop(1)).resolve() if len(sys.argv) > 1 else pathlib.Path('target/debug/tv-control').resolve()
 ROOT = pathlib.Path(__file__).resolve().parent.parent
@@ -88,10 +89,13 @@ def alive(pid):
     except ProcessLookupError:return False
 def status(data):
     running=alive(data['supervisor_pid']) and alive(data['bridge_pid'])
-    return {'alias':data['alias'],'tunnel_id':data['tunnel_id'],'profile_dir':data['profile_dir'],'profile_name':data['alias'],'stale':False,
+    result={'alias':data['alias'],'tunnel_id':data['tunnel_id'],'profile_dir':data['profile_dir'],'profile_name':data['alias'],'stale':False,
       'process_running':running,'healthy':running,'ready':running,
       'process':{'alias':data['alias'],'tunnel_id':data['tunnel_id'],'profile_dir':data['profile_dir'],'profile_name':data['alias'],'target_kind':'command','target_value':data['command']},
       'control_plane_poll_health':{'state':'healthy'}}
+    health=root/'mcp-health-url'
+    if health.exists():result['mcp_health_url']=health.read_text()
+    return result
 if sys.argv[1:2]==['_supervise']:
     path=pathlib.Path(sys.argv[2]);data=load(path);stopping=False
     def stop(*_):
@@ -144,6 +148,7 @@ elif args[1]=='connect':
     assert flag('--runtime-api-key')=='env:TV_CONTROL_TUNNEL_KEY'
     assert os.environ.get('TV_CONTROL_TUNNEL_KEY')
     data={'alias':flag('--alias'),'tunnel_id':flag('--tunnel-id'),'profile_dir':flag('--profile-dir'),'command':flag('--mcp-command')}
+    if (root/'mcp-health-state').exists():(root/'mcp-health-state').write_text('not_observed')
     write(path,data)
     daemon=subprocess.Popen([sys.executable,__file__,'_supervise',str(path)],stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,start_new_session=True)
     deadline=time.monotonic()+5
@@ -358,6 +363,79 @@ class CompleteJourney(unittest.TestCase):
             time.sleep(.02)
         else:raise AssertionError('fixture runtime proxy missing')
         channel=Rpc(state['proxy_port']);self.channels.append(channel);channel.initialize();return channel
+    def mcp_health_fixture(self):
+        root=self.root
+        state=root/'mcp-health-state';state.write_text('not_observed')
+        class Health(BaseHTTPRequestHandler):
+            def log_message(self, *_): pass
+            def do_GET(self):
+                if self.path != '/health/mcp':self.send_error(404);return
+                current=state.read_text()
+                body=json.dumps({'schema_version':1,'component':'mcp',
+                                 'status':'degraded' if current=='failed' else ('unknown' if current=='not_observed' else 'ok'),
+                                 'state':current,'reason_code':'mcp_discovery_error' if current=='failed' else '',
+                                 'details':{'child_state':'running','channel':'main','transport':'stdio'}}).encode()
+                self.send_response(200);self.send_header('Content-Length',str(len(body)))
+                self.end_headers();self.wfile.write(body)
+        server=ThreadingHTTPServer(('127.0.0.1',0),Health)
+        worker=threading.Thread(target=server.serve_forever,daemon=True);worker.start()
+        (root/'mcp-health-url').write_text(f'http://127.0.0.1:{server.server_port}/health/mcp')
+        def cleanup():server.shutdown();server.server_close();worker.join(timeout=2)
+        self.addCleanup(cleanup)
+        return state
+
+    def test_mcp_failure_after_plugin_ui_stops_before_challenge(self):
+        health=self.mcp_health_fixture()
+        terminal=self.terminal();terminal.until(r'private ADB identity.*\[y/N\]');terminal.line('y')
+        terminal.until('Tunnel ID:');terminal.line(TUNNEL)
+        terminal.until(r'background TV controller.*\[y/N\]');terminal.line('y')
+        terminal.until('Runtime key .*hidden.*:');terminal.line(SECRET)
+        terminal.until('Press Enter when the plugin is selected')
+        health.write_text('failed');terminal.line('')
+        self.assertNotEqual(terminal.wait(),0,terminal.text)
+        self.assertIn('tunnel_mcp_discovery_failed',terminal.text)
+        self.assertNotIn('Verification code returned',terminal.text)
+        self.assertFalse((self.connection_parent/'connection/verification/request.json').exists())
+        events=[json.loads(line)['args'] for line in (self.root/'tunnel-events.jsonl').read_text().splitlines()]
+        self.assertFalse(any(args[:2]==['runtimes','stop'] for args in events))
+
+    def test_unhealthy_owned_runtime_restart_is_explicit_and_preserves_identity(self):
+        health=self.mcp_health_fixture()
+        first=self.terminal();self.approve(first);first.line('q');self.assertNotEqual(first.wait(),0)
+        old=self.runtime_state();configuration=self.config.read_bytes()
+        generation=(self.connection_parent/'connection/bridge-generation.json').read_bytes()
+        health.write_text('failed')
+        second=self.terminal();second.until(r'private ADB identity.*\[y/N\]');second.line('y')
+        second.until('Stop this owned controller and retry');self.assertIn('tunnel_mcp_discovery_failed',second.text)
+        self.assertEqual(self.runtime_state()['bridge_pid'],old['bridge_pid'])
+        second.line('y');second.until(r'background TV controller.*\[y/N\]');second.line('y')
+        second.until('Runtime key .*hidden.*:');second.line(SECRET)
+        second.until('Press Enter when the plugin is selected');second.line('')
+        challenge=second.until(r'challenge ([0-9a-f]{32})').group(1).decode()
+        second.until('Verification code returned')
+        current=self.runtime_state();self.assertNotEqual(current['bridge_pid'],old['bridge_pid'])
+        self.assertEqual(current['alias'],old['alias']);self.assertEqual(current['tunnel_id'],old['tunnel_id'])
+        self.assertEqual(self.config.read_bytes(),configuration)
+        self.assertNotEqual((self.connection_parent/'connection/bridge-generation.json').read_bytes(),generation)
+        second.line(self.channel().verify(challenge));self.assertEqual(second.wait(),0,second.text)
+        self.assertIn('Ready.',second.text);self.assert_private_records()
+        homes={event['home'] for event in map(json.loads,(self.root/'adb-events.jsonl').read_text().splitlines()) if '-L' in event['args']}
+        self.assertEqual(len(homes),1)
+
+    def test_declined_unhealthy_runtime_restart_preserves_running_controller(self):
+        health=self.mcp_health_fixture()
+        first=self.terminal();self.approve(first);first.line('q');self.assertNotEqual(first.wait(),0)
+        old=self.runtime_state();health.write_text('failed')
+        before=(self.root/'adb-events.jsonl').read_bytes()
+        second=self.terminal();second.until(r'private ADB identity.*\[y/N\]');second.line('y')
+        second.until('Stop this owned controller and retry');second.line('n')
+        self.assertNotEqual(second.wait(),0,second.text)
+        self.assertEqual(self.runtime_state()['bridge_pid'],old['bridge_pid'])
+        self.assertEqual((self.root/'adb-events.jsonl').read_bytes(),before)
+        self.assertNotIn('Runtime key',second.text);self.assertFalse(self.port_free())
+        events=[json.loads(line)['args'] for line in (self.root/'tunnel-events.jsonl').read_text().splitlines()]
+        self.assertFalse(any(args[:2]==['runtimes','stop'] for args in events))
+
     def assert_private_records(self):
         for name in ['progress.json','events.jsonl']:
             path=self.connection_parent/'connection'/name
@@ -684,7 +762,7 @@ class CompleteJourney(unittest.TestCase):
         # owned this controller. Its uninstall must not even query the tunnel.
         other_prefix=installer.root/'another installation'
         archive=installer.asset()
-        result=installer.run_script(['--prefix',str(other_prefix),'--version','v0.3.0','--archive',str(archive),'--json'],env=env)
+        result=installer.run_script(['--prefix',str(other_prefix),'--version','v0.3.1','--archive',str(archive),'--json'],env=env)
         self.assertEqual(result.returncode,0,result.stdout+result.stderr)
         events=(self.root/'tunnel-events.jsonl').read_bytes()
         result=installer.run_script(['--prefix',str(other_prefix),'--uninstall','--json'],env=env)

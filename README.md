@@ -31,9 +31,9 @@ The wizard offers approved dependency installation on supported hosts; macOS
 requires existing Homebrew for that route. Linux ARM64 and pure-musl hosts need a
 maintained native ADB supplied separately. [Requirements and recovery](docs/INSTALLATION.md).
 
-The `latest` installer currently selects published **v0.3.0**. This branch may
-contain newer changes; rebuilding it is not the same as downloading that release.
-See [releases](https://github.com/antoine-berger/tv-control/releases/tag/v0.3.0) for published assets.
+This source targets **v0.3.1**. The `latest` distribution installer advances only
+when the matching public release has passed download and package verification.
+See [releases](https://github.com/antoine-berger/tv-control/releases) for published assets.
 
 ## After installation
 

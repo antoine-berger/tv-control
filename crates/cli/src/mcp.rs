@@ -180,7 +180,7 @@ fn serve_inner(
         }
         let id = id.unwrap_or(Value::Null);
         match method {
-            "initialize" if !initialized => {
+            "initialize" => {
                 if !message
                     .pointer("/params/protocolVersion")
                     .is_some_and(Value::is_string)
@@ -197,7 +197,12 @@ fn serve_inner(
                     error(&out, id, -32602, "invalid_initialize_parameters");
                     continue;
                 }
+                // A process-affine stdio tunnel can forward a later client's handshake
+                // to this same child. Start a new handshake only after validation;
+                // keep the controller, dedup cache, proof generation and active calls.
+                // Every valid initialize still requires its own initialized notice.
                 initialized = true;
+                ready = false;
                 send(
                     &out,
                     json!({"jsonrpc":"2.0","id":id,"result":{"protocolVersion":"2025-11-25","capabilities":{"tools":{}},"serverInfo":{"name":"tv-control","version":env!("CARGO_PKG_VERSION")},"instructions":"Configured TV actions only. Never repeat outcome_unknown. Expiry starts at the client, and local_elapsed_ms is not user-to-TV latency."}}),

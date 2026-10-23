@@ -35,6 +35,23 @@ impl ExternalConversationPort for Journey<'_> {
                 false,
                 ctx,
             )?;
+            // The first plugin discovery happens while the user is in the UI.
+            // Recheck the same owned runtime now: readyz alone can remain healthy
+            // even when that child's MCP initialization or catalogue has failed.
+            let process = BoundedProcess {
+                max_output: 65_536,
+                poll_ms: 10,
+            };
+            let tunnel = self.tunnel.borrow();
+            let tunnel = tunnel.as_ref().ok_or("tunnel_configuration_missing")?;
+            let health = (OfficialTunnel { process: &process })
+                .status(tunnel, &bounded(ctx, 5_000))
+                .map_err(|e| e.code)?;
+            if !health.locally_ready() {
+                return Err(health
+                    .mcp_failure_code
+                    .unwrap_or("tunnel_mcp_setup_not_ready"));
+            }
             let challenge = ProofStore::open(&self.state.join("verification"))?.issue(
                 &self.installation,
                 &self.configuration.revision,

@@ -4,7 +4,7 @@ use super::runtime::{
 };
 use super::{bounded, gate, Journey};
 use tv_adapters::{
-    connection_proof::random_token,
+    connection_proof::{random_token, ProofStore},
     onboarding_runtime::{probe_local_mcp, AdbAuthorization, OwnedAdbRuntime},
     onboarding_tunnel::OfficialTunnel,
     process::BoundedProcess,
@@ -110,19 +110,46 @@ impl AdbSetupPort for Journey<'_> {
                         max_output: 65_536,
                         poll_ms: 10,
                     };
-                    if (OfficialTunnel { process: &process })
-                        .status(&spec, &bounded(ctx, 5_000))
-                        .is_ok_and(|s| s.locally_ready())
-                    {
-                        self.existing_runtime.set(true);
-                        *self.tunnel.borrow_mut() = Some(spec);
-                        return Ok(self.fresh(
-                            DeviceBinding {
-                                configuration: self.configuration.clone(),
-                                runtime_generation: self.bridge_generation()?,
-                            },
-                            ctx,
-                        ));
+                    let adapter = OfficialTunnel { process: &process };
+                    match adapter.status(&spec, &bounded(ctx, 5_000)) {
+                        Ok(health) if health.locally_ready() => {
+                            self.existing_runtime.set(true);
+                            *self.tunnel.borrow_mut() = Some(spec);
+                            return Ok(self.fresh(
+                                DeviceBinding {
+                                    configuration: self.configuration.clone(),
+                                    runtime_generation: self.bridge_generation()?,
+                                },
+                                ctx,
+                            ));
+                        }
+                        Ok(health) if health.process_running => {
+                            eprintln!(
+                                "The existing controller is running but unavailable ({}). Restarting it preserves the TV identity and configuration; tunnel access will be requested again.",
+                                health.mcp_failure_code.unwrap_or("tunnel_runtime_not_ready")
+                            );
+                            if self.ask(
+                                "Stop this owned controller and retry with the installed version? [y/N] ",
+                                false,
+                                ctx,
+                            )? != "y"
+                            {
+                                return Err("approval_rejected");
+                            }
+                            let stopped = adapter
+                                .stop(&spec, true, &bounded(ctx, 10_000))
+                                .map_err(|error| error.code)?;
+                            let checked = adapter
+                                .status(&spec, &bounded(ctx, 5_000))
+                                .map_err(|error| error.code)?;
+                            if stopped.process_running || checked.process_running {
+                                return Err("controller_stop_unverified");
+                            }
+                            ProofStore::open(&self.state.join("verification"))?.invalidate()?;
+                        }
+                        Ok(_) => {}
+                        Err(error) if error.code == "tunnel_state_missing" => {}
+                        Err(error) => return Err(error.code),
                     }
                 }
             }

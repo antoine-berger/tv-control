@@ -170,3 +170,22 @@ Sources: [Secure MCP Tunnels](https://developers.openai.com/api/docs/guides/secu
 [ChatGPT plugin connection](https://developers.openai.com/plugins/deploy/connect-chatgpt),
 [official runtime lifecycle](https://github.com/openai/tunnel-client/blob/master/plugins/tunnel-mcp/skills/tunnel-mcp/references/runtime-flows.md),
 [local health semantics](https://github.com/openai/tunnel-client/blob/master/docs/health.md).
+
+### MCP setup fails while the tunnel is running
+
+A running tunnel and a successful `/readyz` response do not establish MCP discovery.
+Setup checks the same runtime's passive `/health/mcp` result after you return from
+plugin selection. `tunnel_mcp_discovery_failed` means that initialization or tool
+discovery failed; it does not mean that your TV trust was lost.
+
+The server supports repeated, validated legacy MCP handshakes on the official
+client's shared stdio process. Each handshake still requires a fresh initialized
+notification. Controller ownership, request deduplication and pending action
+cancellation survive that handshake.
+
+If an older controller is still running with failed discovery, rerun the installer.
+Accept the explicit prompt to restart this owned controller with the installed
+version. This keeps its TV identity, configuration and tunnel ID. Enter the
+restricted runtime key privately if requested, repeat plugin selection, then obtain
+a fresh conversation verification code. Declining leaves the controller running;
+setup does not start a second ADB daemon or silently replace an existing runtime.

@@ -1,5 +1,7 @@
 //! Official tunnel-client lifecycle adapter. Health is not conversation exposure.
 //! The only persistent runtime operation is the reviewed native `runtimes` API.
+mod mcp_health;
+
 use crate::{
     process::{Invocation, Process},
     setup::shell_quote,
@@ -38,10 +40,12 @@ pub struct RuntimeHealth {
     pub process_running: bool,
     pub healthy: bool,
     pub ready: bool,
+    /// A bounded diagnostic from passive MCP observations, never a raw error.
+    pub mcp_failure_code: Option<&'static str>,
 }
 impl RuntimeHealth {
     pub fn locally_ready(&self) -> bool {
-        self.process_running && self.healthy && self.ready
+        self.process_running && self.healthy && self.ready && self.mcp_failure_code.is_none()
     }
 }
 
@@ -365,9 +369,18 @@ impl OfficialTunnel<'_> {
             process_running: running,
             healthy,
             ready,
+            mcp_failure_code: None,
         })
     }
     pub fn status(&self, spec: &TunnelSpec, ctx: &Context<'_>) -> PortResult<RuntimeHealth> {
+        self.status_inner(spec, ctx, true)
+    }
+    fn status_inner(
+        &self,
+        spec: &TunnelSpec,
+        ctx: &Context<'_>,
+        observe_mcp: bool,
+    ) -> PortResult<RuntimeHealth> {
         spec.ownership(false)?;
         let value = self.run_json(
             spec,
@@ -381,7 +394,22 @@ impl OfficialTunnel<'_> {
             false,
             ctx,
         )?;
-        self.parse_status(spec, &value)
+        let mut health = self.parse_status(spec, &value)?;
+        // The official CLI advertises this link only after confirming support;
+        // older runtimes omit it. Its ready/healthy flags cover startup/liveness,
+        // so an observed MCP failure must additionally gate our local readiness.
+        // An unobserved child is allowed: requiring discovery here would prevent
+        // the user from reaching the plugin UI that initiates first discovery.
+        if observe_mcp && health.process_running {
+            if let Some(url) = value.get("mcp_health_url") {
+                let url = url
+                    .as_str()
+                    .ok_or(before("tunnel_mcp_health_invalid_url"))?;
+                health.mcp_failure_code = mcp_health::failure_code(url, ctx)?;
+                health.ready &= health.mcp_failure_code.is_none();
+            }
+        }
+        Ok(health)
     }
     /// Explicit approval covers local state/profile creation and persistent runtime connection.
     /// It never creates a remote tunnel and never receives an administrator credential.
@@ -424,7 +452,11 @@ impl OfficialTunnel<'_> {
                 return if health.locally_ready() {
                     Ok(health)
                 } else {
-                    Err(before("tunnel_runtime_not_ready"))
+                    Err(before(
+                        health
+                            .mcp_failure_code
+                            .unwrap_or("tunnel_runtime_not_ready"),
+                    ))
                 };
             }
         }
@@ -453,7 +485,11 @@ impl OfficialTunnel<'_> {
             .status(spec, ctx)
             .map_err(|error| Failure::uncertain(error.code))?;
         if !health.locally_ready() {
-            return Err(Failure::uncertain("tunnel_runtime_not_ready"));
+            return Err(Failure::uncertain(
+                health
+                    .mcp_failure_code
+                    .unwrap_or("tunnel_runtime_not_ready"),
+            ));
         }
         Ok(health)
     }
@@ -467,7 +503,9 @@ impl OfficialTunnel<'_> {
         if !approved {
             return Err(before("tunnel_stop_approval_required"));
         }
-        let health = self.status(spec, ctx)?;
+        // Optional diagnostics must not prevent cleanup of an identity-verified
+        // owned runtime, including malformed/unreachable health endpoints.
+        let health = self.status_inner(spec, ctx, false)?;
         if !health.process_running {
             return Ok(health);
         }

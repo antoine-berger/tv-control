@@ -3,12 +3,16 @@ use std::{
     collections::VecDeque,
     ffi::OsStr,
     fs,
+    io::{Read, Write},
+    net::TcpListener,
     os::unix::fs::{DirBuilderExt, PermissionsExt},
     path::PathBuf,
     sync::{
         atomic::{AtomicU64, Ordering},
         Mutex,
     },
+    thread,
+    time::Duration,
 };
 use tv_adapters::{
     onboarding_tunnel::{OfficialTunnel, TunnelSpec},
@@ -448,4 +452,178 @@ fn malformed_identifiers_symlinks_and_cancellation_cannot_start_a_runtime() {
     );
     assert!(!spec.state_dir.exists());
     assert!(mock.invocations.lock().unwrap().is_empty());
+}
+
+fn component_status(
+    spec: &TunnelSpec,
+    component_status: &str,
+    state: &str,
+) -> (Value, thread::JoinHandle<()>) {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let mut value = status(spec, true);
+    value["mcp_health_url"] = json!(format!(
+        "http://{}/health/mcp",
+        listener.local_addr().unwrap()
+    ));
+    let body = serde_json::to_vec(&json!({
+        "schema_version":1, "component":"mcp", "status":component_status, "state":state,
+        "details":{"child_state":"running", "initialize":{"ok":false}, "tools_list":{"ok":false}},
+        "reason_code":"mcp_discovery_error"
+    }))
+    .unwrap();
+    let worker = thread::spawn(move || {
+        let (mut socket, _) = listener.accept().unwrap();
+        socket
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        let mut request = Vec::new();
+        while !request.ends_with(b"\r\n\r\n") {
+            let mut byte = [0];
+            socket.read_exact(&mut byte).unwrap();
+            request.push(byte[0]);
+            assert!(request.len() < 1024);
+        }
+        assert!(request.starts_with(b"GET /health/mcp HTTP/1.0\r\n"));
+        write!(
+            socket,
+            "HTTP/1.0 200 OK\r\nContent-Length: {}\r\n\r\n",
+            body.len()
+        )
+        .unwrap();
+        socket.write_all(&body).unwrap();
+    });
+    (value, worker)
+}
+
+#[test]
+fn startup_liveness_does_not_override_observed_mcp_failure_and_stop_stays_available() {
+    let directory = Directory::new();
+    let spec = directory.spec();
+    establish(&spec);
+    let clock = SystemClock::default();
+    let cancel = CancelFlag::default();
+    for (state, code) in [
+        ("failed", "tunnel_mcp_discovery_failed"),
+        ("closed", "tunnel_mcp_child_closed"),
+    ] {
+        let (value, worker) = component_status(&spec, "degraded", state);
+        let mock = Mock::new(vec![value.clone(), value, status(&spec, false)]);
+        let adapter = OfficialTunnel { process: &mock };
+        let health = adapter.status(&spec, &context(&clock, &cancel)).unwrap();
+        assert!(health.process_running && health.healthy);
+        assert!(!health.ready && !health.locally_ready());
+        assert_eq!(health.mcp_failure_code, Some(code));
+        worker.join().unwrap(); // The advertised endpoint is now unavailable.
+        assert!(
+            !adapter
+                .stop(&spec, true, &context(&clock, &cancel))
+                .unwrap()
+                .process_running
+        );
+        assert_eq!(mock.invocations.lock().unwrap().len(), 3);
+    }
+}
+
+#[test]
+fn startup_allows_unobserved_or_discovered_mcp_and_older_runtime_without_url() {
+    let directory = Directory::new();
+    let spec = directory.spec();
+    establish(&spec);
+    let clock = SystemClock::default();
+    let cancel = CancelFlag::default();
+    for (state_status, state) in [("unknown", "not_observed"), ("ok", "discovered")] {
+        let (value, worker) = component_status(&spec, state_status, state);
+        let mock = Mock::new(vec![aliases(&spec), value]);
+        let health = OfficialTunnel { process: &mock }
+            .ensure(&spec, true, None, &context(&clock, &cancel))
+            .unwrap();
+        assert!(health.locally_ready());
+        assert_eq!(health.mcp_failure_code, None);
+        assert_eq!(mock.invocations.lock().unwrap().len(), 2);
+        worker.join().unwrap();
+    }
+    let mock = Mock::new(vec![status(&spec, true)]);
+    assert!(OfficialTunnel { process: &mock }
+        .status(&spec, &context(&clock, &cancel))
+        .unwrap()
+        .locally_ready());
+}
+
+#[test]
+fn known_mcp_failure_never_restarts_runtime_and_post_connect_failure_is_uncertain() {
+    let directory = Directory::new();
+    let spec = directory.spec();
+    establish(&spec);
+    let clock = SystemClock::default();
+    let cancel = CancelFlag::default();
+    let (value, worker) = component_status(&spec, "degraded", "failed");
+    let mock = Mock::new(vec![aliases(&spec), value]);
+    let error = OfficialTunnel { process: &mock }
+        .ensure(
+            &spec,
+            true,
+            Some(OsStr::new("fixture-value")),
+            &context(&clock, &cancel),
+        )
+        .unwrap_err();
+    assert_eq!(error.code, "tunnel_mcp_discovery_failed");
+    assert_eq!(error.effect, Effect::None);
+    assert_eq!(mock.invocations.lock().unwrap().len(), 2);
+    assert!(mock
+        .invocations
+        .lock()
+        .unwrap()
+        .iter()
+        .all(|call| !call.mutating));
+    worker.join().unwrap();
+
+    let (value, worker) = component_status(&spec, "degraded", "failed");
+    let mock = Mock::new(vec![json!({"aliases":[]}), json!({"launched":true}), value]);
+    let error = OfficialTunnel { process: &mock }
+        .ensure(
+            &spec,
+            true,
+            Some(OsStr::new("fixture-value")),
+            &context(&clock, &cancel),
+        )
+        .unwrap_err();
+    assert_eq!(error.code, "tunnel_mcp_discovery_failed");
+    assert_eq!(error.effect, Effect::MayHaveChanged);
+    assert_eq!(mock.invocations.lock().unwrap().len(), 3);
+    worker.join().unwrap();
+}
+
+#[test]
+fn health_url_cannot_bypass_identity_or_block_owned_runtime_cleanup() {
+    let directory = Directory::new();
+    let spec = directory.spec();
+    establish(&spec);
+    let clock = SystemClock::default();
+    let cancel = CancelFlag::default();
+    let ctx = context(&clock, &cancel);
+    for url in [
+        json!("http://198.51.100.2:80/health/mcp"),
+        json!(null),
+        json!(42),
+    ] {
+        let mut value = status(&spec, true);
+        value["mcp_health_url"] = url.clone();
+        let mut wrong = value.clone();
+        wrong["process"]["target_value"] = json!("foreign command");
+        let mut stopped = status(&spec, false);
+        stopped["mcp_health_url"] = url;
+        let mock = Mock::new(vec![wrong, value.clone(), value, stopped.clone(), stopped]);
+        let adapter = OfficialTunnel { process: &mock };
+        assert_eq!(
+            adapter.status(&spec, &ctx).unwrap_err().code,
+            "tunnel_runtime_identity_mismatch"
+        );
+        assert_eq!(
+            adapter.status(&spec, &ctx).unwrap_err().code,
+            "tunnel_mcp_health_invalid_url"
+        );
+        assert!(!adapter.stop(&spec, true, &ctx).unwrap().process_running);
+        assert!(!adapter.status(&spec, &ctx).unwrap().process_running);
+        assert_eq!(mock.invocations.lock().unwrap().len(), 5);
+    }
 }

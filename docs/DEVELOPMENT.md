@@ -124,6 +124,27 @@ This also only inspects/extracts the fixture and never invokes ADB. Ordinary CI 
 or install external helpers. macOS Homebrew execution remains an explicitly
 approved host acceptance check; injected command tests are not that qualification.
 
+### Optional official tunnel-client protocol qualification
+
+Standard tests keep using isolated fixtures and never download external helpers.
+For additional Linux x86-64 or ARM64 interoperability coverage, supply an already
+downloaded official v0.0.17 ZIP for the current architecture:
+
+```sh
+python3 -W error::ResourceWarning scripts/test_tunnel_mcp.py \
+  target/release/tv-control /absolute/path/to/tunnel-client-v0.0.17-linux-amd64.zip
+```
+
+Unlike the archive-inspection check above, this opt-in check executes the helper
+after verifying its pinned archive checksum and member list. It uses a temporary
+HOME, a dummy credential, a loopback-only control-plane fixture and the real
+controller's stdio MCP server. It checks repeated initialization, fresh initialized
+notifications, malformed-request recovery, the official notification guard and
+legacy recovery after an unsupported modern discovery probe.
+Only protocol discovery is exercised; no TV tool, ADB, curl, account, real tunnel
+or Cloudflare connection is used. All fixture processes are stopped afterward.
+This establishes local protocol interoperability, not live ChatGPT or TV success.
+
 ## Changing behavior
 
 Add domain vocabulary only when needed, express behavior through application
