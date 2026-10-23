@@ -335,7 +335,8 @@ fn cleanup_waits_for_sibling_fork_to_exec() {
         .set_read_timeout(Some(Duration::from_secs(2)))
         .unwrap();
     let sibling = std::thread::spawn(move || {
-        let mut command = Command::new("/bin/true");
+        let mut command = Command::new("/bin/sh");
+        command.args(["-c", "exit 0"]);
         // SAFETY: only async-signal-safe write, poll, accept and close occur in
         // the child. Its inherited listener keeps the port alive until exec.
         unsafe {
