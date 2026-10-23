@@ -106,6 +106,7 @@ impl Progress {
             self.state.interface = None;
             self.state.device = None;
             self.state.display_name = None;
+            self.state.discovery_service = None;
             self.state.manual_endpoint = None;
             self.state.manual_kind = None;
             self.save()?;
@@ -167,6 +168,11 @@ impl Progress {
     }
     pub fn target(&mut self, plan: &SetupPlan, manual: bool) -> Result<(), &'static str> {
         self.state.device = Some(plan.candidate.id.clone());
+        self.state.discovery_service = if manual {
+            None
+        } else {
+            onboarding::connection_service(plan).and_then(|s| s.instance.clone())
+        };
         if self.state.device.as_ref().is_some_and(|s| s.is_empty()) {
             self.state.device = None;
         }
@@ -211,9 +217,21 @@ impl Progress {
     pub fn clear_target(&mut self) -> Result<(), &'static str> {
         self.state.device = None;
         self.state.display_name = None;
+        self.state.discovery_service = None;
         self.state.manual_endpoint = None;
         self.state.manual_kind = None;
         self.save()
+    }
+    pub fn matches_target(&self, candidate: &Candidate) -> bool {
+        self.state
+            .discovery_service
+            .as_ref()
+            .is_some_and(|instance| {
+                candidate
+                    .services
+                    .iter()
+                    .any(|s| s.instance.as_ref() == Some(instance))
+            })
     }
     fn save(&mut self) -> Result<(), &'static str> {
         self.state.writer_version = env!("CARGO_PKG_VERSION").into();

@@ -1,8 +1,8 @@
 # Guided setup and direct chat connection
 
 The [guided installer](INSTALLATION.md) handles the normal installation and resume flow.
-The commands below are advanced/manual steps. `tv-control setup` asks for a LAN interface and a detected display, previews a
-private configuration, then asks for confirmation. It does not start ADB, pair,
+The commands below are advanced/manual steps. `tv-control setup` asks for a LAN interface and a detected display, then saves a
+new private local configuration without an extra save confirmation. It does not start ADB, pair,
 connect to the device, modify TV settings or create a ChatGPT connection. Device
 access and host integration need the explicit steps below. Detection, configured
 capabilities, authorization and observed device state are different evidence.
@@ -66,14 +66,15 @@ an endpoint only as a guided fallback when no usable advertisement is available.
 No device-specific app, media title or volume scale is invented. The generated
 `tv-control.local.json` has mode 0600, with media and volume actions unconfigured.
 Preview includes the selected target and executable; JSON mode includes the full
-configuration. Setup requires explicit confirmation before writing.
+configuration. Interactive setup saves the new local draft directly; JSON mode
+keeps its preview followed by an explicit `--confirm` write.
 
 Saving uses an exclusive temporary file plus atomic no-clobber publication. An
 existing destination, including a symlink, is refused. Repeat with `--resume` to
 reuse an identical private configuration. If discovery changes a dynamic port or
 another value, choose a new output path, review it, then retire the old file
 explicitly. No automatic replacement or backup containing private data is made.
-EOF, `q` or declining confirmation leaves configuration untouched. An OS interrupt
+EOF or `q` at an input prompt leaves configuration untouched. An OS interrupt
 before publication can leave a private `.tv-control-*.tmp` file; it is never
 considered active configuration and may be removed after inspecting ownership.
 
@@ -103,7 +104,15 @@ or missing A record is unresolved and cannot yield a control endpoint. TTL expir
 is based on monotonic receipt time and capped at 30 seconds. Received goodbye
 records remove the matching RDATA; they do not remove a newer port. Native receipt
 of ordinary multicast announcements/goodbyes is not claimed by parser fixtures.
-Rediscover after restart or debugging changes, and if a preview expires.
+If an advertisement expires while choosing or naming the TV, setup automatically
+runs one bounded search on the same interface/address. It requires the same
+address, control protocol and DNS-SD instance; a revalidated dynamic port may
+change. Missing identity, a disappeared display, pairing-only or ambiguous endpoints
+cannot reuse the expired endpoint. Failure offers retry in the wizard and preserves
+local progress, including the name, when checkpoints are enabled. Each explicit
+retry has its own bounded search. These advertisements remain untrusted evidence;
+refresh does not authenticate or connect to a TV. Rediscover after restart or
+separately authorized debugging changes.
 
 | Advertisement | Interpretation |
 | --- | --- |
@@ -213,7 +222,7 @@ and candidate ID, inspect the preview, then repeat with `--confirm` to save.
 `--manual-endpoint IPv4:PORT --manual-kind legacy|tls` is a guided fallback bound
 to the explicitly chosen subnet. Unsupported options fail instead of being ignored.
 Exit 0 means completed offline operation or preview; 2 means a selection/device
-setup step remains or confirmation was declined; 1 is an error/EOF cancellation.
+setup/revalidation step remains; 1 is an error or input cancellation.
 None of those statuses imply authorized control or a connected ChatGPT plugin.
 
 ## Protocol and product references

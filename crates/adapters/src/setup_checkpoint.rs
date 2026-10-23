@@ -21,6 +21,8 @@ pub struct Checkpoint {
     pub device: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub display_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub discovery_service: Option<String>,
     pub manual_endpoint: Option<String>,
     pub manual_kind: Option<String>,
     pub adb: Option<PathBuf>,
@@ -65,6 +67,10 @@ impl Checkpoint {
                 .display_name
                 .as_ref()
                 .is_some_and(|s| !crate::config::valid_display_name(s))
+            || self
+                .discovery_service
+                .as_ref()
+                .is_some_and(|s| s.is_empty() || !clean(s))
             || self.server_port == Some(0)
         {
             return Err("checkpoint_invalid");

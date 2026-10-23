@@ -84,8 +84,11 @@ or updating an older version. Advanced noninteractive behavior stays explicit.
 
 Checkpoints store local choices and configuration progress only. They do not
 store credentials, discovery snapshots or authorization claims. Starting or resuming setup requests bounded discovery on the chosen LAN;
-there is no extra search confirmation. Saved interfaces and target availability
-are revalidated. Recovery preserves corrupt data and handles recognized temporary
+there is no extra search or local draft save confirmation. Saved interfaces and target availability
+are revalidated. Input-time advertisement expiry triggers one bounded refresh on
+the same interface/address, control protocol and service instance. Dynamic ports
+may change only with this fresh advertisement evidence; failure offers explicit
+retry in the wizard. Saving configuration grants no device access. Recovery preserves corrupt data and handles recognized temporary
 hard links from interrupted initial publication. Content and open-file identity
 protect against accidental replacement or in-place edits during a session.
 

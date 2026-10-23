@@ -252,7 +252,14 @@ fn select_interface(
         )?;
         format!("{}@{}", interfaces[n].name, interfaces[n].address)
     };
-    Ok(selected)
+    let matches: Vec<_> = interfaces
+        .iter()
+        .filter(|i| i.name == selected || format!("{}@{}", i.name, i.address) == selected)
+        .collect();
+    if matches.len() != 1 {
+        return Err("interface_missing_or_ambiguous");
+    }
+    Ok(format!("{}@{}", matches[0].name, matches[0].address))
 }
 fn discover_on(
     options: &Options,
@@ -416,6 +423,41 @@ fn ensure_fresh(plan: &SetupPlan, clock: &dyn Clock) -> Result<(), &'static str>
     }
     Ok(())
 }
+fn refresh_selected(
+    options: &Options,
+    port: &dyn NetworkDiscovery,
+    clock: &dyn Clock,
+    interface: &str,
+    selected: &Candidate,
+) -> Result<Option<SetupPlan>, &'static str> {
+    loop {
+        if !options.json {
+            eprintln!("The selected display advertisement expired. Refreshing its endpoint on {interface}...");
+        }
+        let result = discover_on(options, port, clock, interface).and_then(|candidates| {
+            onboarding::refresh_setup(selected, candidates, clock.monotonic_ms())
+        });
+        match result {
+            Ok(plan) => return Ok(Some(plan)),
+            Err(error) => {
+                if options.json {
+                    emit(
+                        json!({"status":"refresh_required","code":error.code,"os_error":error.os_error,"message":"The selected display could not be revalidated. Retry setup with the same selection; no configuration was saved.","configuration_saved":false,"control_verified":false,"executed":false}),
+                        true,
+                    );
+                    return Ok(None);
+                }
+                eprintln!("Could not refresh the selected display: {} (OS error: {}). No configuration saved; local setup progress is retained when checkpoints are enabled.", error.code, error.os_error.map(|n| n.to_string()).unwrap_or_else(|| "unavailable".into()));
+                if prompt("Retry this display on the same LAN? Enter to retry, or q to stop:")?
+                    .is_empty()
+                {
+                    continue;
+                }
+                return Err("invalid_selection");
+            }
+        }
+    }
+}
 fn setup_command(input: &Options) -> Result<i32, &'static str> {
     let mut owned = input.clone();
     let output = PathBuf::from(input.get("--output").unwrap_or("tv-control.local.json"));
@@ -436,7 +478,7 @@ fn setup_command(input: &Options) -> Result<i32, &'static str> {
     }
     if input.dry && input.get("--fixture").is_none() {
         emit(
-            json!({"status":"dry_run","message":"Dry run: no discovery, configuration write or connection performed.","next_steps":["Choose an interface, discover displays, choose a device, preview configuration, then confirm saving.","Use --fixture with --dry-run for an offline full preview."],"network_access":false,"writes":false}),
+            json!({"status":"dry_run","message":"Dry run: no discovery, configuration write or connection performed.","next_steps":["Choose an interface, discover displays, choose a device, then save its local configuration.","Use --fixture with --dry-run for an offline full preview."],"network_access":false,"writes":false}),
             input.json,
         );
         return Ok(0);
@@ -488,14 +530,18 @@ fn setup_command(input: &Options) -> Result<i32, &'static str> {
             }
         }
     };
+    let saved_device = owned.get("--device").map(str::to_owned);
+    let saved_name = owned.get("--name").map(str::to_owned);
     if input.get("--device").is_none()
-        && owned
-            .get("--device")
-            .is_some_and(|id| !candidates.iter().any(|c| c.id == id))
+        && owned.get("--device").is_some_and(|id| {
+            !candidates
+                .iter()
+                .any(|c| c.id == id && progress.as_ref().is_none_or(|p| p.matches_target(c)))
+        })
         && !manual
     {
         eprintln!(
-            "The saved display is no longer advertised at that address. Choose a current display."
+            "The saved display is no longer advertised with the same identity at that address. Choose a current display."
         );
         owned.values.remove("--device");
         if input.get("--name").is_none() {
@@ -542,16 +588,18 @@ fn setup_command(input: &Options) -> Result<i32, &'static str> {
         )?;
         candidates[n].clone()
     };
-    let mut plan = onboarding::plan_setup(candidate, clock.monotonic_ms());
-    if plan.readiness == SetupReadiness::DiscoveryExpired {
+    let selected = candidate.clone();
+    let mut plan = onboarding::plan_setup(candidate, 0);
+    if plan.readiness == SetupReadiness::DiscoveryExpired
+        || (!manual && ensure_fresh(&plan, &clock).is_err())
+    {
         if let Some(progress) = progress.as_mut() {
-            progress.target(&plan, false)?;
+            progress.target(&onboarding::plan_setup(selected.clone(), 0), false)?;
         }
-        emit(
-            json!({"status":"discovery_expired_rediscover","message":"The display advertisement expired while you were choosing. Run the same installer again to refresh the search; your selection is saved.","control_verified":false,"executed":false,"configuration_saved":false}),
-            options.json,
-        );
-        return Ok(2);
+        let Some(fresh) = refresh_selected(options, &*port, &clock, &interface, &selected)? else {
+            return Ok(2);
+        };
+        plan = fresh;
     }
     if plan.endpoint.is_none()
         && !options.json
@@ -589,7 +637,13 @@ fn setup_command(input: &Options) -> Result<i32, &'static str> {
         .parse()
         .map_err(|_| "invalid_server_port")?;
     let mut config = setup::configuration(&plan, adb, curl, server_port)?;
-    let name = if let Some(name) = options.get("--name") {
+    let name = if let Some(name) = options.get("--name").or_else(|| {
+        if saved_device.as_deref() == Some(plan.candidate.id.as_str()) {
+            saved_name.as_deref()
+        } else {
+            None
+        }
+    }) {
         Some(name.to_string())
     } else if options.guided && !options.json {
         let default = display_label(&plan.candidate);
@@ -605,20 +659,39 @@ fn setup_command(input: &Options) -> Result<i32, &'static str> {
     if let Some(tv_adapters::config::Device::Adb { display_name, .. }) =
         config.devices.values_mut().next()
     {
-        *display_name = name;
+        *display_name = name.clone();
     }
     config.validate()?;
     if let Some(progress) = progress.as_mut() {
         progress.dependencies(&config)?;
     }
-    let mut bytes =
-        serde_json::to_vec_pretty(&config).map_err(|_| "configuration_encode_failed")?;
-    bytes.push(b'\n');
     let output = PathBuf::from(options.get("--output").unwrap_or("tv-control.local.json"));
     let preview = json!({"status":"confirmation_required","message":"Configuration preview ready. Device control remains unverified.","candidate":candidate_json(&plan.candidate),"configuration":config,"output":output,"simulation":options.get("--fixture").is_some(),"next_steps":guidance(),"writes":false});
     if options.dry || (options.json && !options.confirm) {
         emit(preview, options.json);
         return Ok(0);
+    }
+    if !manual && ensure_fresh(&plan, &clock).is_err() {
+        let Some(fresh) = refresh_selected(options, &*port, &clock, &interface, &selected)? else {
+            return Ok(2);
+        };
+        plan = fresh;
+        // Rebuild from the revalidated endpoint, keeping the local name and dependencies.
+        config = setup::configuration(
+            &plan,
+            config.executables.adb.clone(),
+            config.executables.curl.clone(),
+            server_port,
+        )?;
+        if let Some(tv_adapters::config::Device::Adb { display_name, .. }) =
+            config.devices.values_mut().next()
+        {
+            *display_name = name;
+        }
+        if let Some(progress) = progress.as_mut() {
+            progress.target(&plan, false)?;
+            progress.dependencies(&config)?;
+        }
     }
     if !options.json {
         eprintln!(
@@ -626,22 +699,11 @@ fn setup_command(input: &Options) -> Result<i32, &'static str> {
             config.executables.adb, server_port
         );
         eprintln!("Will save {} for {}. No media app or volume calibration is assumed. No device access is granted.",output.display(),plan.endpoint.as_deref().unwrap_or("unknown"));
-        if !options.confirm
-            && prompt("Save this private configuration? Type yes to confirm:")? != "yes"
-        {
-            emit(
-                json!({"status":"cancelled","message":"Cancelled; no configuration saved.","writes":false}),
-                false,
-            );
-            return Ok(2);
-        }
     }
-    if let Err(error) = ensure_fresh(&plan, &clock) {
-        if !options.json {
-            eprintln!("The display advertisement expired before saving. Run the same installer again to refresh the search; your setup progress is saved.");
-        }
-        return Err(error);
-    }
+    let mut bytes =
+        serde_json::to_vec_pretty(&config).map_err(|_| "configuration_encode_failed")?;
+    bytes.push(b'\n');
+    ensure_fresh(&plan, &clock)?;
     let status = setup::publish(&output, &bytes, options.resume)?;
     if let Some(progress) = progress.as_mut() {
         progress.completed()?;

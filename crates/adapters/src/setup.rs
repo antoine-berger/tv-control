@@ -23,20 +23,8 @@ pub fn configuration(
     config.servers.clear();
     config.media.clear();
     config.workflows.clear();
-    let kind =
-        if plan.candidate.services.iter().any(|s| {
-            s.kind == tv_domain::onboarding::ServiceKind::AdbTlsConnect && s.port.is_some()
-        }) {
-            tv_domain::onboarding::ServiceKind::AdbTlsConnect
-        } else {
-            tv_domain::onboarding::ServiceKind::AdbLegacy
-        };
-    let service = plan
-        .candidate
-        .services
-        .iter()
-        .find(|s| s.kind == kind && s.port.is_some_and(|p| endpoint.ends_with(&format!(":{p}"))))
-        .and_then(|s| s.instance.clone());
+    let service =
+        tv_application::onboarding::connection_service(plan).and_then(|s| s.instance.clone());
     config.devices.insert(
         "screen".into(),
         Device::Adb {

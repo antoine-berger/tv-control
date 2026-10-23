@@ -112,3 +112,136 @@ pub fn plan_setup(mut candidate: Candidate, now_monotonic_ms: u64) -> SetupPlan 
         readiness,
     }
 }
+
+/// The selected control service, excluding pairing and display-only endpoints.
+pub fn connection_service(plan: &SetupPlan) -> Option<&AdvertisedService> {
+    let endpoint = plan.endpoint.as_ref()?;
+    let kind = if plan
+        .candidate
+        .services
+        .iter()
+        .any(|s| s.kind == ServiceKind::AdbTlsConnect && s.port.is_some())
+    {
+        ServiceKind::AdbTlsConnect
+    } else {
+        ServiceKind::AdbLegacy
+    };
+    plan.candidate
+        .services
+        .iter()
+        .find(|s| s.kind == kind && s.port.is_some_and(|p| endpoint.ends_with(&format!(":{p}"))))
+}
+
+/// Revalidate an expired selection using advertisement identity, never its label.
+/// An address alone cannot establish continuity with the selected display.
+pub fn refresh_setup(
+    selected: &Candidate,
+    candidates: Vec<Candidate>,
+    now_monotonic_ms: u64,
+) -> PortResult<SetupPlan> {
+    let original = plan_setup(selected.clone(), 0);
+    let service = connection_service(&original)
+        .filter(|s| s.instance.as_ref().is_some_and(|s| !s.is_empty()))
+        .ok_or(Failure::before("refresh_identity_unavailable"))?;
+    let candidate = candidates
+        .into_iter()
+        .find(|c| c.address == selected.address && c.id == selected.id)
+        .ok_or(Failure::before("selected_display_not_found"))?;
+    let fresh = plan_setup(candidate, now_monotonic_ms);
+    let current =
+        connection_service(&fresh).ok_or(Failure::before("selected_endpoint_unavailable"))?;
+    if current.kind != service.kind || current.instance != service.instance {
+        return Err(Failure::before("selected_display_identity_changed"));
+    }
+    Ok(fresh)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::net::Ipv4Addr;
+
+    fn display(port: u16, until: u64) -> Candidate {
+        Candidate {
+            id: "screen_192_0_2_10".into(),
+            label: "Untrusted label".into(),
+            address: Ipv4Addr::new(192, 0, 2, 10),
+            services: vec![AdvertisedService {
+                kind: ServiceKind::AdbTlsConnect,
+                port: Some(port),
+                instance: Some("selected._adb-tls-connect._tcp.local".into()),
+                valid_until_monotonic_ms: Some(until),
+            }],
+        }
+    }
+
+    #[test]
+    fn refresh_requires_current_unique_endpoint_and_advertisement_identity() {
+        let selected = display(5555, 1000);
+        let fresh = display(9001, 32_000);
+        let plan = refresh_setup(&selected, vec![fresh.clone()], 31_000).unwrap();
+        assert_eq!(plan.endpoint.as_deref(), Some("192.0.2.10:9001"));
+        assert_eq!(plan.readiness, SetupReadiness::AuthorizationUnverified);
+        for (candidates, code) in [
+            (vec![], "selected_display_not_found"),
+            (vec![display(9001, 31_000)], "selected_endpoint_unavailable"),
+            (
+                {
+                    let mut c = fresh.clone();
+                    c.services[0].instance = Some("another".into());
+                    vec![c]
+                },
+                "selected_display_identity_changed",
+            ),
+            (
+                {
+                    let mut c = fresh.clone();
+                    c.services[0].kind = ServiceKind::AdbTlsPairing;
+                    vec![c]
+                },
+                "selected_endpoint_unavailable",
+            ),
+            (
+                {
+                    let mut c = fresh.clone();
+                    c.services[0].kind = ServiceKind::AdbLegacy;
+                    vec![c]
+                },
+                "selected_display_identity_changed",
+            ),
+            (
+                {
+                    let mut c = fresh.clone();
+                    let mut s = c.services[0].clone();
+                    s.port = Some(9002);
+                    c.services.push(s);
+                    vec![c]
+                },
+                "selected_endpoint_unavailable",
+            ),
+            (
+                {
+                    let mut c = fresh.clone();
+                    c.address = Ipv4Addr::new(192, 0, 2, 20);
+                    vec![c]
+                },
+                "selected_display_not_found",
+            ),
+        ] {
+            assert_eq!(
+                refresh_setup(&selected, candidates, 31_000)
+                    .unwrap_err()
+                    .code,
+                code
+            );
+        }
+        let mut unidentified = selected.clone();
+        unidentified.services[0].instance = None;
+        assert_eq!(
+            refresh_setup(&unidentified, vec![fresh], 31_000)
+                .unwrap_err()
+                .code,
+            "refresh_identity_unavailable"
+        );
+    }
+}

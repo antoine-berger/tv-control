@@ -33,7 +33,7 @@ class ZeroArgumentUX(InstallFlow):
  def finish(self,selection=True):
   steps=[('Continue? Type yes:',b'yes\n')]
   if selection:steps.append(('Choose the display:',b'1\n'))
-  return steps+[('Local name [',b'\n'),('Save this private configuration?',b'yes\n')]
+  return steps+[('Local name [',b'\n')]
 
  def assert_offline(self):
   self.assertFalse(self.adb_log.exists(),'setup executed ADB')
@@ -46,6 +46,7 @@ class ZeroArgumentUX(InstallFlow):
   self.assertEqual(before.count('Type yes:'),1,before)
   self.assertNotIn('query this LAN',p.stdout)
   self.assertNotIn('Find TVs on',p.stdout)
+  self.assertNotIn('Save this private configuration?',p.stdout)
 
  def test_single_interface_starts_discovery_without_another_yes(self):
   p=self.terminal(self.finish())
@@ -61,12 +62,11 @@ class ZeroArgumentUX(InstallFlow):
    ('Continue? Type yes:',b'yes\n'),
    ('Choose a number:',b'1\n',31),
    ('Choose the display:',b'1\n',3),
-   ('Local name [',b'Living room\n'),
-   ('Save this private configuration?',b'yes\n',3),
+   ('Local name [',b'Living room\n',3),
   ],timeout=65)
   self.assertGreaterEqual(p.response_delays[1],31)
   self.assertGreaterEqual(p.response_delays[2],3)
-  self.assertGreaterEqual(p.response_delays[4],3)
+  self.assertGreaterEqual(p.response_delays[3],3)
   self.assertEqual(p.returncode,0,p.stdout)
   self.assertNotIn('time limit',p.stdout)
   self.assertNotIn('discovery_expired',p.stdout)
@@ -110,14 +110,14 @@ class ZeroArgumentUX(InstallFlow):
   self.assert_no_discovery_confirmation(p);self.assert_offline()
 
  def test_sigkill_before_publication_then_identical_installer_resumes(self):
-  p=self.terminal(self.finish()[:-1]+[('Save this private configuration?',signal.SIGKILL)])
+  p=self.terminal(self.finish()[:-1]+[('Local name [',signal.SIGKILL)])
   self.assertNotEqual(p.returncode,0,p.stdout)
   self.assertFalse(self.output.exists())
   state=json.loads(self.checkpoint.read_text())
   self.assertEqual(state['device'],'screen_192_0_2_10')
   self.assertFalse(state['configuration_saved'])
   self.assertEqual(self.checkpoint.stat().st_mode&0o777,0o600)
-  p=self.terminal([('Continue? Type yes:',b'yes\n'),('Save this private configuration?',b'yes\n')])
+  p=self.terminal([('Continue? Type yes:',b'yes\n'),('Local name [',b'\n')])
   self.assertEqual(p.returncode,0,p.stdout)
   self.assertNotIn('Choose the display:',p.stdout)
   self.assert_saved();self.assert_offline()
@@ -134,34 +134,66 @@ class ZeroArgumentUX(InstallFlow):
   self.assertEqual(self.checkpoint.read_bytes(),checkpoint)
   self.assert_offline()
 
- def test_advertisement_expiry_before_save_refuses_stale_endpoint_and_reruns(self):
-  # Shorten both SRV and address TTLs; expiry is separate from the UDP budget.
+ def short_ttl(self):
   packet=self.data['packets'][0]
   self.assertEqual(packet['hex'].count('800100000078'),2)
   packet['hex']=packet['hex'].replace('800100000078','800100000001')
+
+ def test_expiry_while_naming_refreshes_and_keeps_name_with_changed_port(self):
+  self.short_ttl()
+  self.data['refresh_packets']=json.loads(json.dumps(self.data['packets']))
+  packet=self.data['refresh_packets'][0]
+  self.assertIn('0000000015b3',packet['hex'])
+  packet['hex']=packet['hex'].replace('0000000015b3','000000002329')
   self.write_fixture()
-  p=self.terminal(self.finish()[:-1]+[('Save this private configuration?',b'yes\n',2)])
-  self.assertNotEqual(p.returncode,0,p.stdout)
-  self.assertIn('discovery_expired_rediscover',p.stdout)
-  self.assertFalse(self.output.exists())
-  self.assertFalse(json.loads(self.checkpoint.read_text())['configuration_saved'])
-  packet['hex']=packet['hex'].replace('800100000001','800100000078');self.write_fixture()
-  p=self.terminal([('Continue? Type yes:',b'yes\n'),('Save this private configuration?',b'yes\n')])
+  p=self.terminal(self.finish()[:-1]+[('Local name [',b'Living room\n',2)])
   self.assertEqual(p.returncode,0,p.stdout)
+  self.assertIn('Refreshing its endpoint',p.stdout)
+  self.assertNotIn('Save this private configuration?',p.stdout)
+  device=json.loads(self.output.read_text())['devices']['screen']
+  self.assertEqual(device['endpoint'],'192.0.2.10:9001')
+  self.assertEqual(device['display_name'],'Living room')
+  self.assertEqual(json.loads(self.checkpoint.read_text())['display_name'],'Living room')
   self.assert_saved();self.assert_offline()
 
- def test_expiry_during_selection_explains_that_rediscovery_is_needed(self):
-  packet=self.data['packets'][0]
-  self.assertEqual(packet['hex'].count('800100000078'),2)
-  packet['hex']=packet['hex'].replace('800100000078','800100000001')
-  self.write_fixture()
-  p=self.terminal([('Continue? Type yes:',b'yes\n'),('Choose the display:',b'1\n',2)])
+ def test_expiry_during_selection_refreshes_without_repeating_choice(self):
+  self.short_ttl();self.write_fixture()
+  p=self.terminal([('Continue? Type yes:',b'yes\n'),('Choose the display:',b'1\n',2),('Local name [',b'\n')])
+  self.assertEqual(p.returncode,0,p.stdout)
+  self.assertEqual(p.stdout.count('Choose the display:'),1)
+  self.assertIn('Refreshing its endpoint',p.stdout)
+  self.assert_saved();self.assert_offline()
+
+ def test_disappeared_display_offers_retry_and_retains_name_for_resume(self):
+  self.short_ttl();self.data['refresh_packets']=[];self.write_fixture()
+  p=self.terminal(self.finish()[:-1]+[('Local name [',b'Living room\n',2),('Enter to retry, or q to stop:',b'\n'),('Enter to retry, or q to stop:',b'q\n')])
   self.assertNotEqual(p.returncode,0,p.stdout)
+  self.assertEqual(p.stdout.count('Refreshing its endpoint'),2)
+  self.assertIn('selected_display_not_found',p.stdout)
+  self.assertFalse(self.output.exists());state=json.loads(self.checkpoint.read_text())
+  self.assertEqual(state['display_name'],'Living room')
+  self.assertEqual(state['device'],'screen_192_0_2_10');self.assertFalse(state['configuration_saved'])
+  self.assertTrue(state['discovery_service'])
+  self.data.pop('refresh_packets');self.write_fixture()
+  p=self.terminal([('Continue? Type yes:',b'yes\n')])
+  self.assertEqual(p.returncode,0,p.stdout)
+  self.assertNotIn('Choose the display:',p.stdout);self.assertNotIn('Local name [',p.stdout)
+  self.assertEqual(json.loads(self.output.read_text())['devices']['screen']['display_name'],'Living room')
+  self.assert_saved();self.assert_offline()
+
+ def test_replacement_at_same_address_is_never_selected_silently(self):
+  self.short_ttl()
+  self.data['refresh_packets']=json.loads(json.dumps(self.data['packets']))
+  packet=self.data['refresh_packets'][0]
+  packet['hex']=packet['hex'].replace('07446973706c6179','07416e6f74686572')
+  self.write_fixture()
+  p=self.terminal(self.finish()[:-1]+[('Local name [',b'Living room\n',2),('Enter to retry, or q to stop:',b'q\n')])
+  self.assertNotEqual(p.returncode,0,p.stdout);self.assertIn('selected_display_identity_changed',p.stdout)
   self.assertFalse(self.output.exists());self.assert_offline()
-  # A stale advertisement is not evidence that the TV needs debugging/pairing.
-  # Keep this regression red until the human output preserves that distinction.
-  self.assertIn('expired',p.stdout.lower(),
-                'The wizard must explain expiry instead of requiring device setup.\n'+p.stdout)
+  self.data['packets']=self.data.pop('refresh_packets');self.write_fixture()
+  p=self.terminal([('Continue? Type yes:',b'yes\n'),('Choose the display:',b'q\n')])
+  self.assertNotEqual(p.returncode,0,p.stdout)
+  self.assertIn('same identity',p.stdout);self.assertFalse(self.output.exists())
 
 
 if __name__=='__main__':

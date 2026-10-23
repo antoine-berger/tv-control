@@ -34,7 +34,8 @@ A local display name can be chosen after selection; this changes configuration
 metadata only and never renames the remote device.
 
 The wizard selects the only LAN interface when there is one, or asks which LAN
-to use. It searches that LAN directly and asks before saving configuration. TV
+to use. It searches that LAN directly and saves the new local configuration without
+an extra confirmation; existing files are never overwritten. TV
 advertisements are unverified candidates. Network failure shows the stage and a
 numeric OS error when available, then offers manual TV connection details in the
 same wizard. The OS cause is not inferred from a generic failure code.
@@ -49,14 +50,22 @@ edits, daemon, pairing, credentials, service or tunnel is created.
 Run the same installation command after a discovery failure, cancellation or
 restart. Configuration defaults to `$HOME/.config/tv-control/tv-control.local.json`
 (or the selected XDG config home). A private adjacent checkpoint remembers the
-validated interface, display choice, explicit manual endpoint and dependency
-paths. It contains no credentials or claims of device/tunnel authorization.
+validated interface, display choice, advertisement identity, local name, explicit
+manual endpoint and dependency paths. It contains no credentials or claims of device/tunnel authorization.
 
 The saved interface/address is checked again. Resuming setup repeats the bounded discovery on the selected LAN without an
 extra confirmation; snapshots and dynamic ports are not trusted across
-processes. A disappeared display offers a fresh selection. A manual endpoint is
+processes. A disappeared or changed display requires a fresh selection. Older
+checkpoints without advertisement identity also require selection again, while
+keeping a saved name when the same address is explicitly chosen. A manual endpoint is
 reconfirmed before reuse. An already saved valid private configuration is kept,
 without discovery or rewriting it.
+
+An advertisement that expires during user input triggers one bounded refresh in
+this wizard on the same interface/address and for the same service identity.
+The name and choice stay saved; a current port replaces the expired port in the
+new draft. If the selected identity cannot be revalidated, the wizard offers retry
+without restarting the installer. No other TV is selected automatically.
 
 Checkpoint writes use a private temporary file, sync and atomic publication. A
 process-held file lock is released after process exit. Incomplete initial hard-link

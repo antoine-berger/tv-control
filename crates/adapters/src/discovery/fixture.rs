@@ -1,7 +1,10 @@
 //! Offline wire fixtures exercise exactly the same parsers as the UDP adapter.
 use super::{dns, parse_ssdp};
 use serde::Deserialize;
-use std::net::Ipv4Addr;
+use std::{
+    net::Ipv4Addr,
+    sync::atomic::{AtomicUsize, Ordering},
+};
 use tv_application::{onboarding::NetworkDiscovery, Context};
 use tv_domain::{onboarding::*, Failure, PortResult};
 #[derive(Deserialize)]
@@ -24,6 +27,10 @@ struct Packet {
 pub struct FixtureDiscovery {
     interfaces: Vec<Interface>,
     packets: Vec<Packet>,
+    // Optional second snapshot for setup revalidation; never opens a socket.
+    refresh_packets: Option<Vec<Packet>>,
+    #[serde(skip)]
+    searches: AtomicUsize,
     failure: Option<FixtureFailure>,
 }
 #[derive(Deserialize)]
@@ -48,7 +55,13 @@ impl FixtureDiscovery {
         }
         let fixture: Self =
             serde_json::from_slice(bytes).map_err(|_| Failure::before("invalid_fixture"))?;
-        if fixture.interfaces.len() > 16 || fixture.packets.len() > 256 {
+        if fixture.interfaces.len() > 16
+            || fixture.packets.len() > 256
+            || fixture
+                .refresh_packets
+                .as_ref()
+                .is_some_and(|p| p.len() > 256)
+        {
             return Err(Failure::before("fixture_too_large"));
         }
         Ok(fixture)
@@ -83,8 +96,13 @@ impl NetworkDiscovery for FixtureDiscovery {
             };
             return Err(Failure::before(code).with_os_error(failure.os_error));
         }
+        let packets = if self.searches.fetch_add(1, Ordering::Relaxed) == 0 {
+            &self.packets
+        } else {
+            self.refresh_packets.as_ref().unwrap_or(&self.packets)
+        };
         let mut cache = dns::SnapshotCache::default();
-        for packet in &self.packets {
+        for packet in packets {
             ctx.check()?;
             let candidate = match packet.protocol.as_str() {
                 "mdns" => {
