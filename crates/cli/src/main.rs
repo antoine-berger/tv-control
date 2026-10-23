@@ -1,5 +1,8 @@
+mod journey;
+mod journey_fixture;
 mod mcp;
 mod onboarding;
+mod terminal;
 use serde_json::{json, Value};
 use std::{
     io::{self, Read},
@@ -77,11 +80,44 @@ fn capabilities(cfg: &Config) -> Value {
 }
 fn run() -> Result<i32, &'static str> {
     let args: Vec<_> = std::env::args().collect();
+    if args.get(1).is_some_and(|s| s == "onboard")
+        && args.len() == 6
+        && args[3] == "--fixture"
+        && args[5] == "--json"
+    {
+        return journey_fixture::run(
+            std::path::Path::new(&args[2]),
+            std::path::Path::new(&args[4]),
+        );
+    }
+    if args.get(1).is_some_and(|s| s == "onboard")
+        && (args.len() == 3 || (args.len() == 4 && args[3] == "--json"))
+    {
+        return journey::run(std::path::Path::new(&args[2]), args.len() == 4, None);
+    }
+    if args.get(1).is_some_and(|s| s == "onboard") && args.len() == 5 && args[3] == "--launcher" {
+        return journey::run(
+            std::path::Path::new(&args[2]),
+            false,
+            Some(std::path::Path::new(&args[4])),
+        );
+    }
+    if args.get(1).is_some_and(|s| s == "bridge") && args.len() == 4 {
+        return journey::bridge(
+            std::path::Path::new(&args[2]),
+            std::path::Path::new(&args[3]),
+        );
+    }
+    if args.get(1).is_some_and(|s| s == "disconnect")
+        && (args.len() == 3 || (args.len() == 4 && args[3] == "--json"))
+    {
+        return journey::disconnect(std::path::Path::new(&args[2]), args.len() == 4);
+    }
     if args.len() == 2 && matches!(args[1].as_str(), "--help" | "--version") {
         if args[1] == "--version" {
             println!("tv-control {}", env!("CARGO_PKG_VERSION"));
         } else {
-            println!("tv-control setup [--json|--dry-run]\ntv-control interfaces|discover [--interface NAME] [--json]\ntv-control doctor|connect-chatgpt CONFIG [--json]\ntv-control validate|capabilities|mcp CONFIG\ntv-control execute CONFIG REQUEST.json|-\ntv-control workflow CONFIG ALIAS REQUEST_ID TTL_MS\nDiscovery runs only when explicitly requested. Setup never starts ADB, pairs devices or creates a tunnel.");
+            println!("tv-control setup [--json|--dry-run]\ntv-control onboard|disconnect CONFIG [--json]\ntv-control interfaces|discover [--interface NAME] [--json]\ntv-control doctor|connect-chatgpt CONFIG [--json]\ntv-control validate|capabilities|mcp CONFIG\ntv-control execute CONFIG REQUEST.json|-\ntv-control workflow CONFIG ALIAS REQUEST_ID TTL_MS\nSetup prepares configuration. Onboard guides explicit access approvals and verifies the selected conversation. JSON onboarding never grants access.");
         }
         return Ok(0);
     }

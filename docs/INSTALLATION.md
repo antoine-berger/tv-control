@@ -42,8 +42,11 @@ same wizard. The OS cause is not inferred from a generic failure code.
 
 Confirmations and wizard input use `/dev/tty`; the script stream is code only.
 The complete installer function is parsed before execution. Without a controlling
-terminal the guided flow stops before installation writes. No sudo, shell profile
-edits, daemon, pairing, credentials, service or tunnel is created.
+terminal the guided flow stops before installation writes. No sudo or shell
+profile edits are used. After saving configuration, v0.3.0 continues with explicit
+ADB and background-access approvals and [conversation verification](ONBOARDING.md).
+Declining those approvals does not create their corresponding access. Remote
+tunnel creation and ChatGPT account/plugin approvals remain separate guided steps.
 
 ## Resume
 
@@ -75,9 +78,11 @@ Corrupt data is preserved; unsafe ownership, permissions, symlinks and unknown
 hard links are refused. Cooperative locking does not protect against a hostile
 process running as the same user, and filesystem durability is not guaranteed.
 
-These checkpoints cover local TV configuration only. TV authorization, maintained
-ADB installation, media preferences, tunnel credentials and ChatGPT plugin approval
-remain separately verified steps described in [onboarding](ONBOARDING.md).
+Configuration choices and connection progress have separate private checkpoints.
+Neither stores credentials or substitutes for fresh TV/runtime observations.
+Maintained ADB and the official tunnel-client are dependencies; account/plugin
+approvals and any missing dependency download are guided explicitly. Media
+preferences remain configuration work. See [onboarding](ONBOARDING.md).
 
 ## Verify before execution
 
@@ -108,6 +113,9 @@ edit PATH. Existing symlink path components and writable-by-others installation
 parents are refused. Uninstall validates the recorded exact contents before removal;
 changed files, unexpected entries and special files stop it before deletion.
 Configuration and checkpoints are outside the installation and are preserved.
+For a v0.3.0 owned managed controller, uninstall verifies and stops that runtime
+before deleting payloads. If stopping cannot be verified, installation files are
+preserved. Local key removal or uninstall does not revoke the TV's trust record.
 
 Archives are restricted to known regular members, at most 16 MiB compressed and
 32 MiB decompressed. Paths, links, duplicate entries and architecture mismatches

@@ -12,6 +12,8 @@ tv-control capabilities CONFIG
 tv-control execute CONFIG REQUEST.json|-
 tv-control workflow CONFIG ALIAS REQUEST_ID TTL_MS
 tv-control mcp CONFIG
+tv-control onboard CONFIG [--json]
+tv-control disconnect CONFIG [--json]
 ```
 
 | Command | Behavior |
@@ -21,6 +23,8 @@ tv-control mcp CONFIG
 | `execute` | Execute one JSON request from a file, or from stdin with `-` |
 | `workflow` | Expand a configured workflow to one series-resume request |
 | `mcp` | Run the local [MCP stdio server](MCP.md) until its transport closes |
+| `onboard` | Guide explicit access approvals, native checks, official tunnel supervision and cooperative conversation verification; JSON mode returns pending without granting access |
+| `disconnect` | Explicitly stop only the exact owned managed controller; preserve configuration and TV trust |
 
 Capability listing describes configured support; it does not test runtime
 connectivity. `execute` input is bounded by `max_frame_bytes`.

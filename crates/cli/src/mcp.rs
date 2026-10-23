@@ -8,8 +8,11 @@ use std::{
 };
 use tv_adapters::stdio::{FrameReader, Input, Output};
 use tv_adapters::{config::Config, runtime::CancelFlag, wire};
-use tv_application::Control;
+use tv_application::{Cancellation, Clock, Control};
 use tv_domain::Status;
+#[cfg(test)]
+#[path = "mcp_proof_tests.rs"]
+mod proof_tests;
 
 fn send(out: &Output, value: Value) {
     out.send(value);
@@ -41,6 +44,72 @@ pub fn tools() -> Value {
     ]})
 }
 pub fn serve(control: Arc<dyn Control>, config: Arc<Config>) -> Result<(), &'static str> {
+    serve_inner(control, config, None, &CancelFlag::default())
+}
+#[derive(Clone)]
+struct BridgeProof {
+    state: std::path::PathBuf,
+    snapshot: Arc<Vec<u8>>,
+}
+fn complete_verification(
+    proof: &BridgeProof,
+    nonce: &str,
+    result: &tv_domain::Receipt,
+    cancel: &dyn Cancellation,
+    expires: u64,
+) -> Result<tv_adapters::connection_proof::VerificationCode, &'static str> {
+    let check = || {
+        if cancel.is_cancelled() {
+            Err("cancelled")
+        } else if tv_adapters::runtime::SystemClock::default().unix_ms() >= expires {
+            Err("expired")
+        } else {
+            Ok(())
+        }
+    };
+    check()?;
+    let store = tv_adapters::connection_proof::ProofStore::open(&proof.state.join("verification"))?;
+    let code = store.complete(
+        nonce,
+        &proof.snapshot,
+        result,
+        tv_adapters::runtime::SystemClock::default().unix_ms(),
+    )?;
+    if let Err(error) = check() {
+        if let Ok(challenge) = store.request(
+            nonce,
+            &proof.snapshot,
+            tv_adapters::runtime::SystemClock::default().unix_ms(),
+        ) {
+            let _ = store.cancel(&challenge);
+        }
+        return Err(error);
+    }
+    Ok(code)
+}
+pub fn serve_bridge(
+    control: Arc<dyn Control>,
+    config: Arc<Config>,
+    state: std::path::PathBuf,
+    snapshot: Vec<u8>,
+    cancellation: &dyn Cancellation,
+) -> Result<(), &'static str> {
+    serve_inner(
+        control,
+        config,
+        Some(BridgeProof {
+            state,
+            snapshot: Arc::new(snapshot),
+        }),
+        cancellation,
+    )
+}
+fn serve_inner(
+    control: Arc<dyn Control>,
+    config: Arc<Config>,
+    proof: Option<BridgeProof>,
+    cancellation: &dyn Cancellation,
+) -> Result<(), &'static str> {
     let mut input = FrameReader::stdin().map_err(|_| "mcp_input_failed")?;
     let (out, output_worker) = Output::start(
         config.preferences.max_queued_responses,
@@ -54,7 +123,7 @@ pub fn serve(control: Arc<dyn Control>, config: Arc<Config>) -> Result<(), &'sta
     let mut initialized = false;
     let mut ready = false;
     loop {
-        if out.is_stopped() {
+        if out.is_stopped() || cancellation.is_cancelled() {
             break;
         }
         handles.retain(|h: &thread::JoinHandle<()>| !h.is_finished());
@@ -131,7 +200,13 @@ pub fn serve(control: Arc<dyn Control>, config: Arc<Config>) -> Result<(), &'sta
             }
             "ping" => send(&out, json!({"jsonrpc":"2.0","id":id,"result":{}})),
             _ if !ready => error(&out, id, -32600, "initialize_first"),
-            "tools/list" => send(&out, json!({"jsonrpc":"2.0","id":id,"result":tools()})),
+            "tools/list" => {
+                let mut tools = tools();
+                if proof.is_some() {
+                    tools["tools"].as_array_mut().unwrap().push(json!({"name":"tv_verify_connection","description":"Make one harmless read-only TV observation for a fresh installer challenge and return its cooperative verification code. Does not attest conversation identity.","inputSchema":{"type":"object","properties":{"challenge":{"type":"string","pattern":"^[a-f0-9]{32}$"}},"required":["challenge"],"additionalProperties":false},"annotations":{"readOnlyHint":true,"openWorldHint":false}}));
+                }
+                send(&out, json!({"jsonrpc":"2.0","id":id,"result":tools}));
+            }
             "tools/call" => {
                 let name = message
                     .pointer("/params/name")
@@ -149,7 +224,40 @@ pub fn serve(control: Arc<dyn Control>, config: Arc<Config>) -> Result<(), &'sta
                     }
                     continue;
                 }
-                if name != "tv_control" {
+                let mut verification = None;
+                let arguments = if name == "tv_verify_connection" {
+                    let Some(proof) = proof.clone() else {
+                        error(&out, id, -32602, "verification_unavailable");
+                        continue;
+                    };
+                    if !arguments.is_object() || arguments.as_object().is_some_and(|a| a.len() != 1)
+                    {
+                        error(&out, id, -32602, "invalid_arguments");
+                        continue;
+                    }
+                    let Some(nonce) = arguments.get("challenge").and_then(Value::as_str) else {
+                        error(&out, id, -32602, "invalid_arguments");
+                        continue;
+                    };
+                    let now = tv_adapters::runtime::SystemClock::default().unix_ms();
+                    let challenge = match tv_adapters::connection_proof::ProofStore::open(
+                        &proof.state.join("verification"),
+                    )
+                    .and_then(|store| store.request(nonce, &proof.snapshot, now))
+                    {
+                        Ok(c) => c,
+                        Err(code) => {
+                            error(&out, id, -32602, code);
+                            continue;
+                        }
+                    };
+                    let args = json!({"request_id":challenge.nonce,"device":challenge.device,"action":{"type":"observe"},"expires_at_unix_ms":challenge.expires_at_unix_ms.min(now.saturating_add(config.preferences.max_budget_ms))});
+                    verification = Some((proof, challenge.nonce));
+                    args
+                } else {
+                    arguments
+                };
+                if name != "tv_control" && name != "tv_verify_connection" {
                     error(&out, id, -32602, "unknown_tool");
                     continue;
                 }
@@ -186,8 +294,11 @@ pub fn serve(control: Arc<dyn Control>, config: Arc<Config>) -> Result<(), &'sta
                 let active = active.clone();
                 handles.push(thread::spawn(move || {
                     let result = control.execute(request.into(), &*flag);
-                    let failed = !matches!(result.status, Status::Observed | Status::Verified);
-                    let frame = tool_result(id, wire::receipt(&result), failed);
+                    let (value,failed)=if let Some((proof,nonce))=verification {
+                        let completed=complete_verification(&proof,&nonce,&result,&*flag,expires);
+                        match completed {Ok(code)=>(json!({"verification_code":code.code,"installation_id":code.installation_id,"configuration_revision":code.configuration_revision,"conversation_identity":"cooperative_user_confirmation_required"}),false),Err(code)=>(json!({"code":code,"ready":false}),true)}
+                    } else {(wire::receipt(&result),!matches!(result.status,Status::Observed|Status::Verified))};
+                    let frame = tool_result(id, value, failed);
                     if failed {
                         out.send(frame);
                     } else {

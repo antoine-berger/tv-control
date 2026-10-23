@@ -21,9 +21,10 @@ class InstallFlow(unittest.TestCase):
 int main(int argc,char **argv) {
  const char *binary=getenv("TV_FLOW_BINARY"),*fixture=getenv("TV_FLOW_FIXTURE");
  if(!binary||!fixture)return 90;
- char **next=calloc((size_t)argc+3,sizeof(char*));if(!next)return 91;
+ char **next=calloc((size_t)argc+5,sizeof(char*));if(!next)return 91;
  for(int i=0;i<argc;i++)next[i]=argv[i];next[0]=(char*)binary;
  if(argc>1&&!strcmp(argv[1],"setup")){next[argc]="--fixture";next[argc+1]=(char*)fixture;}
+ if(argc>1&&!strcmp(argv[1],"onboard")){argc=3;next[3]=0;const char *flow=getenv("TV_FLOW_ONBOARD_FIXTURE");if(!flow)return 93;next[argc]="--fixture";next[argc+1]=(char*)flow;next[argc+2]="--json";}
  execv(binary,next);return 92;
 }
 ''');binary=root/'launcher';subprocess.run(['cc',str(source),'-o',str(binary)],check=True,capture_output=True);cls.launcher=binary.read_bytes()
@@ -34,6 +35,7 @@ int main(int argc,char **argv) {
   self.env,self.downloads,_=self.h.zero_argument_environment();self.env['TV_FLOW_BINARY']=str(BINARY)
   self.data=json.loads((ROOT/'examples/discovery.json').read_text());self.fixture=self.h.root/'network.json';self.write_fixture()
   self.env['TV_FLOW_FIXTURE']=str(self.fixture)
+  journey=self.h.root/'journey.json';journey.write_text('{"schema":1}');self.env['TV_FLOW_ONBOARD_FIXTURE']=str(journey)
   adb=self.h.bin/'adb';adb.write_text('#!/bin/sh\nexit 77\n');adb.chmod(0o700)
   self.output=pathlib.Path(self.env['XDG_CONFIG_HOME'])/'tv-control/tv-control.local.json';self.checkpoint=self.output.with_name(self.output.name+'.setup-state.json')
  def tearDown(self):self.h.tearDown()
@@ -56,7 +58,7 @@ int main(int argc,char **argv) {
   old=self.h.asset('v0.2.2');self.h.native_stub=original_payload;p=self.h.install(old,'v0.2.2');self.assertEqual(p.returncode,0,p.stdout+p.stderr)
   self.output.parent.mkdir(mode=0o700,parents=True)
   p=subprocess.run([str(LEGACY or BINARY),'setup','--fixture',str(self.fixture),'--interface','lan-fixture','--device','screen_192_0_2_10','--adb',str(self.h.bin/'adb'),'--curl',str(self.h.bin/'curl'),'--output',str(self.output),'--json','--confirm'],capture_output=True,text=True,timeout=5);self.assertEqual(p.returncode,0,p.stdout+p.stderr);before=self.output.read_bytes()
-  self.data['failure']={'stage':'mdns_send','os_error':13};self.write_fixture();p=self.run_install([('Continue? Type yes:',b'yes\n')]);self.assertEqual(p.returncode,0,p.stdout);self.assertEqual(self.output.read_bytes(),before);self.assertEqual((self.h.prefix/'current').read_text(),'v0.2.7\n');self.assertTrue((self.h.prefix/'versions/v0.2.2').exists());self.assertNotIn('Find TVs on',p.stdout)
+  self.data['failure']={'stage':'mdns_send','os_error':13};self.write_fixture();p=self.run_install([('Continue? Type yes:',b'yes\n')]);self.assertEqual(p.returncode,0,p.stdout);self.assertEqual(self.output.read_bytes(),before);self.assertEqual((self.h.prefix/'current').read_text(),'v0.3.0\n');self.assertTrue((self.h.prefix/'versions/v0.2.2').exists());self.assertNotIn('Find TVs on',p.stdout)
  def test_corrupt_progress_is_backed_up_then_setup_continues(self):
   self.first_failure();self.checkpoint.write_text('{interrupted');self.data.pop('failure');self.write_fixture()
   p=self.run_install([('Continue? Type yes:',b'yes\n'),('Keep a private backup',b'yes\n'),('Choose the display:',b'1\n'),('Local name [',b'\n')]);self.assertEqual(p.returncode,0,p.stdout);self.assert_saved();backups=list(self.output.parent.glob('*.corrupt-*'));self.assertEqual(len(backups),1);self.assertEqual(backups[0].read_text(),'{interrupted')

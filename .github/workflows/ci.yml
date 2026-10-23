@@ -38,6 +38,8 @@ jobs:
       - run: python3 -W error::ResourceWarning scripts/test_onboarding.py target/release/tv-control
       - run: python3 -W error::ResourceWarning scripts/test_install_flow.py target/release/tv-control
       - run: python3 -W error::ResourceWarning scripts/test_zero_arg_ux.py target/release/tv-control
+      - run: python3 -W error::ResourceWarning scripts/test_journey_fixture.py target/release/tv-control
+      - run: python3 -W error::ResourceWarning scripts/test_complete_journey.py target/release/tv-control
       - run: target/release/tv-control validate examples/config.json
       - if: runner.os == 'macOS'
         run: |

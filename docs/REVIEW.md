@@ -43,3 +43,16 @@ XNU's kernel-only `FWASWRITTEN` (`0x10000`), which is outside the flags settable
 `F_SETFL`. The test primes the pipe before taking its baseline and compares all
 bits without masking, distinguishing write history from a leaked `O_NONBLOCK`.
 See [XNU fcntl definitions](https://github.com/apple-oss-distributions/xnu/blob/main/bsd/sys/fcntl.h).
+# Guided runtime qualification
+
+The v0.3.0 composition has isolated terminal/process fixtures, including the
+zero-argument piped installer, cooperative MCP verification and owned-runtime
+stop. These results do not qualify an actual TV, account, hosted conversation or
+router. New TLS pairing and automatic tunnel provisioning are outside this flow.
+
+Normal cancellation and supervised termination clean the scoped ADB child.
+Abrupt SIGKILL, process abort or host failure cannot run Rust cleanup; an orphaned
+ADB process may then occupy the dedicated port. The adapter refuses that occupied
+port rather than adopting or killing an unknown process. Recovery after such a
+failure still needs explicit diagnosis. The free-port check and foreground start
+also have an OS scheduling gap; no daemon-manager operation is used to repair it.

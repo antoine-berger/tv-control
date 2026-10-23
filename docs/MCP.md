@@ -99,3 +99,18 @@ cancellation or teardown.
 Backpressure closes the transport and cancels active work. Successful control
 replies are also bounded by the supplied request expiry. A response lost after
 dispatch remains uncertain to the caller even if the server observed success.
+
+## Installer verification tool
+
+The supervised `bridge` adds `tv_verify_connection` to the normal tool set. The
+plain `mcp CONFIG` server keeps its two existing tools. Verification accepts only
+the fresh challenge issued by that installation's wizard, with no caller-selected
+path, device or action. It performs Observe against the bound configuration and
+returns a code only for an uncached, connected observation before expiry.
+
+The user returns that code from the chosen conversation to the wizard. A local
+receipt alone is insufficient. Codes are ephemeral and single-use; cancellation
+before or after publication suppresses the code and removes the pending proof.
+The wizard rechecks runtime health and device access before Ready. This cooperative
+workflow does not cryptographically identify a chat and does not grant credentials
+or modify TV playback. See [the guided journey](ONBOARDING.md).

@@ -696,7 +696,7 @@ fn setup_command(input: &Options) -> Result<i32, &'static str> {
             progress.dependencies(&config)?;
         }
     }
-    if !options.json {
+    if !options.json && !options.guided {
         eprintln!(
             "ADB executable: {:?}; dedicated loopback server port: {}",
             config.executables.adb, server_port
@@ -713,7 +713,7 @@ fn setup_command(input: &Options) -> Result<i32, &'static str> {
     }
     if options.guided {
         emit(
-            json!({"status":status,"message":"TV configuration saved. TV authorization and ChatGPT connection still need explicit verification; neither was performed.","output":output,"control_verified":false,"executed":false}),
+            json!({"status":status,"message":"TV selected.","output":output,"control_verified":false,"executed":false}),
             options.json,
         );
         return Ok(0);

@@ -1,234 +1,94 @@
-# Guided setup and direct chat connection
+# Guided connection
 
-The [guided installer](INSTALLATION.md) handles the normal installation and resume flow.
-The commands below are advanced/manual steps. `tv-control setup` asks for a LAN interface and a detected display, then saves a
-new private local configuration without an extra save confirmation. It does not start ADB, pair,
-connect to the device, modify TV settings or create a ChatGPT connection. Device
-access and host integration need the explicit steps below. Detection, configured
-capabilities, authorization and observed device state are different evidence.
-
-## Download
-
-For guided user installation, use the [pinned shell installer](INSTALLATION.md).
-The manual archive path below remains available. Neither route creates device
-authorization or a connected ChatGPT plugin.
-
-Version 0.2.3 is an early release. Choose the archive for the **host running the
-controller**, not the TV. Archives contain the binary, licence, generic examples
-and this guide. ADB and the optional tunnel client remain separate dependencies.
-
-| Host | Release asset |
-| --- | --- |
-| macOS Apple Silicon, 11+ | `tv-control-aarch64-apple-darwin.tar.gz` |
-| Linux x86-64, static musl | `tv-control-x86_64-linux-musl.tar.gz` |
-| Linux ARM64, static musl | `tv-control-aarch64-linux-musl.tar.gz` |
-
-macOS Intel is unsupported. Its assets in older releases remain historical downloads;
-new installers reject that host before download or setup.
-
-From [the release page](https://github.com/antoine-berger/tv-control/releases/tag/v0.2.3),
-download the selected archive **and its matching `.sha256` file**. Verify before
-extracting or executing. For example on Apple Silicon:
+The v0.3.0 source implements the journey below. It remains subject to review and
+release qualification; `latest` is promoted separately.
 
 ```sh
-curl --fail --location --proto '=https' --tlsv1.2 --remote-name https://github.com/antoine-berger/tv-control/releases/download/v0.2.3/tv-control-aarch64-apple-darwin.tar.gz
-curl --fail --location --proto '=https' --tlsv1.2 --remote-name https://github.com/antoine-berger/tv-control/releases/download/v0.2.3/tv-control-aarch64-apple-darwin.tar.gz.sha256
-shasum -a 256 -c tv-control-aarch64-apple-darwin.tar.gz.sha256
-mkdir tv-control-0.2.3
-tar -xzf tv-control-aarch64-apple-darwin.tar.gz -C tv-control-0.2.3
-cd tv-control-0.2.3
-./tv-control --version
+curl -fsSL https://raw.githubusercontent.com/antoine-berger/tv-control/latest/install.sh | sh
 ```
 
-On Linux use the chosen Linux filename and `sha256sum -c FILE.sha256`. Never
-continue after a checksum failure. Checksums downloaded from the same release
-protect integrity relative to that release, not independent publisher identity.
-Binaries are unsigned/not notarized; any macOS security approval remains a user
-action after reviewing provenance. Linux ARM64 static inspection is not evidence
-of router firmware compatibility. No package manager or service installation is
-performed. Source build instructions are in docs/DEVELOPMENT.md.
+The terminal guides four stages:
 
-## Prepare the dependency and run setup
+1. **TV access.** Select the TV and approve a private ADB identity and connection.
+   Authorize that identity on the TV when prompted. The dedicated daemon stays
+   alive while the user approves; the shared ADB daemon is never adopted.
+2. **Local controller.** Observe the TV without changing playback and negotiate
+   MCP sequentially. Connection acknowledgements and dispatch alone do not pass.
+3. **ChatGPT connection.** Use the official tunnel-client and an existing tunnel.
+   Approve background TV access, then enter its restricted runtime key without
+   echo. The official manager supervises the bridge; the bridge owns ADB and MCP.
+   The controller continues after the installer finishes.
+4. **Conversation verification.** Create/install the custom tunnel plugin in
+   ChatGPT and select it in the intended conversation. The wizard supplies a
+   fresh challenge for `tv_verify_connection`. That tool makes a harmless Observe
+   call and returns a code. Copy the code back to the terminal. The wizard checks
+   the binding, rechecks the runtime and observes the TV again before reporting ready.
 
-Install maintained [Android SDK Platform Tools](https://developer.android.com/tools/releases/platform-tools)
-using the official package for your host. ADB must be on PATH, or select the
-absolute executable with `--adb PATH`. Existing system curl is sufficient for an
-ADB-only draft; Jellyfin later requires curl plus separately authorized credentials.
-The wizard checks executable presence without running them.
+Account/workspace permissions can prevent connection. The wizard guides those
+steps; it does not provision an administrator key or silently create a remote
+tunnel. A missing tunnel-client is downloaded through the Platform Tunnels page;
+this dependency step is currently manual. Reusing an existing tunnel avoids
+requiring an administrator credential. The official administrative CLI can
+create tunnels separately with the required permissions and explicit approval.
+
+Readiness is a timestamped observation, not a future availability guarantee. Local
+MCP discovery, health, `clientInfo`, a received nonce or pressing Enter cannot
+prove conversation exposure. Verification is cooperative with the user selecting
+the intended chat: public tunnel metadata has no signed conversation identity.
+
+## Resume and stop
+
+Run the same installer after interruption. Private progress remembers choices,
+not authorization claims. Each run revalidates access, MCP and runtime health.
+A healthy owned controller is reused without asking for its key again. The
+installer supplies a verified stable launcher path, preserving the runtime
+binding when payload version directories change. A running process can retain
+its earlier payload until restarted; previous payloads are preserved.
+
+The connection directory is adjacent to the private TV configuration. It holds
+progress, a bounded 64 KiB event-code log, the private ADB home and official tunnel
+state. Progress contains no credentials. The launch intent records approved
+configuration and launcher choices, not proof of TV authorization. Ephemeral
+verification files expire after 120 seconds and are removed on confirmation or
+cancellation. Unsafe ownership, links and changed files fail closed.
+
+Cancelling after background access approval can leave that controller running
+for later completion. The explicit advanced stop command is:
 
 ```sh
-./tv-control setup
+tv-control disconnect /absolute/path/to/tv-control.local.json
 ```
 
-Choose the LAN interface shared with the TV, rather than a WAN/VPN interface. The
-wizard does not request JSON or an IP in the ordinary discovery path. It asks for
-an endpoint only as a guided fallback when no usable advertisement is available.
-No device-specific app, media title or volume scale is invented. The generated
-`tv-control.local.json` has mode 0600, with media and volume actions unconfigured.
-Preview includes the selected target and executable; JSON mode includes the full
-configuration. Interactive setup saves the new local draft directly; JSON mode
-keeps its preview followed by an explicit `--confirm` write.
+Stopping preserves configuration and TV trust. Removing local keys does not
+revoke trust on the TV; revoke the computer on the TV when retiring it. No OS
+startup service is installed. A runtime that needs its key after restarting
+requires re-entry or an explicitly configured supported secret reference.
 
-Saving uses an exclusive temporary file plus atomic no-clobber publication. An
-existing destination, including a symlink, is refused. Repeat with `--resume` to
-reuse an identical private configuration. If discovery changes a dynamic port or
-another value, choose a new output path, review it, then retire the old file
-explicitly. No automatic replacement or backup containing private data is made.
-EOF or `q` at an input prompt leaves configuration untouched. An OS interrupt
-before publication can leave a private `.tv-control-*.tmp` file; it is never
-considered active configuration and may be removed after inspecting ownership.
+## Requirements and limits
 
-## What discovery proves
+- macOS Apple Silicon or Linux ARM64/x86-64; router execution is unqualified.
+- Maintained Android Platform Tools and device debugging support. Global ADB keys
+  are not read or copied; the new private identity needs its own TV authorization.
+- Legacy TCP ADB is unencrypted on the LAN. The Internet tunnel does not encrypt
+  that leg. Pairing ports are not control ports. Automatic new TLS ADB pairing is
+  not implemented by this journey.
+- Runtime access requires Tunnels Read + Use; creation/editing requires Read +
+  Manage. The intended organization and ChatGPT workspace must be eligible.
+- The current TV setup creates an ADB configuration. Media app selection, volume
+  calibration and Jellyfin credentials remain explicit configuration work.
+- Fixtures test process/stdio/loopback composition. They do not establish real
+  TV authorization, ChatGPT availability or the ten-second chat-to-TV target.
 
-Discovery uses IPv4 only: one mDNS query for ADB services and one SSDP M-SEARCH for
-DIAL, from the chosen local interface. mDNS uses its link-local destination
-with IP TTL 255; SSDP uses multicast TTL 1. There is no IP/port range
-scan, external DNS resolution, HTTP device-description request or ADB subprocess.
-Replies are restricted to the chosen subnet and capped at 256 packets, 8192 bytes
-per packet and 64 candidate addresses. Duplicate DIAL replies share one slot.
-The receive window defaults to 2 seconds; `--duration-ms` accepts 100–5000.
-The separate overall search timeout defaults to 10 seconds. Advanced callers can
-set `--timeout-ms` strictly above the receive-window duration and at most 10000 milliseconds.
-Both bounds start after human input. Search returns when its short window ends;
-it does not wait for the full timeout. The budget includes interface validation,
-socket setup, sends, reception and result collection. OS scheduling or an OS call
-can still delay return; late results are rejected rather than reported as success.
-This discovery budget does not change TV command deadlines or qualify the
-chat-to-TV latency target. It is a budget choice, not a diagnosis of an OS failure.
-No traffic is sent by `--dry-run` without a fixture. No default interface is selected silently.
+## Advanced checks
 
-This is a **unicast-reply discovery snapshot**, not a continuously subscribed
-multicast monitor. The ephemeral socket does not join mDNS port 5353. Received
-SRV/A data is associated by structural DNS labels; a target/address disagreement
-or missing A record is unresolved and cannot yield a control endpoint. TTL expiry
-is based on monotonic receipt time and capped at 30 seconds. Received goodbye
-records remove the matching RDATA; they do not remove a newer port. Native receipt
-of ordinary multicast announcements/goodbyes is not claimed by parser fixtures.
-If an advertisement expires while choosing or naming the TV, setup automatically
-runs one bounded search on the same interface/address. It requires the same
-address, control protocol and DNS-SD instance; a revalidated dynamic port may
-change. Missing identity, a disappeared display, pairing-only or ambiguous endpoints
-cannot reuse the expired endpoint. Failure offers retry in the wizard and preserves
-local progress, including the name, when checkpoints are enabled. Each explicit
-retry has its own bounded search. These advertisements remain untrusted evidence;
-refresh does not authenticate or connect to a TV. Rediscover after restart or
-separately authorized debugging changes.
+`setup` prepares configuration; the installer follows it with `onboard`.
+`onboard CONFIG --json` returns pending without access grants. The explicit
+`onboard CONFIG --fixture FIXTURE --json` path composes only simulated ports and
+always returns `ready:false`. `doctor CONFIG` is offline; `doctor CONFIG --probe`
+is an explicitly requested read-only device call. `connect-chatgpt CONFIG` prints
+the manual connection plan.
 
-| Advertisement | Interpretation |
-| --- | --- |
-| `_adb._tcp` | Legacy TCP debugging; unencrypted, authorization unverified |
-| `_adb-tls-pairing._tcp` | Temporary pairing endpoint; never used as a control endpoint |
-| `_adb-tls-connect._tcp` | TLS connection endpoint; dynamic port, authorization unverified |
-| DIAL SSDP | Display advertisement only; no ADB or Cast capability inferred |
-
-Names are untrusted labels. A name does not establish TV model, OS, compatibility,
-identity or authorization. IPv6, cross-VLAN discovery and universal Fire TV
-coverage are not implemented. Multiple addresses on one interface can be selected
-explicitly as `NAME@IPv4`. Different addresses are not asserted to be one physical
-TV. A pairing-only result needs explicit pairing and rediscovery. Selecting a DIAL-only
-or unresolved result offers a guided manual connection-port fallback using the
-already selected address; the protocol must be chosen explicitly. Pairing-only
-results never reuse their advertised port for control. Multiple eligible endpoints stay
-ambiguous. Receiver discovery does not implement Cast playback.
-
-Android TV wireless-debugging availability depends on version/vendor; do not
-infer TLS support from Android phone support or an Android 12 TV. On Fire OS,
-Developer Options/ADB debugging and approval on the TV may be required. Vega and
-other non-Android Fire TV models cannot use this ADB adapter.
-
-## Authorize ADB separately
-
-Setup produces a draft, not an active debugging connection. Read
-[ADB Wi-Fi architecture](https://android.googlesource.com/platform/packages/modules/adb/+/refs/heads/main/docs/dev/adb_wifi.md)
-and your device's instructions before granting broad debugging access. A TLS
-pairing code belongs to its temporary pairing endpoint; the connection endpoint
-is different. Never include a pairing code in logs, scripts or this configuration.
-
-The controller requires an exclusively owned compatible loopback ADB daemon.
-It never starts one itself and must not use an unrelated/shared daemon. The
-configuration's default port is 15037. An administrator can prepare a foreground
-daemon using maintained ADB, after reviewing key storage and USB/network access:
-
-```sh
-adb -L tcp:localhost:15037 --one-device TVCONTROL_NO_USB server nodaemon
-```
-
-Keep that foreground process alive during the test; do not supervise/restart or
-upgrade it concurrently. Connection/pairing is a **separate explicit ADB action**
-to the selected advertised endpoint. The generated configuration supplies the
-address so the normal path does not require manually editing JSON. Do not connect
-to a pairing port. No connection command is automatically executed by setup.
-Creating or accepting a new host key is persistent access requiring review. An
-isolated daemon still uses ADB's configured key storage; a separate OS account or
-private home is a separate operational choice, not provided automatically.
-
-```sh
-./tv-control doctor tv-control.local.json
-# Only after approving read-only access to the already authorized target:
-./tv-control doctor tv-control.local.json --probe
-```
-
-Offline doctor validates configuration and dependency presence. `--probe` uses the
-real controller's bounded observe action and never pairs, reconnects or mutates.
-An unavailable device remains unverified; the CLI does not silently repair access.
-A successful state read does not qualify playback, volume or user-to-TV latency.
-The manager-capable ADB executable retains the documented preflight/replacement
-race; exclusive daemon ownership is required. See the repository adapter guide.
-
-## Direct ChatGPT/dot connection plan
-
-```sh
-./tv-control connect-chatgpt tv-control.local.json
-# For an agent:
-./tv-control connect-chatgpt tv-control.local.json --json
-```
-
-This prints a plan, not a successful connection. It builds shell-quoted stdio
-commands with the installed binary/configuration paths, including spaces and
-apostrophes. It never reads a key or launches `tunnel-client`.
-
-The supported route uses the official Secure MCP Tunnel client with
-`--mcp-command`, so no HTTP rewrite of this controller is needed. Download and
-verify the official client separately, review current `tunnel-client help
-quickstart`, choose the intended Platform organization/ChatGPT workspace, then
-reuse or create an authorized tunnel. Creation needs Tunnels Read + Manage;
-runtime and plugin use need Read + Use. Keep its runtime key outside argv and
-logs in the supported credential mechanism. No credentials are collected by setup.
-
-After explicit authorization, the printed commands initialize a stdio profile,
-run its doctor and keep it alive. In ChatGPT Plugins, add a custom MCP server,
-choose Tunnel, select the authorized tunnel, review authentication and the risk
-warning, then create/install the plugin. Select it in the intended dot/chat and
-verify `tv_capabilities` is actually exposed before a TV action. Workspace access
-and permissions are not assumed. There is no delegated chat in this runtime path.
-Public source/release publication does not install a public-directory plugin.
-No account, tunnel, plugin or permanent service is created by this CLI.
-
-## Offline and agent acceptance
-
-The bundled fixture contains reserved addresses and synthetic advertisements:
-
-```sh
-./tv-control discover --fixture examples/discovery.json --interface lan-fixture --json
-./tv-control setup --fixture examples/discovery.json --interface lan-fixture --device screen_192_0_2_10 --dry-run --json
-```
-
-The second command requires ADB/curl executable presence; use explicit test
-executables in a test environment if those dependencies are absent. No executable
-is launched by setup. Fixture output is always marked `simulation: true`.
-Agent mode uses clean JSON on stdout and never prompts; require explicit interface
-and candidate ID, inspect the preview, then repeat with `--confirm` to save.
-`--resume` reuses an identical private file; changed configuration is refused.
-`--manual-endpoint IPv4:PORT --manual-kind legacy|tls` is a guided fallback bound
-to the explicitly chosen subnet. Unsupported options fail instead of being ignored.
-Exit 0 means completed offline operation or preview; 2 means a selection/device
-setup/revalidation step remains; 1 is an error or input cancellation.
-None of those statuses imply authorized control or a connected ChatGPT plugin.
-
-## Protocol and product references
-
-- [Multicast DNS](https://www.rfc-editor.org/rfc/rfc6762) and [DNS-SD](https://www.rfc-editor.org/rfc/rfc6763#section-4.3).
-- [DIAL specification](https://www.dial-multiscreen.org/dial/protocol-specification).
-- [Android ADB guide](https://developer.android.com/tools/adb).
-- [Fire TV ADB setup](https://developer.amazon.com/docs/fire-tv/connecting-adb-to-device.html) and [Fire OS overview](https://developer.amazon.com/docs/fire-tv/fire-os-overview.html).
-- [Secure MCP Tunnel](https://developers.openai.com/api/docs/guides/secure-mcp-tunnels) and [custom MCP server](https://developers.openai.com/api/docs/guides/custom-mcp-server).
+Sources: [Secure MCP Tunnels](https://developers.openai.com/api/docs/guides/secure-mcp-tunnels),
+[ChatGPT plugin connection](https://developers.openai.com/plugins/deploy/connect-chatgpt),
+[official runtime lifecycle](https://github.com/openai/tunnel-client/blob/master/plugins/tunnel-mcp/skills/tunnel-mcp/references/runtime-flows.md),
+[local health semantics](https://github.com/openai/tunnel-client/blob/master/docs/health.md).

@@ -139,7 +139,7 @@ struct Snapshot {
     file: File,
     bytes: Vec<u8>,
 }
-struct AtomicFile {
+pub(crate) struct AtomicFile {
     path: PathBuf,
     limit: usize,
     snapshot: Option<Snapshot>,
@@ -174,7 +174,7 @@ fn open_private(path: &Path) -> Result<File, &'static str> {
     Ok(file)
 }
 impl AtomicFile {
-    fn open(path: PathBuf, limit: usize) -> Result<Self, &'static str> {
+    pub(crate) fn open(path: PathBuf, limit: usize) -> Result<Self, &'static str> {
         let snapshot = match path.symlink_metadata() {
             Ok(_) => {
                 let mut file = open_private(&path)?;
@@ -236,7 +236,7 @@ impl AtomicFile {
         }
         Ok(())
     }
-    fn bytes(&self) -> Option<&[u8]> {
+    pub(crate) fn bytes(&self) -> Option<&[u8]> {
         self.snapshot.as_ref().map(|s| s.bytes.as_slice())
     }
     fn check(&self) -> Result<(), &'static str> {
@@ -256,7 +256,7 @@ impl AtomicFile {
         }
         Ok(())
     }
-    fn write(&mut self, bytes: Vec<u8>) -> Result<(), &'static str> {
+    pub(crate) fn write(&mut self, bytes: Vec<u8>) -> Result<(), &'static str> {
         if bytes.len() > self.limit {
             return Err("pipeline_file_too_large");
         }

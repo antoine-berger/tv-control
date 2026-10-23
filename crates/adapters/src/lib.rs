@@ -1,10 +1,15 @@
 pub mod adb;
 pub mod adb_server;
 pub mod config;
+pub mod connection_proof;
 pub mod http;
 pub mod jellyfin;
+pub mod onboarding_runtime;
+pub mod onboarding_tunnel;
+pub mod pipeline_store;
 pub mod process;
 pub mod runtime;
+pub mod runtime_intent;
 pub mod stdio;
 pub mod wire;
 

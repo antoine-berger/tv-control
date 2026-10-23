@@ -94,7 +94,7 @@ dependencies = [
 
 [[package]]
 name = "tv-adapters"
-version = "0.2.7"
+version = "0.3.0"
 dependencies = [
  "libc",
  "serde",
@@ -105,15 +105,16 @@ dependencies = [
 
 [[package]]
 name = "tv-application"
-version = "0.2.7"
+version = "0.3.0"
 dependencies = [
  "tv-domain",
 ]
 
 [[package]]
 name = "tv-control"
-version = "0.2.7"
+version = "0.3.0"
 dependencies = [
+ "libc",
  "serde",
  "serde_json",
  "tv-adapters",
@@ -123,7 +124,7 @@ dependencies = [
 
 [[package]]
 name = "tv-domain"
-version = "0.2.7"
+version = "0.3.0"
 
 [[package]]
 name = "unicode-ident"

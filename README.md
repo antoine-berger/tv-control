@@ -1,6 +1,6 @@
 # tv-control
 
-A small Rust controller for Android TV and Jellyfin, with a CLI and two MCP tools.
+A small Rust controller for Android TV and Jellyfin, with a CLI and MCP tools.
 
 ## Install
 
@@ -10,19 +10,21 @@ Run in a terminal on macOS Apple Silicon, or Linux ARM64/x86-64:
 curl -fsSL https://raw.githubusercontent.com/antoine-berger/tv-control/latest/install.sh | sh
 ```
 
-The installer asks for confirmation, checks an existing installation and opens the
-setup wizard. Run the same command again to resume after an interruption. Local
-setup progress is saved privately; a changed network or display is checked again.
-Existing configuration is preserved. No version, output path or setup flags are
-needed for this flow.
+The installer checks its files, selects the TV and guides device access and the
+ChatGPT connection. Run the same command to resume. Configuration is preserved;
+credentials are never saved in progress files. No flags are needed.
+
+This source describes the v0.3.0 journey under review. The `latest` channel stays
+on its previously validated release until review, CI and public asset checks pass.
 
 The `latest` download channel points to a published, validated release and may
 serve a prerelease. The script keeps its release version pinned internally.
 
 This command executes downloaded code. [Inspection and checksum verification](docs/INSTALLATION.md)
 are available before execution. Maintained Android Platform Tools are required
-for ADB. Device debugging authorization and the optional ChatGPT connection need
-separate explicit approvals; the installer does not grant them.
+for ADB. TV authorization and background access need explicit approval. The
+official tunnel client and account/workspace permissions are required for hosted
+access; browser approvals and plugin selection remain guided steps.
 
 ## Scope
 
@@ -32,8 +34,11 @@ a deadline; dispatch alone does not count as a verified result. Cast and YouTube
 Music automation are not implemented. The ten-second chat-to-TV target and router
 runtime remain unqualified.
 
-The resumable wizard currently prepares local TV configuration. It does not resume
-or automate TV pairing, credentials, tunnel provisioning or ChatGPT plugin approval.
+The journey reports ready only after a read-only TV call through the selected
+conversation and a returned verification code. This cooperative check does not
+cryptographically attest conversation identity. Remote tunnel provisioning and
+new TLS ADB pairing are not performed automatically. Actual hosted and hardware
+use of this integration remains unqualified.
 
 ## Documentation
 

@@ -1,11 +1,11 @@
 #!/bin/sh
-# Auditable user installation; no sudo, shell-profile edits, daemon or implicit discovery.
+# Auditable installation and guided connection; access grants require explicit approval.
 # Parse the complete function before running it: a fragmented pipe remains code,
 # never confirmation or wizard input. Interactive input uses the controlling TTY.
 main() {
 set -eu
 umask 077
-DEFAULT_VERSION=v0.2.7
+DEFAULT_VERSION=v0.3.0
 RELEASE_ROOT=https://github.com/antoine-berger/tv-control/releases/download
 guided=no
 if [ "$#" -eq 0 ]; then guided=yes; fi
@@ -205,6 +205,7 @@ run_setup() {
         set -- setup --resume --output "$config_parent/tv-control.local.json"
         case "$version" in v0.2.0|v0.2.1|v0.2.2) ;; *) set -- "$@" --guided ;; esac
         "$prefix/versions/$version/tv-control" "$@" <&3 >&3 2>&3 3<&-
+        case "$version" in v0.2.*) ;; *) "$prefix/versions/$version/tv-control" onboard "$config_parent/tv-control.local.json" --launcher "$prefix/tv-control" <&3 >&3 2>&3 3<&- ;; esac
 }
 if [ "$mode" != uninstall ]; then
     os=$(uname -s); machine=$(uname -m)
@@ -236,6 +237,13 @@ work=$(mktemp -d "$parent/.tv-control-stage.XXXXXXXX") || fail temporary_directo
 if [ "$mode" = uninstall ]; then
     verify_installation
     version=$active
+    config_parent=${XDG_CONFIG_HOME:-$HOME/.config}/tv-control
+    case "$version" in v0.2.*) ;; *)
+        if [ -f "$config_parent/connection/tunnel/.tv-control-owner" ]; then
+            "$prefix/versions/$version/tv-control" disconnect "$config_parent/tv-control.local.json" --json > /dev/null || fail controller_stop_failed_installation_preserved
+        fi
+        ;;
+    esac
     # Only remove exact verified files; never recursively remove an installation root.
     while IFS= read -r owned_file; do rm "$owned_file" || fail uninstall_file_failed; done < "$work/expected-files"
     for version_dir in "$prefix"/versions/*; do

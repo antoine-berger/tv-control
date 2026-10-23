@@ -95,12 +95,12 @@ protect against accidental replacement or in-place edits during a session.
 Numeric discovery OS errors cross the port as optional failure evidence. They
 do not establish a cause; raw OS messages and packet payloads are not logged.
 
-## 011 — Complete onboarding evidence (implementation in progress)
+## 011 — Complete onboarding evidence
 
-The next installer journey will retain the same zero-argument entrypoint. The
-domain and application pipeline are implemented; native lifecycle adapters and
-the final conversation verification workflow are not yet connected to setup.
-The published configuration wizard therefore does not establish hosted access.
+The zero-argument installer composes configuration, private device access,
+official tunnel supervision and cooperative conversation verification. The
+composition is covered by isolated native fixtures; actual hosted and hardware
+qualification remains separate from these tests and from source publication.
 
 The pipeline advances through configuration, ADB consent, an owned ADB runtime,
 a read-only device observation, local MCP discovery, tunnel consent, tunnel
@@ -112,15 +112,16 @@ prerequisites; a saved stage must never serve as an authorization grant. An
 approval wait cannot make expired evidence valid. Fixtures produce
 `SimulationComplete`, never `Ready`.
 
-Native integration will use the official tunnel-client managed runtime commands,
+Native integration uses the official tunnel-client managed runtime commands,
 including `runtimes connect` with an existing tunnel ID and an environment secret
 reference, followed by structured `runtimes status` checks. Reusing an existing
 tunnel avoids asking for an administrator key. Creating a tunnel is supported by
 the official administrative CLI, but needs a separate explicit approval and the
 required organization permissions. The runtime must never receive an admin key.
-The installer must not invent a background supervision path using nohup/disown.
-ADB process ownership, private key storage and lifecycle need an independently
-reviewed adapter before any real setup execution.
+No background supervision path uses nohup/disown. The official manager supervises
+the bridge, and the bridge owns the private ADB child and its cleanup. The stable
+installed launcher, configuration snapshot and owned alias bind runtime identity.
+Starting access and creating the private identity require explicit approval.
 
 Local MCP initialization, tool discovery and tunnel health are separate checks.
 None proves that an intended chat has installed or selected the plugin. The
@@ -133,10 +134,19 @@ conversation identity. Any cooperative human confirmation of the selected chat
 must be described as such; it must not be called cryptographic attestation.
 Until that external workflow supplies its evidence, the pipeline stays pending.
 
-The next adapter review must cover child process cleanup and consent boundaries,
-sequential MCP negotiation, configuration content binding, bounded private logs,
-secret references, stale evidence after approvals and resumable pending states.
-No new release should present this unfinished integration as a complete journey.
+Each dependent stage receives a context bounded by the validity of its required
+evidence. Execution mode is fixed before composition: the agent fixture route
+contains only simulated ports, while the native route rejects simulated evidence.
+An expired approval flow stops before dependent dispatch, not just before Ready.
+After cooperative code confirmation, fresh runtime health and a new TV observation
+are required. Logs accept only typed event codes and durations, bounded to 64 KiB.
+Credentials are entered without echo and passed only to the official runtime's
+environment; checkpoints contain neither credentials nor reusable proof claims.
+
+Release review covers child cleanup, configuration binding, consent, secret
+handling and replay. A real conversation call and physical TV qualification must
+still be recorded before declaring that installation connected or making latency
+claims. Missing account/workspace permissions remain a platform blocker.
 
 Sources inspected for this design:
 
