@@ -195,6 +195,29 @@ class ZeroArgumentUX(InstallFlow):
   self.assertNotEqual(p.returncode,0,p.stdout)
   self.assertIn('same identity',p.stdout);self.assertFalse(self.output.exists())
 
+ def test_resume_requires_the_saved_service_to_remain_the_usable_selection(self):
+  def packet(instance,kind,port,resolved=True):
+   def name(value):return b''.join(bytes([len(label)])+label.encode() for label in value.split('.'))+b'\0'
+   owner=instance+'.'+kind;target=instance+'.local'
+   payload=b'\0\0\0\0'+port.to_bytes(2,'big')+name(target)
+   header=b'\0\0\x84\0\0\0\0\x02\0\0\0\0'
+   srv=name(owner)+b'\0\x21\x80\x01'+(120).to_bytes(4,'big')+len(payload).to_bytes(2,'big')+payload
+   address=bytes([192,0,2,10 if resolved else 20])
+   record=name(target)+b'\0\x01\x80\x01'+(120).to_bytes(4,'big')+b'\0\x04'+address
+   return {'protocol':'mdns','peer':'192.0.2.10','hex':(header+srv+record).hex()}
+  legacy='_adb._tcp.local';tls='_adb-tls-connect._tcp.local'
+  for label,old_kind,new_kind,old_resolved in [('preferred_tls',legacy,tls,True),('unresolved_legacy',legacy,tls,False),('unresolved_tls',tls,legacy,False),('ambiguous_legacy',legacy,legacy,True)]:
+   with self.subTest(case=label):
+    if self.checkpoint.exists():self.checkpoint.unlink()
+    self.data['packets']=[packet('old',old_kind,5555)];self.write_fixture()
+    p=self.terminal([('Continue? Type yes:',b'yes\n'),('Choose the display:',b'1\n'),('Local name [',signal.SIGKILL)])
+    self.assertNotEqual(p.returncode,0,p.stdout);self.assertFalse(self.output.exists())
+    self.assertEqual(json.loads(self.checkpoint.read_text())['discovery_service'],'old.'+old_kind)
+    self.data['packets']=[packet('old',old_kind,5555,old_resolved),packet('new',new_kind,9001)];self.write_fixture()
+    p=self.terminal([('Continue? Type yes:',b'yes\n'),('Choose the display:',b'q\n')],timeout=8)
+    self.assertNotEqual(p.returncode,0,p.stdout);self.assertIn('same identity',p.stdout);self.assertFalse(self.output.exists())
+    self.assertNotIn('configuration saved',p.stdout.lower());self.assert_offline()
+
 
 if __name__=='__main__':
  # Existing flow cases are inherited for helpers, but execute only this delta.

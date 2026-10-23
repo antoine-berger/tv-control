@@ -222,15 +222,14 @@ impl Progress {
         self.state.manual_kind = None;
         self.save()
     }
-    pub fn matches_target(&self, candidate: &Candidate) -> bool {
+    pub fn matches_target(&self, candidate: &Candidate, now_monotonic_ms: u64) -> bool {
+        let plan = onboarding::plan_setup(candidate.clone(), now_monotonic_ms);
         self.state
             .discovery_service
             .as_ref()
             .is_some_and(|instance| {
-                candidate
-                    .services
-                    .iter()
-                    .any(|s| s.instance.as_ref() == Some(instance))
+                onboarding::connection_service(&plan)
+                    .is_some_and(|s| s.instance.as_ref() == Some(instance))
             })
     }
     fn save(&mut self) -> Result<(), &'static str> {

@@ -534,9 +534,12 @@ fn setup_command(input: &Options) -> Result<i32, &'static str> {
     let saved_name = owned.get("--name").map(str::to_owned);
     if input.get("--device").is_none()
         && owned.get("--device").is_some_and(|id| {
-            !candidates
-                .iter()
-                .any(|c| c.id == id && progress.as_ref().is_none_or(|p| p.matches_target(c)))
+            !candidates.iter().any(|c| {
+                c.id == id
+                    && progress
+                        .as_ref()
+                        .is_none_or(|p| p.matches_target(c, clock.monotonic_ms()))
+            })
         })
         && !manual
     {
