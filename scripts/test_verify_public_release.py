@@ -2,11 +2,14 @@
 """Offline public-verification selection and no-write regression tests."""
 import copy
 import hashlib
+import io
+from email.message import Message
 import json
 import os
 from pathlib import Path
 import re
 import unittest
+import urllib.error
 from unittest.mock import patch
 
 import release
@@ -100,7 +103,7 @@ class Candidate(unittest.TestCase):
     def test_exact_verification_context_cannot_publish(self):
         manifest, _ = verify.candidate(self.api, 456, SHA, TAG)
         digest = verify.manifest_digest(manifest)
-        branch = f"verify/{TAG}-{SHA}-r456-{digest}"
+        branch = f"verify/{TAG}-{SHA}-r456-{digest}-c{SHA}"
         env, event = test_release.environment(), test_release.event()
         env["GITHUB_REF"] = event["ref"] = "refs/heads/" + branch
         env["GITHUB_WORKFLOW_REF"] = f"{release.REPOSITORY}/{release.WORKFLOW}@{event['ref']}"
@@ -116,6 +119,79 @@ class Candidate(unittest.TestCase):
     def test_read_only_client_refuses_writes_before_network(self):
         with self.assertRaises(ValueError):
             release.GitHub(anonymous=True).request("PATCH", f"/repos/{release.REPOSITORY}/releases/456", {})
+
+
+class ControllerAuthentication(unittest.TestCase):
+    def test_source_and_controller_are_separate_exact_identities(self):
+        controller = "b" * 40
+        digest = "d" * 64
+        branch = f"verify/{TAG}-{SHA}-r456-{digest}-c{controller}"
+        env, event = test_release.environment(), test_release.event()
+        env["GITHUB_SHA"] = event["after"] = controller
+        env["GITHUB_REF"] = event["ref"] = "refs/heads/" + branch
+        env["GITHUB_WORKFLOW_REF"] = f"{release.REPOSITORY}/{release.WORKFLOW}@{event['ref']}"
+        selected = verify.context(env, event, controller, "0.3.0")
+        self.assertEqual(selected["source_sha"], SHA)
+        self.assertEqual(selected["controller_sha"], controller)
+        with self.assertRaises(ValueError):
+            verify.context(env, event, SHA, "0.3.0")
+        env["GITHUB_REF"] = env["GITHUB_REF"].replace("-c" + controller, "-c" + SHA)
+        with self.assertRaises(ValueError):
+            verify.context(env, event, controller, "0.3.0")
+
+    def test_authenticated_metadata_get_only(self):
+        api = verify.MetadataGitHub("test-ephemeral-value")
+        with patch.object(api.opener, "open", return_value=io.BytesIO(b"{}")) as opened:
+            api.request("GET", f"/repos/{release.REPOSITORY}/releases/456")
+        request = opened.call_args.args[0]
+        self.assertEqual(request.get_header("Authorization"), "Bearer test-ephemeral-value")
+        with patch.object(api.opener, "open") as opened, self.assertRaises(ValueError):
+            api.request("PATCH", f"/repos/{release.REPOSITORY}/releases/456")
+        opened.assert_not_called()
+        with patch.object(api.opener, "open") as opened, self.assertRaises(ValueError):
+            api.request("GET", "/repos/other/repo/releases/456")
+        opened.assert_not_called()
+
+    def test_asset_request_does_not_receive_metadata_token(self):
+        url = f"https://github.com/{release.REPOSITORY}/releases/download/{TAG}/install.sh"
+        with patch.dict(os.environ, {"GH_METADATA_TOKEN": "test-ephemeral-value"}), \
+             patch.object(verify.urllib.request, "build_opener") as builder:
+            builder.return_value.open.return_value = io.BytesIO(b"installer")
+            self.assertEqual(verify.download(url), b"installer")
+            request = builder.return_value.open.call_args.args[0]
+            self.assertIsNone(request.get_header("Authorization"))
+            self.assertNotIn("test-ephemeral-value", str(request.header_items()))
+
+    def test_subprocess_verifier_environment_has_no_tokens_or_optimization(self):
+        keys = ("GH_TOKEN", "GITHUB_TOKEN", "GH_METADATA_TOKEN", "ACTIONS_RUNTIME_TOKEN",
+                "ACTIONS_ID_TOKEN_REQUEST_TOKEN", "PYTHONOPTIMIZE")
+        with patch.dict(os.environ, {key: "test-secret" for key in keys}):
+            child_env = release.verifier_environment()
+            for key in keys:
+                self.assertNotIn(key, child_env)
+
+    def test_403_diagnostic_is_bounded_and_does_not_retry_or_dump_secrets(self):
+        headers = Message()
+        headers["X-RateLimit-Limit"] = "1000"
+        headers["X-RateLimit-Remaining"] = "0"
+        headers["X-RateLimit-Reset"] = "1792729800"
+        headers["Retry-After"] = "60"
+        headers["X-GitHub-Request-Id"] = "A1B2:03CD:4567"
+        headers["Authorization"] = "Bearer test-ephemeral-value"
+        headers["Location"] = "https://example.invalid/private-signed-url"
+        error = urllib.error.HTTPError("https://api.github.com/private", 403, "forbidden", headers,
+                                       io.BytesIO(b"private response and test-ephemeral-value"))
+        api = verify.MetadataGitHub("test-ephemeral-value")
+        with patch.object(api.opener, "open", side_effect=error) as opened, self.assertRaises(RuntimeError) as raised:
+            api.request("GET", f"/repos/{release.REPOSITORY}/releases/456")
+        self.assertEqual(opened.call_count, 1)
+        message = str(raised.exception)
+        self.assertIn('"status": 403', message)
+        self.assertIn('"x-ratelimit-remaining": "0"', message)
+        self.assertIn('"request_id": "A1B2:03CD:4567"', message)
+        self.assertNotIn("test-ephemeral-value", message)
+        self.assertNotIn("private", message)
+        self.assertLess(len(message), 400)
 
 
 class Downloads(unittest.TestCase):
@@ -151,6 +227,17 @@ class Downloads(unittest.TestCase):
             with self.assertRaises(release.subprocess.CalledProcessError):
                 release.assets(destination)
 
+    def test_executed_package_verifiers_receive_no_tokens(self):
+        keys = ("GH_TOKEN", "GITHUB_TOKEN", "GH_METADATA_TOKEN", "PYTHONOPTIMIZE")
+        original_run = release.subprocess.run
+        with patch.dict(os.environ, {key: "test-secret" for key in keys}), \
+             patch.object(release.subprocess, "run", wraps=original_run) as ran:
+            release.assets(self.root / "artifacts")
+        self.assertEqual(ran.call_count, 3)
+        for call in ran.call_args_list:
+            for key in keys:
+                self.assertNotIn(key, call.kwargs["env"])
+
     def test_download_failure_never_runs_smoke(self):
         def fail(name):
             raise OSError("public download unavailable")
@@ -164,7 +251,10 @@ class Workflow(unittest.TestCase):
         workflow = (release.ROOT / ".github/workflows/ci.yml").read_text()
         verification = workflow.split("  verify-public-release:\n", 1)[1]
         self.assertNotIn("contents: write", verification)
-        self.assertNotIn("GH_TOKEN", verification)
+        self.assertNotIn("GH_TOKEN:", verification)
+        self.assertIn("GH_METADATA_TOKEN: ${{ github.token }}", verification)
+        self.assertIn("actions: read", verification)
+        self.assertIn("path: release-source", verification)
         self.assertNotIn("cargo ", verification)
         self.assertEqual(workflow.count("contents: write"), 1)
         self.assertIn("startsWith(github.ref, 'refs/heads/release/v')", workflow)

@@ -69,21 +69,29 @@ never PATCH it to stable or change `make_latest` for this workflow.
 After publication finishes, use the read-only command
 `python3 scripts/verify_public_release.py plan RELEASE_ID FULL_SOURCE_SHA`.
 It checks the public release and original successful CI, then prints a branch:
-`verify/vVERSION-FULL_SOURCE_SHA-rRELEASE_ID-FULL_MANIFEST_SHA256`.
+`verify/vVERSION-FULL_SOURCE_SHA-rRELEASE_ID-FULL_MANIFEST_SHA256-cFULL_CONTROLLER_SHA`.
 The manifest digest is SHA-256 of compact, key-sorted JSON containing
 `release_id`, `tag`, `source_sha`, and the complete `asset_sha256` mapping. It
 binds the specific release ID and all eight original asset hashes, so a changed
 asset or different release cannot pass under the same branch name.
 
-Create that exact branch at the source commit's first parent, then leased
-fast-forward it to the source commit, as with the publication trigger. Both
-`verify-public-release` matrix jobs must finish successfully at the exact SHA:
+The controller SHA is the commit containing the verifier and workflow. It may
+be newer than the already published source SHA when correcting verification
+infrastructure. The plan command reads the controller from its own checkout.
+Create that exact branch at the controller commit's first parent, then leased
+fast-forward it to the controller commit, as with the publication trigger. The
+workflow checks its own event and checkout against the encoded controller SHA,
+then separately checks out the encoded source SHA with credentials disabled.
+Both `verify-public-release` matrix jobs must finish successfully at the
+controller SHA while explicitly reporting the selected published source SHA:
 
-1. Linux x86-64 and macOS ARM64 anonymously read public release metadata and
-   download all eight files through the public release URLs. They require the
+1. Linux x86-64 and macOS ARM64 authenticate GET-only GitHub metadata reads
+   using their ephemeral job token with `contents: read` and `actions: read`.
+   The latter permission reads the original CI run metadata. They download all
+   eight files through public release URLs **without authentication** and require the
    original successful main/publication CI, exact tag SHA, exact asset inventory,
    API digest and recorded publication hashes.
-2. Each job validates all three bundles against the selected source checkout,
+2. Each job validates all three bundles against the separate published-source checkout,
    then runs native offline package install/discover/uninstall smoke tests.
    ARM64 Linux gets structural verification, not native execution.
 3. Each job also executes the downloaded public installer with explicit
@@ -95,7 +103,9 @@ fast-forward it to the source commit, as with the publication trigger. Both
    job, and verification branches skip the rebuild matrices entirely.
 
 Only after both verification jobs pass, check the existing `latest` branch and
-update it to the exact verified source commit using an expected-old-SHA lease.
+update it to the exact verified **source** commit using an expected-old-SHA
+lease. Do not distribute a newer verifier/controller commit as if it were the
+tagged release source.
 If another change moved `latest`, stop and inspect it instead of overwriting it.
 If the existing distribution branch is not an ancestor of the new source, any
 force-with-lease update requires explicit authorization. The workflow does not
@@ -103,6 +113,17 @@ move branches itself. Re-read `latest` after the update and fetch its public raw
 installer to verify it equals the tested source and defaults to the manifest
 version. Never substitute a different commit or rely on only one successful
 matrix job.
+
+### Metadata failures
+
+Metadata GET failures report only HTTP status, bounded numeric rate-limit/retry
+response headers and a sanitized GitHub request ID. They do not log tokens,
+request headers, response bodies or signed URLs, and do not retry 403 responses.
+The previous anonymous macOS 403 did not include these headers, so its cause is
+unconfirmed. Authentication avoids the shared anonymous API quota; it does not
+change whether the public asset URLs work. The metadata client rejects writes
+and redirects. The token is stripped from package-verifier subprocesses, and
+native smoke/installer processes already use a clean isolated environment.
 
 ## Local guard tests
 
@@ -120,3 +141,6 @@ matching artifacts and all remote provenance guards when that flag is present.
 - [Artifact download isolation and digest checking](https://github.com/actions/download-artifact)
 - [Release API and latest/prerelease behavior](https://docs.github.com/en/rest/releases/releases)
 - [Git reference API](https://docs.github.com/en/rest/git/refs)
+
+- [Workflow run read permissions](https://docs.github.com/en/rest/actions/workflow-runs#get-a-workflow-run)
+- [API rate-limit diagnostics](https://docs.github.com/en/rest/using-the-rest-api/troubleshooting-the-rest-api#rate-limit-errors)

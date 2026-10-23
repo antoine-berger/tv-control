@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Read-only, anonymous verification of one SHA/digest-bound public prerelease.
+"""Read-only verification with authenticated metadata and anonymous public assets.
 
 `plan RELEASE_ID SOURCE_SHA` prints an explicit verification branch. `verify DIR`
 runs only on that branch and performs public download plus native package smoke.
@@ -17,6 +17,7 @@ import sys
 import tarfile
 import tempfile
 import tomllib
+import urllib.error
 import urllib.parse
 import urllib.request
 
@@ -73,11 +74,55 @@ def candidate(api, release_id, sha, tag):
 
 def context(env, event, head, version):
     branch = env.get("GITHUB_REF", "").removeprefix("refs/heads/")
-    pattern = re.escape(f"verify/v{version}-{head}-r") + r"([1-9][0-9]*)-([0-9a-f]{64})"
+    pattern = re.escape(f"verify/v{version}-") + r"([0-9a-f]{40})-r([1-9][0-9]*)-([0-9a-f]{64})-c" + re.escape(head)
     match = re.fullmatch(pattern, branch)
-    release.require(match is not None, "verification branch must bind version, full SHA, release ID and manifest digest")
+    release.require(match is not None, "verification branch must bind source SHA, release ID, manifest and controller SHA")
     result = release.event_context(env, event, head, branch)
-    return {**result, "tag": "v" + version, "release_id": int(match[1]), "manifest_sha256": match[2]}
+    return {**result, "controller_sha": head, "source_sha": match[1], "tag": "v" + version,
+            "release_id": int(match[2]), "manifest_sha256": match[3]}
+
+
+def source_checkout(root, selected):
+    root = root.resolve()
+    head = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=root, text=True).strip()
+    release.require(head == selected["source_sha"], "source checkout differs from published source SHA")
+    version = tomllib.loads((root / "Cargo.toml").read_text())["workspace"]["package"]["version"]
+    default = re.search(r"^DEFAULT_VERSION=(\S+)$", (root / "install.sh").read_text(), re.M)
+    release.require("v" + version == selected["tag"] and default is not None and default[1] == selected["tag"],
+                    "source manifest or installer default mismatch")
+    return root
+
+
+class MetadataGitHub:
+    """Only GET fixed-repository metadata. Never pass this token to downloads."""
+    def __init__(self, token=None):
+        self.token = token
+        self.opener = urllib.request.build_opener(release.NoRedirect)
+
+    def request(self, method, path):
+        release.require(method == "GET", "metadata client is read-only")
+        release.require(path.startswith(f"/repos/{release.REPOSITORY}/"), "unexpected metadata repository")
+        headers = {"Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28",
+                   "User-Agent": "tv-control-public-verification"}
+        if self.token:
+            headers["Authorization"] = "Bearer " + self.token
+        request = urllib.request.Request("https://api.github.com" + path, headers=headers, method="GET")
+        try:
+            with self.opener.open(request, timeout=60) as response:
+                return json.load(response)
+        except urllib.error.HTTPError as error:
+            # Allowlisted bounded response diagnostics only; never response bodies,
+            # authorization headers, tokens, signed URLs, or automatic 403 retries.
+            diagnostic = {"status": error.code}
+            for name in ("X-RateLimit-Limit", "X-RateLimit-Remaining", "X-RateLimit-Reset", "Retry-After"):
+                value = error.headers.get(name, "")
+                if re.fullmatch(r"[0-9]{1,12}", value):
+                    diagnostic[name.lower()] = value
+            request_id = error.headers.get("X-GitHub-Request-Id", "")
+            if re.fullmatch(r"[A-Fa-f0-9:]{1,80}", request_id):
+                diagnostic["request_id"] = request_id
+            error.close()
+            raise RuntimeError("GitHub metadata GET failed: " + json.dumps(diagnostic, sort_keys=True)) from None
 
 
 class PublicRedirect(urllib.request.HTTPRedirectHandler):
@@ -99,7 +144,7 @@ def download(url):
     return data
 
 
-def download_assets(manifest, urls, destination, downloader=download):
+def download_assets(manifest, urls, destination, downloader=download, source_root=None):
     release.require(not destination.exists(), "verification destination must be fresh")
     files = {}
     for name in sorted(ASSET_NAMES):
@@ -111,7 +156,7 @@ def download_assets(manifest, urls, destination, downloader=download):
         folder.mkdir(parents=True)
         for name in (package, package + ".sha256", "install.sh", "install.sh.sha256"):
             (folder / name).write_bytes(files[name])
-    release.assets(destination)
+    release.assets(destination, source_root=source_root)
     return files
 
 
@@ -123,7 +168,8 @@ def native_package():
     return choices[target]
 
 
-def smoke(destination, manifest):
+def smoke(destination, manifest, source_root=None):
+    source_root = source_root or ROOT
     artifact = native_package()
     folder = destination / artifact
     archive = folder / release.PACKAGES[artifact]
@@ -132,7 +178,7 @@ def smoke(destination, manifest):
         home = root / "home"
         home.mkdir()
         env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "HOME": str(home), "TMPDIR": str(root), "LC_ALL": "C"}
-        subprocess.run([sys.executable, str(ROOT / "scripts/check_package.py"), str(archive), "--smoke"],
+        subprocess.run([sys.executable, str(source_root / "scripts/check_package.py"), str(archive), "--smoke"],
                        check=True, timeout=120, env=env)
         # Exercise the public installer/download path with the explicit version,
         # then compare the installed executable to the already verified archive.
@@ -165,28 +211,39 @@ def main():
     plan.add_argument("source_sha")
     verify = commands.add_parser("verify")
     verify.add_argument("destination", type=Path)
+    verify.add_argument("--source-root", type=Path, required=True)
+    commands.add_parser("select")
     args = parser.parse_args()
     version = tomllib.loads((ROOT / "Cargo.toml").read_text())["workspace"]["package"]["version"]
     release.require(re.search(r"^DEFAULT_VERSION=(\S+)$", (ROOT / "install.sh").read_text(), re.M).group(1) == "v" + version,
                     "installer default must match the release version")
-    api = release.GitHub(anonymous=True)
+    head = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip()
+    api = MetadataGitHub(os.environ.get("GH_METADATA_TOKEN"))
     if args.command == "plan":
         manifest, _ = candidate(api, args.release_id, args.source_sha, "v" + version)
         digest = manifest_digest(manifest)
-        print(json.dumps({"branch": f"verify/v{version}-{args.source_sha}-r{args.release_id}-{digest}",
+        print(json.dumps({"branch": f"verify/v{version}-{args.source_sha}-r{args.release_id}-{digest}-c{head}",
                           "manifest_sha256": digest, "manifest": manifest}, indent=2))
         return
-    head = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip()
     selected = context(os.environ, json.loads(Path(os.environ["GITHUB_EVENT_PATH"]).read_text()), head, version)
-    manifest, urls = candidate(api, selected["release_id"], head, selected["tag"])
+    if args.command == "select":
+        # Values are fixed-format validated SHA/IDs, so cannot inject output lines.
+        with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+            output.write("source_sha=" + selected["source_sha"] + "\n")
+        print(json.dumps(selected, indent=2))
+        return
+    release.require(bool(api.token), "ephemeral read-only metadata token required")
+    source_root = source_checkout(args.source_root, selected)
+    manifest, urls = candidate(api, selected["release_id"], selected["source_sha"], selected["tag"])
     release.require(manifest_digest(manifest) == selected["manifest_sha256"], "selected release manifest changed")
-    download_assets(manifest, urls, args.destination)
-    smoke(args.destination, manifest)
+    download_assets(manifest, urls, args.destination, source_root=source_root)
+    smoke(args.destination, manifest, source_root=source_root)
     # Re-read after execution so a changed release is not silently certified.
-    after, _ = candidate(api, selected["release_id"], head, selected["tag"])
+    after, _ = candidate(api, selected["release_id"], selected["source_sha"], selected["tag"])
     release.require(after == manifest, "public release changed during verification")
     print(json.dumps({"verified": True, "manifest": manifest, "manifest_sha256": selected["manifest_sha256"],
-                      "native_smoke": native_package(), "remote_writes": False}, indent=2))
+                      "native_smoke": native_package(), "controller_sha": selected["controller_sha"],
+                      "source_sha": selected["source_sha"], "remote_writes": False}, indent=2))
 
 
 if __name__ == "__main__":

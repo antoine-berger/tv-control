@@ -64,11 +64,13 @@ def context(env, event, head, version):
 
 def verifier_environment():
     # check_package uses assertions; never let inherited optimization disable them.
-    return {key: value for key, value in os.environ.items() if key != "PYTHONOPTIMIZE"}
+    return {key: value for key, value in os.environ.items() if key not in {"PYTHONOPTIMIZE", "GH_TOKEN", "GITHUB_TOKEN", "GH_METADATA_TOKEN",
+                                                       "ACTIONS_RUNTIME_TOKEN", "ACTIONS_ID_TOKEN_REQUEST_TOKEN"}}
 
 
-def assets(directory):
-    """Require the exact three artifacts; compare docs and installer to this SHA."""
+def assets(directory, source_root=None):
+    """Require exact artifacts and compare bundled source to its own checkout."""
+    source_root = source_root or ROOT
     require(directory.is_dir() and not directory.is_symlink(), "artifact directory missing or linked")
     require({p.name for p in directory.iterdir()} == set(PACKAGES), "unexpected or missing artifact directories")
     result = {}
@@ -80,19 +82,19 @@ def assets(directory):
         for path in folder.iterdir():
             require(path.is_file() and not path.is_symlink() and path.stat().st_size <= 20_000_000,
                     "invalid artifact file")
-        subprocess.run([sys.executable, str(ROOT / "scripts/check_package.py"), str(folder / name)],
+        subprocess.run([sys.executable, str(source_root / "scripts/check_package.py"), str(folder / name)],
                        check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=verifier_environment())
         with tarfile.open(folder / name, "r:gz") as archive:
             for member in archive.getmembers():
                 if member.name != "tv-control":
                     with archive.extractfile(member) as source:
-                        require(source.read() == (ROOT / member.name).read_bytes(), "archive source differs from selected commit")
+                        require(source.read() == (source_root / member.name).read_bytes(), "archive source differs from selected commit")
         for path in sorted(folder.iterdir()):
             data = path.read_bytes()
             require(path.name not in result or result[path.name] == data, "duplicate installer assets differ")
             result[path.name] = data
     require(len(result) == 8, "exactly eight release assets required")
-    require(result["install.sh"] == (ROOT / "install.sh").read_bytes(), "installer source mismatch")
+    require(result["install.sh"] == (source_root / "install.sh").read_bytes(), "installer source mismatch")
     return result
 
 
