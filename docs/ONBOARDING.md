@@ -26,8 +26,10 @@ The terminal guides four stages:
 
 Account/workspace permissions can prevent connection. The wizard guides those
 steps; it does not provision an administrator key or silently create a remote
-tunnel. A missing tunnel-client is downloaded through the Platform Tunnels page;
-this dependency step is currently manual. Reusing an existing tunnel avoids
+tunnel. When tunnel-client is missing, the same wizard offers an explicit dependency
+installation: a pinned private official release on Linux, or the supported official
+Homebrew formula on macOS. See [dependency acquisition](INSTALLATION.md#connection-helper).
+Reusing an existing tunnel avoids
 requiring an administrator credential. The official administrative CLI can
 create tunnels separately with the required permissions and explicit approval.
 
@@ -45,12 +47,22 @@ installer supplies a verified stable launcher path, preserving the runtime
 binding when payload version directories change. A running process can retain
 its earlier payload until restarted; previous payloads are preserved.
 
+If the TV configuration changes, the wizard asks before stopping its exact owned
+controller. It confirms that the controller stopped, privately preserves the old
+launch intent, and starts a new configuration revision. TV and tunnel access must
+be approved again. A rejected change, foreign runtime or unverified stop leaves
+the old launch intent untouched. An interrupted update resumes from the complete
+persisted intent, without treating saved progress as approval.
+
 The connection directory is adjacent to the private TV configuration. It holds
 progress, a bounded 64 KiB event-code log, the private ADB home and official tunnel
 state. Progress contains no credentials. The launch intent records approved
 configuration and launcher choices, not proof of TV authorization. Ephemeral
 verification files expire after 120 seconds and are removed on confirmation or
 cancellation. Unsafe ownership, links and changed files fail closed.
+Each proof also names the bridge's fresh process generation. A controller restart
+invalidates the earlier conversation call, so rerun the wizard and verify a new
+challenge rather than returning the old code.
 
 Cancelling after background access approval can leave that controller running
 for later completion. The explicit advanced stop command is:
@@ -67,7 +79,7 @@ requires re-entry or an explicitly configured supported secret reference.
 ## Requirements and limits
 
 - macOS Apple Silicon or Linux ARM64/x86-64; router execution is unqualified.
-- Maintained Android Platform Tools and device debugging support. Global ADB keys
+- Maintained Android Platform Tools (guided acquisition is available on supported hosts) and device debugging support. Global ADB keys
   are not read or copied; the new private identity needs its own TV authorization.
 - Legacy TCP ADB is unencrypted on the LAN. The Internet tunnel does not encrypt
   that leg. Pairing ports are not control ports. Automatic new TLS ADB pairing is

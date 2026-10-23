@@ -90,15 +90,21 @@ impl Terminal {
         if unsafe { libc::tcsetattr(fd, libc::TCSANOW, &settings) } != 0 {
             return Err("terminal_setup_failed");
         }
-        struct Restore(i32, libc::termios);
+        struct Restore(i32, libc::termios, bool);
         impl Drop for Restore {
             fn drop(&mut self) {
                 unsafe {
+                    if self.2 {
+                        // Canonical input can still contain a partial hidden key
+                        // on cancellation. Discard it before restoring echo, but
+                        // do not wait for output drain (as TCSAFLUSH would).
+                        libc::tcflush(self.0, libc::TCIFLUSH);
+                    }
                     libc::tcsetattr(self.0, libc::TCSANOW, &self.1);
                 }
             }
         }
-        let _restore = Restore(fd, self.original);
+        let _restore = Restore(fd, self.original, secret);
         let mut left = prompt.as_bytes();
         while !left.is_empty() {
             ctx.check().map_err(|e| e.code)?;

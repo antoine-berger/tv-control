@@ -19,6 +19,7 @@ use tv_adapters::{
     pipeline_store::{Checkpoint, EventCode, LogEvent, ProgressOutcome, ProgressStage, Store},
     process::BoundedProcess,
     runtime::SystemClock,
+    tunnel_dependency::{self, Release},
 };
 use tv_application::{pipeline::*, Clock, Context};
 use tv_domain::{pipeline::*, Action, Receipt, Request, Status};
@@ -79,6 +80,23 @@ fn adb_spec(cfg: &Config, alias: &str, state: &Path) -> Result<AdbRuntimeSpec, &
         _ => Err("onboarding_requires_dedicated_adb_device"),
     }
 }
+fn verify_adb_dependency(
+    cfg: &Config,
+    state: &Path,
+    ctx: &Context<'_>,
+) -> Result<(), &'static str> {
+    let parent = state.parent().ok_or("configuration_path_invalid")?;
+    let process = BoundedProcess {
+        max_output: 65_536,
+        poll_ms: 10,
+    };
+    tv_adapters::dependency_acquisition::verify_adb_path(
+        &cfg.executables.adb,
+        parent,
+        &process,
+        &bounded(ctx, 10_000),
+    )
+}
 fn bounded<'a>(ctx: &'a Context<'a>, ms: u64) -> Context<'a> {
     Context {
         clock: ctx.clock,
@@ -114,6 +132,151 @@ fn find_program(name: &str) -> Option<PathBuf> {
                 .flatten()
         })
 }
+// Lifecycle operations resolve the same private dependency as initial acquisition.
+fn resolve_tunnel(state: &Path, ctx: &Context<'_>) -> Result<Option<PathBuf>, &'static str> {
+    if std::env::consts::OS == "linux" {
+        let process = BoundedProcess {
+            max_output: 65_536,
+            poll_ms: 10,
+        };
+        if let Some(binary) = tunnel_dependency::installed(
+            state,
+            Release::linux(std::env::consts::ARCH)?,
+            &process,
+            ctx,
+        )? {
+            return Ok(Some(binary));
+        }
+    }
+    Ok(find_program("tunnel-client").or_else(|| {
+        if std::env::consts::OS != "macos" {
+            return None;
+        }
+        [
+            "/opt/homebrew/bin/tunnel-client",
+            "/usr/local/bin/tunnel-client",
+        ]
+        .into_iter()
+        .map(PathBuf::from)
+        .find_map(|p| {
+            let m = fs::metadata(&p).ok()?;
+            (m.is_file() && m.permissions().mode() & 0o111 != 0)
+                .then(|| p.canonicalize().ok())
+                .flatten()
+        })
+    }))
+}
+#[allow(clippy::too_many_arguments)]
+fn reconcile_runtime_intent(
+    path: &Path,
+    state: &Path,
+    snapshot: &[u8],
+    device: &str,
+    controller_binary: &Path,
+    previous: Option<&Checkpoint>,
+    terminal: &Terminal,
+    ctx: &Context<'_>,
+) -> Result<String, &'static str> {
+    if previous.is_some_and(|saved| saved.configuration_path != path) {
+        return Err("runtime_configuration_path_changed");
+    }
+    let intent_path = state.join("runtime-intent.json");
+    let bytes = match intent_path.symlink_metadata() {
+        Ok(_) => private_read_limit(&intent_path, 6_400_000)?,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return random_token(),
+        Err(_) => return Err("runtime_intent_unreadable"),
+    };
+    let saved = previous.ok_or("runtime_intent_without_checkpoint")?;
+    let intent: RuntimeIntent =
+        serde_json::from_slice(&bytes).map_err(|_| "runtime_intent_invalid")?;
+    if intent.schema != 1
+        || intent.installation_id != saved.installation_id
+        || !tv_domain::identifier(&intent.revision)
+        || !tv_domain::identifier(&intent.device)
+    {
+        return Err("runtime_intent_mismatch");
+    }
+    if intent.controller_binary != controller_binary {
+        return Err("runtime_launcher_changed");
+    }
+    let old_config = Config::from_json(intent.configuration.as_bytes())?;
+    adb_spec(&old_config, &intent.device, state)?;
+    if intent.configuration.as_bytes() == snapshot && intent.device == device {
+        // A crash after intent replacement but before checkpoint publication is
+        // safe to resume: every access approval and observation is requested anew.
+        return Ok(intent.revision);
+    }
+    eprintln!("The TV configuration changed. Updating it requires stopping the old owned controller and approving TV and tunnel access again.");
+    if terminal
+        .line(
+            "Stop the old controller and use the changed configuration? [y/N] ",
+            false,
+            ctx,
+        )?
+        .as_deref()
+        != Some("y")
+    {
+        return Err("approval_rejected");
+    }
+    ctx.check().map_err(|e| e.code)?;
+    let tunnel_state = state.join("tunnel");
+    match tunnel_state.symlink_metadata() {
+        Ok(_) => {
+            let spec = TunnelSpec {
+                binary: resolve_tunnel(state, ctx)?.ok_or("tunnel_client_missing")?,
+                alias: format!("tv-{}", saved.installation_id),
+                tunnel_id: saved
+                    .tunnel_id
+                    .clone()
+                    .ok_or("tunnel_configuration_missing")?,
+                runtime_key_env: "TV_CONTROL_TUNNEL_KEY".into(),
+                state_dir: tunnel_state,
+                mcp_binary: intent.controller_binary.clone(),
+                configuration: saved.configuration_path.clone(),
+                bridge_state_dir: Some(state.to_owned()),
+                executable_path: std::env::var_os("PATH").ok_or("executable_path_missing")?,
+            };
+            let process = BoundedProcess {
+                max_output: 65_536,
+                poll_ms: 10,
+            };
+            let tunnel = OfficialTunnel { process: &process };
+            let stopped = tunnel
+                .stop(&spec, true, &bounded(ctx, 10_000))
+                .map_err(|e| e.code)?;
+            let checked = tunnel
+                .status(&spec, &bounded(ctx, 5_000))
+                .map_err(|e| e.code)?;
+            if stopped.process_running || checked.process_running {
+                return Err("controller_stop_unverified");
+            }
+        }
+        // Intent is published before the tunnel is created. If creation never
+        // began there is no owned runtime to stop; an unsafe/partial state fails.
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(_) => return Err("tunnel_state_unreadable"),
+    }
+    ctx.check().map_err(|e| e.code)?;
+    if private_read(path)? != snapshot {
+        return Err("configuration_changed_restart_setup");
+    }
+    ProofStore::open(&state.join("verification"))?.invalidate()?;
+    let revision = random_token()?;
+    let replacement = RuntimeIntent {
+        schema: 1,
+        installation_id: saved.installation_id.clone(),
+        revision: revision.clone(),
+        device: device.into(),
+        configuration: std::str::from_utf8(snapshot)
+            .map_err(|_| "configuration_invalid_utf8")?
+            .into(),
+        controller_binary: controller_binary.to_owned(),
+    };
+    let replacement =
+        serde_json::to_vec(&replacement).map_err(|_| "runtime_intent_encode_failed")?;
+    tv_adapters::runtime_intent::replace_after_stop(state, &bytes, &replacement)?;
+    Ok(revision)
+}
 struct Journey<'a> {
     path: PathBuf,
     state: PathBuf,
@@ -134,6 +297,14 @@ struct Journey<'a> {
     challenge: RefCell<Option<Challenge>>,
 }
 impl Journey<'_> {
+    fn bridge_generation(&self) -> Result<String, &'static str> {
+        tv_adapters::runtime_intent::read_generation(
+            &self.state,
+            &self.installation,
+            &self.configuration.revision,
+            &self.configuration.device,
+        )
+    }
     fn fresh<T>(&self, value: T, ctx: &Context<'_>) -> Fresh<T> {
         let now = ctx.clock.unix_ms();
         Fresh {
@@ -179,10 +350,10 @@ impl Journey<'_> {
                 id,
                 device: self.configuration.device.clone(),
                 action: Action::Observe,
-                expires_at_unix_ms: ctx
-                    .clock
-                    .unix_ms()
-                    .saturating_add(ctx.remaining_ms().min(10_000)),
+                expires_at_unix_ms: ctx.clock.unix_ms().saturating_add(
+                    ctx.remaining_ms()
+                        .min(self.config.preferences.max_budget_ms),
+                ),
             },
             ctx.cancellation,
         );
@@ -236,8 +407,9 @@ impl AdbSetupPort for Journey<'_> {
     }
     fn owned_runtime(&self, _: &Consent, ctx: &Context<'_>) -> Gate<Fresh<DeviceBinding>> {
         gate((|| {
+            verify_adb_dependency(&self.config, &self.state, ctx)?;
             let id = self.checkpoint.borrow().tunnel_id.clone();
-            if let (Some(id), Some(binary)) = (id, find_program("tunnel-client")) {
+            if let (Some(id), Some(binary)) = (id, resolve_tunnel(&self.state, ctx)?) {
                 if let Ok(bytes) =
                     private_read_limit(&self.state.join("runtime-intent.json"), 6_400_000)
                 {
@@ -266,7 +438,7 @@ impl AdbSetupPort for Journey<'_> {
                         return Ok(self.fresh(
                             DeviceBinding {
                                 configuration: self.configuration.clone(),
-                                runtime_generation: self.installation.clone(),
+                                runtime_generation: self.bridge_generation()?,
                             },
                             ctx,
                         ));
@@ -283,7 +455,7 @@ impl AdbSetupPort for Journey<'_> {
             Ok(self.fresh(
                 DeviceBinding {
                     configuration: self.configuration.clone(),
-                    runtime_generation: self.installation.clone(),
+                    runtime_generation: random_token()?,
                 },
                 ctx,
             ))
@@ -357,16 +529,57 @@ impl TunnelSetupPort for Journey<'_> {
     fn consent(&self, config: &Configuration, ctx: &Context<'_>) -> Gate<Fresh<Consent>> {
         gate((|| {
             self.progress(Stage::TunnelConsent, "[3/4] ChatGPT connection", ctx)?;
-            let binary = loop {
-                if let Some(binary) = find_program("tunnel-client") {
-                    break binary;
-                }
-                eprintln!("Download the official tunnel-client from https://platform.openai.com/settings/organization/tunnels");
-                self.ask(
-                    "Press Enter when installed, or q to resume later: ",
-                    false,
-                    ctx,
-                )?;
+            let binary = match resolve_tunnel(&self.state, ctx)? {
+                Some(binary) => binary,
+                None => match std::env::consts::OS {
+                    "linux" => {
+                        if self.ask("Install verified OpenAI tunnel-client v0.0.17 privately for this connection? [y/N] ", false, ctx)? != "y" {
+                                return Err("approval_rejected");
+                            }
+                        eprintln!("Installing connection helper…");
+                        let process = BoundedProcess {
+                            max_output: 64 * 1024 * 1024,
+                            poll_ms: 20,
+                        };
+                        tunnel_dependency::install_linux(
+                            &self.state,
+                            Release::linux(std::env::consts::ARCH)?,
+                            true,
+                            &process,
+                            &bounded(ctx, 180_000),
+                        )?
+                    }
+                    "macos" => {
+                        let brew = find_program("brew")
+                            .or_else(|| {
+                                ["/opt/homebrew/bin/brew", "/usr/local/bin/brew"]
+                                    .into_iter()
+                                    .map(PathBuf::from)
+                                    .find(|p| p.is_file())
+                            })
+                            .ok_or_else(|| {
+                                eprintln!("Homebrew is required for the supported macOS helper installation. Install it from https://brew.sh, then rerun this command. Progress is saved.");
+                                "tunnel_dependency_homebrew_required"
+                            })?;
+                        if self.ask("Install OpenAI tunnel-client using Homebrew (current official formula and dependencies, in Homebrew's prefix)? [y/N] ", false, ctx)? != "y" {
+                                return Err("approval_rejected");
+                            }
+                        eprintln!("Installing connection helper…");
+                        let process = BoundedProcess {
+                            max_output: 1024 * 1024,
+                            poll_ms: 50,
+                        };
+                        tunnel_dependency::install_homebrew(
+                            &brew,
+                            true,
+                            &process,
+                            &bounded(ctx, 600_000),
+                        )?;
+                        resolve_tunnel(&self.state, ctx)?
+                            .ok_or("tunnel_dependency_homebrew_not_on_path")?
+                    }
+                    _ => return Err("tunnel_dependency_platform_unsupported"),
+                },
             };
             let saved = self.checkpoint.borrow().tunnel_id.clone();
             let id = match saved {
@@ -420,6 +633,17 @@ impl TunnelSetupPort for Journey<'_> {
             };
             let bytes = serde_json::to_vec(&intent).map_err(|_| "runtime_intent_encode_failed")?;
             tv_adapters::runtime_intent::publish(&self.state, &bytes)?;
+            let previous_generation = if self.existing_runtime.get() {
+                None
+            } else {
+                match self.bridge_generation() {
+                    Ok(generation) => Some(generation),
+                    Err("bridge_generation_unavailable" | "bridge_generation_binding_mismatch") => {
+                        None
+                    }
+                    Err(code) => return Err(code),
+                }
+            };
             // The official manager supervises bridge, which then owns ADB for its lifetime.
             self.runtime.borrow_mut().take();
             let process = BoundedProcess {
@@ -440,10 +664,31 @@ impl TunnelSetupPort for Journey<'_> {
             if !health.locally_ready() {
                 return Err("tunnel_not_ready");
             }
+            let generation_ctx = bounded(ctx, 5_000);
+            let generation = loop {
+                generation_ctx.check().map_err(|e| e.code)?;
+                match self.bridge_generation() {
+                    Ok(generation)
+                        if self.existing_runtime.get()
+                            || previous_generation.as_ref() != Some(&generation) =>
+                    {
+                        break generation
+                    }
+                    Ok(_)
+                    | Err(
+                        "bridge_generation_unavailable"
+                        | "bridge_generation_binding_mismatch"
+                        | "bridge_generation_pending",
+                    ) => {
+                        generation_ctx.wait(20).map_err(|e| e.code)?;
+                    }
+                    Err(code) => return Err(code),
+                }
+            };
             Ok(self.fresh(
                 ConnectionBinding {
                     device: binding.clone(),
-                    tunnel_generation: spec.tunnel_id.clone(),
+                    tunnel_generation: generation,
                 },
                 ctx,
             ))
@@ -479,6 +724,7 @@ impl ExternalConversationPort for Journey<'_> {
                 &self.configuration.revision,
                 &self.snapshot,
                 &self.configuration.device,
+                &binding.tunnel_generation,
                 ctx.clock.unix_ms(),
             )?;
             let nonce = challenge.nonce.clone();
@@ -510,6 +756,9 @@ impl ExternalConversationPort for Journey<'_> {
             if private_read(&self.path)? != self.snapshot {
                 return Err("configuration_changed_restart_setup");
             }
+            if self.bridge_generation()? != challenge.binding.tunnel_generation {
+                return Err("controller_restarted_repeat_verification");
+            }
             let proof = ProofStore::open(&self.state.join("verification"))?.confirm(
                 saved,
                 &answer,
@@ -530,6 +779,9 @@ impl ExternalConversationPort for Journey<'_> {
                 return Err("controller_stopped_before_confirmation");
             }
             self.observed(random_token()?, &bounded(ctx, 10_000))?;
+            if self.bridge_generation()? != challenge.binding.tunnel_generation {
+                return Err("controller_restarted_repeat_verification");
+            }
             let receipt = proof.receipt;
             let mut fresh = self.fresh(
                 ExternalConversationVerification {
@@ -619,10 +871,16 @@ pub fn run(path: &Path, as_json: bool, launcher: Option<&Path>) -> Result<i32, &
         .as_ref()
         .map(|p| p.installation_id.clone())
         .unwrap_or(random_token()?);
-    let revision = previous
-        .as_ref()
-        .map(|p| p.configuration_revision.clone())
-        .unwrap_or(random_token()?);
+    let revision = reconcile_runtime_intent(
+        &path,
+        &state,
+        &snapshot,
+        &device,
+        &controller_binary,
+        previous.as_ref(),
+        &terminal,
+        &ctx,
+    )?;
     let checkpoint = Checkpoint {
         schema: 1,
         installation_id: installation.clone(),
@@ -713,6 +971,7 @@ pub fn bridge(path: &Path, state: &Path) -> Result<i32, &'static str> {
     if intent.schema != 1
         || intent.configuration.as_bytes() != snapshot
         || !tv_domain::identifier(&intent.installation_id)
+        || !tv_domain::identifier(&intent.revision)
         || !tv_domain::identifier(&intent.device)
     {
         return Err("runtime_intent_mismatch");
@@ -725,23 +984,35 @@ pub fn bridge(path: &Path, state: &Path) -> Result<i32, &'static str> {
         cancellation: &interrupts,
         deadline_monotonic_ms: 10_000,
     };
+    verify_adb_dependency(&config, state, &ctx)?;
     let mut runtime = OwnedAdbRuntime::start(adb_spec(&config, &intent.device, state)?, true, &ctx)
         .map_err(|e| e.code)?;
     if runtime.connect(&ctx).map_err(|e| e.code)? != AdbAuthorization::Authorized {
         return Err("tv_authorization_pending");
     }
+    let generation = tv_adapters::runtime_intent::start_generation(
+        state,
+        &intent.installation_id,
+        &intent.revision,
+        &intent.device,
+    )?;
     super::mcp::serve_bridge(
         super::service(config.clone()),
         config,
         state.to_owned(),
         snapshot,
+        generation.generation,
         &interrupts,
     )?;
     Ok(0)
 }
 
 /// Explicit lifecycle command; stops only the exact owned official alias and bridge.
-pub fn disconnect(path: &Path, as_json: bool) -> Result<i32, &'static str> {
+pub fn disconnect(
+    path: &Path,
+    as_json: bool,
+    expected_launcher: Option<&Path>,
+) -> Result<i32, &'static str> {
     let path = path
         .canonicalize()
         .map_err(|_| "configuration_unreadable")?;
@@ -757,8 +1028,29 @@ pub fn disconnect(path: &Path, as_json: bool) -> Result<i32, &'static str> {
         6_400_000,
     )?)
     .map_err(|_| "runtime_intent_invalid")?;
+    // Multiple installation prefixes may share the default configuration. An
+    // installer may stop only the controller approved for its exact launcher.
+    // Check before resolving or invoking any tunnel helper.
+    if expected_launcher.is_some_and(|launcher| launcher != intent.controller_binary) {
+        if as_json {
+            println!(
+                "{}",
+                json!({"status":"not_owned","controller_stopped":false})
+            );
+        } else {
+            println!("Controller belongs to another installation; left running.");
+        }
+        return Ok(0);
+    }
+    let clock = SystemClock::default();
+    let interrupts = Interrupts::install()?;
+    let ctx = Context {
+        clock: &clock,
+        cancellation: &interrupts,
+        deadline_monotonic_ms: 10_000,
+    };
     let spec = TunnelSpec {
-        binary: find_program("tunnel-client").ok_or("tunnel_client_missing")?,
+        binary: resolve_tunnel(&state, &ctx)?.ok_or("tunnel_client_missing")?,
         alias: format!("tv-{}", checkpoint.installation_id),
         tunnel_id: id,
         runtime_key_env: "TV_CONTROL_TUNNEL_KEY".into(),
@@ -767,13 +1059,6 @@ pub fn disconnect(path: &Path, as_json: bool) -> Result<i32, &'static str> {
         configuration: path,
         bridge_state_dir: Some(state),
         executable_path: std::env::var_os("PATH").ok_or("executable_path_missing")?,
-    };
-    let clock = SystemClock::default();
-    let interrupts = Interrupts::install()?;
-    let ctx = Context {
-        clock: &clock,
-        cancellation: &interrupts,
-        deadline_monotonic_ms: 10_000,
     };
     let process = BoundedProcess {
         max_output: 65536,

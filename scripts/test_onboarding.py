@@ -14,6 +14,33 @@ class Onboarding(unittest.TestCase):
   if '--json' in args:
    self.assertEqual(len(p.stdout.splitlines()),1,p.stdout);p.value=json.loads(p.stdout);self.assertEqual(p.stderr,'')
   return p
+ def test_guided_missing_adb_can_choose_path_without_restarting_or_execution(self):
+  missing=list(self.base);missing[missing.index('--adb')+1]=str(self.dir/'missing-adb')
+  marker=self.dir/'adb-ran';self.adb.write_text('#!/bin/sh\ntouch '+shlex.quote(str(marker))+'\nexit 77\n')
+  p=self.run_cli('setup',*missing,'--guided','--name','Fixture',input=str(self.adb)+'\n')
+  self.assertEqual(p.returncode,0,p.stderr);self.assertTrue(self.output.exists());self.assertFalse(marker.exists())
+  self.assertEqual(json.loads(self.output.read_text())['executables']['adb'],str(self.adb))
+  self.assertIn('ADB is missing',p.stderr);self.assertFalse((self.dir/'connection-dependencies').exists())
+ def test_guided_missing_adb_decline_preserves_progress_without_install(self):
+  missing=list(self.base);missing[missing.index('--adb')+1]=str(self.dir/'missing-adb')
+  p=self.run_cli('setup',*missing,'--guided',input='q\n')
+  self.assertNotEqual(p.returncode,0);self.assertFalse(self.output.exists());self.assertFalse((self.dir/'connection-dependencies').exists())
+  self.assertTrue(self.output.with_name(self.output.name+'.setup-state.json').exists())
+ def test_missing_adb_json_never_offers_or_installs_dependency(self):
+  missing=list(self.base);missing[missing.index('--adb')+1]=str(self.dir/'missing-adb')
+  p=self.run_cli('setup',*missing,'--guided','--json')
+  self.assertNotEqual(p.returncode,0);self.assertIn('adb_missing',p.stdout);self.assertFalse((self.dir/'connection-dependencies').exists())
+ def test_existing_config_private_adb_requires_verified_receipt(self):
+  p=self.run_cli('setup',*self.base,'--json','--confirm');self.assertEqual(p.returncode,0,p.stdout)
+  config=json.loads(self.output.read_text());config['executables']['adb']=str(self.dir/'connection-dependencies'/'adb-37.0.1-linux-amd64'/'adb');self.output.write_text(json.dumps(config))
+  p=self.run_cli('setup','--guided','--output',str(self.output),'--json')
+  self.assertNotEqual(p.returncode,0);self.assertNotIn('already_configured',p.stdout)
+ def test_explicit_private_adb_symlink_does_not_escape_verification(self):
+  private=self.dir/'connection-dependencies'/'adb-37.0.1-linux-amd64';private.mkdir(parents=True,mode=0o700)
+  (private/'adb').symlink_to(self.adb)
+  args=list(self.base);args[args.index('--adb')+1]=str(private/'adb')
+  p=self.run_cli('setup',*args,'--guided','--name','Fixture',input='q\n')
+  self.assertNotEqual(p.returncode,0);self.assertFalse(self.output.exists())
  def test_interfaces_and_discovery_use_offline_wire_fixture(self):
   p=self.run_cli('interfaces','--fixture',str(ROOT/'examples/discovery.json'),'--json');self.assertEqual(p.value['interfaces'][0]['name'],'lan-fixture')
   p=self.run_cli('discover','--fixture',str(ROOT/'examples/discovery.json'),'--interface','lan-fixture','--json');self.assertEqual(len(p.value['candidates']),3);self.assertTrue(p.value['simulation']);self.assertTrue(all(not c['control_verified'] for c in p.value['candidates']))

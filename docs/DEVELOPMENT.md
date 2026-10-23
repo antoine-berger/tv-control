@@ -72,6 +72,34 @@ Cleanup terminates owned processes on cancellation, timeout and exit. Inspect
 ownership and deadline behavior when changing these adapters. Executables are
 trusted configuration; process groups are not a security boundary.
 
+## Connection dependency checks
+
+The dependency adapter tests use injected subprocess fixtures. They cover explicit
+approval, platform selection, checksums, unexpected archive paths, executable
+architecture, private permissions, foreign/symlink destinations, modified-file
+rejection and checksum-verified resume. No fixture invokes tunnel-client or Homebrew.
+
+An optional contract check uses an already downloaded official Linux ZIP, verifies
+its embedded release pin, streams its payload into an automatically removed private
+test directory and rechecks the receipt. It never executes a downloaded binary:
+
+```sh
+TV_CONTROL_TEST_TUNNEL_ARCHIVE=/absolute/path/to/tunnel-client-v0.0.17-linux-amd64.zip \
+  cargo test --locked -p tv-adapters --lib official_archive_offline_contract -- --ignored
+```
+
+Supply the ARM64 tunnel ZIP instead on an ARM64 Linux host. The corresponding
+Google ADB archive check is available on Linux x86-64:
+
+```sh
+TV_CONTROL_TEST_ADB_ARCHIVE=/absolute/path/to/platform-tools_r37.0.1-linux.zip \
+  cargo test --locked -p tv-adapters --lib official_adb_archive_offline_contract -- --ignored
+```
+
+This also only inspects/extracts the fixture and never invokes ADB. Ordinary CI does not download
+or install external helpers. macOS Homebrew execution remains an explicitly
+approved host acceptance check; injected command tests are not that qualification.
+
 ## Changing behavior
 
 Add domain vocabulary only when needed, express behavior through application

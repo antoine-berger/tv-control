@@ -139,7 +139,13 @@ evidence. Execution mode is fixed before composition: the agent fixture route
 contains only simulated ports, while the native route rejects simulated evidence.
 An expired approval flow stops before dependent dispatch, not just before Ready.
 After cooperative code confirmation, fresh runtime health and a new TV observation
-are required. Logs accept only typed event codes and durations, bounded to 64 KiB.
+are required. Every bridge start publishes a private random process generation;
+the bridge, challenge, response and final confirmation must agree on that token.
+Stable installation and tunnel IDs cannot substitute for a process generation.
+Changed configuration requires explicit approval, a verified stop of the exact
+old owned runtime, a preserved old intent and an atomic replacement with a new
+revision. Pending proofs are invalidated and all access approvals run again.
+Logs accept only typed event codes and durations, bounded to 64 KiB.
 Credentials are entered without echo and passed only to the official runtime's
 environment; checkpoints contain neither credentials nor reusable proof claims.
 

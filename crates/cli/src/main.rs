@@ -111,7 +111,18 @@ fn run() -> Result<i32, &'static str> {
     if args.get(1).is_some_and(|s| s == "disconnect")
         && (args.len() == 3 || (args.len() == 4 && args[3] == "--json"))
     {
-        return journey::disconnect(std::path::Path::new(&args[2]), args.len() == 4);
+        return journey::disconnect(std::path::Path::new(&args[2]), args.len() == 4, None);
+    }
+    if args.get(1).is_some_and(|s| s == "disconnect")
+        && args.len() == 6
+        && args[3] == "--json"
+        && args[4] == "--launcher"
+    {
+        return journey::disconnect(
+            std::path::Path::new(&args[2]),
+            true,
+            Some(std::path::Path::new(&args[5])),
+        );
     }
     if args.len() == 2 && matches!(args[1].as_str(), "--help" | "--version") {
         if args[1] == "--version" {

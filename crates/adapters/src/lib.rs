@@ -2,6 +2,7 @@ pub mod adb;
 pub mod adb_server;
 pub mod config;
 pub mod connection_proof;
+pub mod dependency_acquisition;
 pub mod http;
 pub mod jellyfin;
 pub mod onboarding_runtime;
@@ -71,3 +72,5 @@ pub mod discovery;
 
 pub mod setup;
 pub mod setup_checkpoint;
+
+pub mod tunnel_dependency;

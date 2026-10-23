@@ -31,6 +31,7 @@ impl Fixture {
                 "revision_a",
                 b"fixture configuration",
                 "screen",
+                "generation_a",
                 1000,
             )
             .unwrap()
@@ -69,6 +70,7 @@ fn requires_the_chat_return_code_and_consumes_a_success_once() {
         .complete(
             &request.nonce,
             b"fixture configuration",
+            "generation_a",
             &receipt(&request.nonce),
             1100,
         )
@@ -99,7 +101,12 @@ fn requires_the_chat_return_code_and_consumes_a_success_once() {
         .is_err());
     assert!(fixture
         .store
-        .request(&request.nonce, b"fixture configuration", 1200)
+        .request(
+            &request.nonce,
+            b"fixture configuration",
+            "generation_a",
+            1200
+        )
         .is_err());
     assert_eq!(fs::read_dir(fixture.root.join("proof")).unwrap().count(), 1);
 }
@@ -110,14 +117,24 @@ fn rejects_wrong_config_nonce_expiry_and_unsuitable_observations() {
     assert_eq!(
         fixture
             .store
-            .request(&request.nonce, b"changed configuration", 1100)
+            .request(
+                &request.nonce,
+                b"changed configuration",
+                "generation_a",
+                1100
+            )
             .err(),
         Some("proof_configuration_changed")
     );
     assert_eq!(
         fixture
             .store
-            .request(&"0".repeat(32), b"fixture configuration", 1100)
+            .request(
+                &"0".repeat(32),
+                b"fixture configuration",
+                "generation_a",
+                1100
+            )
             .err(),
         Some("proof_challenge_mismatch")
     );
@@ -132,7 +149,13 @@ fn rejects_wrong_config_nonce_expiry_and_unsuitable_observations() {
         assert_eq!(
             fixture
                 .store
-                .complete(&request.nonce, b"fixture configuration", &result, 1100)
+                .complete(
+                    &request.nonce,
+                    b"fixture configuration",
+                    "generation_a",
+                    &result,
+                    1100
+                )
                 .err(),
             Some("proof_observation_required")
         );
@@ -144,6 +167,7 @@ fn rejects_wrong_config_nonce_expiry_and_unsuitable_observations() {
             .request(
                 &request.nonce,
                 b"fixture configuration",
+                "generation_a",
                 1000 + CHALLENGE_VALIDITY_MS
             )
             .err(),
@@ -160,6 +184,7 @@ fn a_new_journey_invalidates_old_proofs_and_cancel_cleans_only_its_own_request()
         .complete(
             &first.nonce,
             b"fixture configuration",
+            "generation_a",
             &receipt(&first.nonce),
             1100,
         )
@@ -171,6 +196,7 @@ fn a_new_journey_invalidates_old_proofs_and_cancel_cleans_only_its_own_request()
             "revision_b",
             b"new configuration",
             "screen",
+            "generation_a",
             1200,
         )
         .unwrap();
@@ -198,21 +224,40 @@ fn rejects_symlinks_hardlinks_unknown_entries_and_broad_permissions() {
     symlink(&external, &path).unwrap();
     assert!(fixture
         .store
-        .request(&request.nonce, b"fixture configuration", 1100)
+        .request(
+            &request.nonce,
+            b"fixture configuration",
+            "generation_a",
+            1100
+        )
         .is_err());
     assert_eq!(fs::read(&external).unwrap(), b"preserve");
     fs::remove_file(&path).unwrap();
     fs::hard_link(&external, &path).unwrap();
     assert!(fixture
         .store
-        .issue("installation_a", "revision_a", b"config", "screen", 1200)
+        .issue(
+            "installation_a",
+            "revision_a",
+            b"config",
+            "screen",
+            "generation_a",
+            1200
+        )
         .is_err());
     fs::remove_file(&path).unwrap();
     fs::write(fixture.root.join("proof/unexpected"), b"preserve").unwrap();
     assert_eq!(
         fixture
             .store
-            .issue("installation_a", "revision_a", b"config", "screen", 1200)
+            .issue(
+                "installation_a",
+                "revision_a",
+                b"config",
+                "screen",
+                "generation_a",
+                1200
+            )
             .err(),
         Some("proof_unknown_entry")
     );
@@ -243,7 +288,12 @@ fn recovers_only_known_interrupted_atomic_publications() {
     .unwrap();
     assert!(fixture
         .store
-        .request(&request.nonce, b"fixture configuration", 1100)
+        .request(
+            &request.nonce,
+            b"fixture configuration",
+            "generation_a",
+            1100
+        )
         .is_ok());
     assert_eq!(fs::read_dir(fixture.root.join("proof")).unwrap().count(), 2);
     let partial = fixture
@@ -253,7 +303,67 @@ fn recovers_only_known_interrupted_atomic_publications() {
     fs::set_permissions(&partial, fs::Permissions::from_mode(0o600)).unwrap();
     assert!(fixture
         .store
-        .request(&request.nonce, b"fixture configuration", 1100)
+        .request(
+            &request.nonce,
+            b"fixture configuration",
+            "generation_a",
+            1100
+        )
         .is_ok());
     assert!(!partial.exists());
+}
+
+#[test]
+fn configuration_transition_invalidates_both_pending_challenge_and_response() {
+    let fixture = Fixture::new();
+    let challenge = fixture.request();
+    let response = fixture
+        .store
+        .complete(
+            &challenge.nonce,
+            b"fixture configuration",
+            "generation_a",
+            &receipt(&challenge.nonce),
+            1100,
+        )
+        .unwrap();
+    fixture.store.invalidate().unwrap();
+    assert!(fixture
+        .store
+        .confirm(&challenge, &response.code, b"fixture configuration", 1200,)
+        .is_err());
+    assert_eq!(fs::read_dir(fixture.root.join("proof")).unwrap().count(), 1);
+    fixture.store.invalidate().unwrap();
+}
+
+#[test]
+fn replacement_runtime_cannot_observe_or_complete_a_previous_generation_challenge() {
+    let fixture = Fixture::new();
+    let challenge = fixture.request();
+    assert_eq!(
+        fixture
+            .store
+            .request(
+                &challenge.nonce,
+                b"fixture configuration",
+                "generation_b",
+                1100,
+            )
+            .err(),
+        Some("proof_runtime_changed")
+    );
+    assert_eq!(
+        fixture
+            .store
+            .complete(
+                &challenge.nonce,
+                b"fixture configuration",
+                "generation_b",
+                &receipt(&challenge.nonce),
+                1100,
+            )
+            .err(),
+        Some("proof_runtime_changed")
+    );
+    assert!(!fixture.root.join("proof/response.json").exists());
 }

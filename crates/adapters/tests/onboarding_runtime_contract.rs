@@ -1,6 +1,6 @@
 use std::{
-    fs,
-    net::TcpListener,
+    fs, io,
+    net::{TcpListener, TcpStream},
     os::unix::fs::PermissionsExt,
     path::{Path, PathBuf},
     sync::atomic::{AtomicU64, Ordering},
@@ -51,12 +51,24 @@ fn unused_port() -> u16 {
         .port()
 }
 const FAKE_ADB: &str = r#"
-import json,os,pathlib,socket,sys
+import fcntl,json,os,pathlib,socket,sys
 root=pathlib.Path(__file__).parent
-with (root/'events').open('a') as f: f.write(json.dumps({'args':sys.argv[1:],'home':os.environ.get('HOME'),'ambient':os.environ.get('TV_RUNTIME_SECRET'),'mdns':os.environ.get('ADB_MDNS_AUTO_CONNECT')})+'\n')
+with (root/'events').open('a') as f: f.write(json.dumps({'args':sys.argv[1:],'home':os.environ.get('HOME'),'ambient':os.environ.get('TV_RUNTIME_SECRET'),'mdns':os.environ.get('ADB_MDNS_AUTO_CONNECT'),'emu':os.environ.get('ADB_EMU')})+'\n')
 if sys.argv[1:]==['version']: print('Android Debug Bridge version 1.0.41');sys.exit(0)
 if '-L' in sys.argv:
-    port=int(sys.argv[sys.argv.index('-L')+1].split(':')[-1]);s=socket.socket();s.bind(('127.0.0.1',port));s.listen()
+    address=sys.argv[sys.argv.index('-L')+1]
+    # Match official ADB socket activation: an inherited, listening socket, not a rebind.
+    assert address.startswith('acceptfd:')
+    fd=int(address.split(':')[1]);assert fd>2
+    assert fcntl.fcntl(fd,fcntl.F_GETFD)&fcntl.FD_CLOEXEC==0
+    s=socket.socket(fileno=fd)
+    assert s.getsockopt(socket.SOL_SOCKET,socket.SO_ACCEPTCONN)==1
+    assert s.getsockname()[0]=='127.0.0.1'
+    with socket.socket() as competitor:
+        try:competitor.bind(s.getsockname())
+        except OSError:pass
+        else:raise Exception('runtime port was not reserved')
+    (root/'server-pid').write_text(str(os.getpid()))
     while True:
         conn,_=s.accept()
         with conn:
@@ -117,8 +129,33 @@ fn owned_loopback_runtime_waits_for_actual_authorization_and_cleans_up() {
         AdbAuthorization::Authorized
     );
     assert_eq!(runtime.port(), port);
+    let pid = fs::read_to_string(temp.0.join("server-pid"))
+        .unwrap()
+        .parse::<libc::pid_t>()
+        .unwrap();
+    assert_eq!(unsafe { libc::kill(pid, 0) }, 0);
     drop(runtime);
-    assert!(TcpListener::bind(("127.0.0.1", port)).is_ok());
+    // A closed accepted socket may retain this port in TIME_WAIT on Linux.
+    // Rebinding is not evidence of listener cleanup; check the child and socket.
+    assert_eq!(unsafe { libc::kill(pid, 0) }, -1);
+    assert_eq!(io::Error::last_os_error().raw_os_error(), Some(libc::ESRCH));
+    assert_eq!(
+        unsafe { libc::waitpid(pid, std::ptr::null_mut(), libc::WNOHANG) },
+        -1
+    );
+    assert_eq!(
+        io::Error::last_os_error().raw_os_error(),
+        Some(libc::ECHILD)
+    );
+    assert_eq!(
+        TcpStream::connect_timeout(
+            &std::net::SocketAddr::from(([127, 0, 0, 1], port)),
+            Duration::from_millis(100),
+        )
+        .unwrap_err()
+        .kind(),
+        io::ErrorKind::ConnectionRefused
+    );
     let events: Vec<serde_json::Value> = fs::read_to_string(temp.0.join("events"))
         .unwrap()
         .lines()
@@ -128,6 +165,7 @@ fn owned_loopback_runtime_waits_for_actual_authorization_and_cleans_up() {
         assert_eq!(event["home"], home.to_str().unwrap());
         assert!(event["ambient"].is_null());
         assert_eq!(event["mdns"], "0");
+        assert_eq!(event["emu"], "0");
         assert!(!event["args"].to_string().contains("host:kill"));
     }
     let requests = fs::read_to_string(temp.0.join("requests")).unwrap();
@@ -136,6 +174,89 @@ fn owned_loopback_runtime_waits_for_actual_authorization_and_cleans_up() {
         .any(|line| line == "host:connect:192.0.2.10:5555"));
     assert!(requests.lines().any(|line| line == "host:devices"));
     assert!(!requests.contains("host:kill"));
+}
+#[test]
+fn listener_stays_reserved_when_owned_child_closes_its_copy() {
+    let temp = Temp::new();
+    let mut runtime_spec = spec(&temp);
+    runtime_spec.executable = temp.script(
+        "adb",
+        &FAKE_ADB.replace(
+            "            conn.sendall(b'OKAY'+format(len(response),'04x').encode()+response)",
+            "            conn.sendall(b'OKAY'+format(len(response),'04x').encode()+response)\n            s.close();(root/'listener-closed').write_text('1')\n            import time;time.sleep(30)",
+        ),
+    );
+    let port = runtime_spec.port;
+    let clock = SystemClock::default();
+    let cancel = CancelFlag::default();
+    let runtime =
+        OwnedAdbRuntime::start(runtime_spec, true, &context(&clock, &cancel, 5000)).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while !temp.0.join("listener-closed").exists() {
+        assert!(Instant::now() < deadline);
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    assert_eq!(
+        TcpListener::bind(("127.0.0.1", port)).unwrap_err().kind(),
+        io::ErrorKind::AddrInUse
+    );
+    let events: Vec<serde_json::Value> = fs::read_to_string(temp.0.join("events"))
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    let address = events.last().unwrap()["args"][1].as_str().unwrap();
+    let fd: i32 = address.strip_prefix("acceptfd:").unwrap().parse().unwrap();
+    // The child inherited this descriptor, but future sibling execs must not.
+    assert_eq!(
+        unsafe { libc::fcntl(fd, libc::F_GETFD) } & libc::FD_CLOEXEC,
+        libc::FD_CLOEXEC
+    );
+    drop(runtime);
+    assert_eq!(
+        TcpStream::connect(("127.0.0.1", port)).unwrap_err().kind(),
+        io::ErrorKind::ConnectionRefused
+    );
+}
+#[test]
+fn cancellation_during_start_reaps_child_and_releases_reserved_listener() {
+    let temp = Temp::new();
+    let mut runtime_spec = spec(&temp);
+    runtime_spec.executable = temp.script(
+        "adb",
+        &FAKE_ADB.replace(
+            "    while True:",
+            "    import time;time.sleep(30)\n    while True:",
+        ),
+    );
+    let port = runtime_spec.port;
+    let clock = SystemClock::default();
+    let cancel = std::sync::Arc::new(CancelFlag::default());
+    let child_cancel = cancel.clone();
+    let pid_path = temp.0.join("server-pid");
+    let notifier = std::thread::spawn(move || {
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while !pid_path.exists() {
+            assert!(Instant::now() < deadline);
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        child_cancel.cancel();
+    });
+    let error = OwnedAdbRuntime::start(runtime_spec, true, &context(&clock, &cancel, 5000))
+        .err()
+        .unwrap();
+    notifier.join().unwrap();
+    assert_eq!(error.code, "cancelled");
+    let pid = fs::read_to_string(temp.0.join("server-pid"))
+        .unwrap()
+        .parse::<libc::pid_t>()
+        .unwrap();
+    assert_eq!(unsafe { libc::kill(pid, 0) }, -1);
+    assert_eq!(io::Error::last_os_error().raw_os_error(), Some(libc::ESRCH));
+    assert_eq!(
+        TcpStream::connect(("127.0.0.1", port)).unwrap_err().kind(),
+        io::ErrorKind::ConnectionRefused
+    );
 }
 #[test]
 fn foreign_listener_and_existing_owned_session_are_not_adopted_or_stopped() {

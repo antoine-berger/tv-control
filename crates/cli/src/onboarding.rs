@@ -1,4 +1,6 @@
-//! Human and agent incoming adapters. Setup never spawns ADB or an auth/tunnel client.
+//! Human and agent incoming adapters. Setup may acquire approved dependencies,
+//! but never executes ADB, authenticates or starts a tunnel.
+mod dependencies;
 mod progress;
 use serde_json::{json, Value};
 use std::{
@@ -469,7 +471,8 @@ fn setup_command(input: &Options) -> Result<i32, &'static str> {
         if !meta.is_file() || meta.permissions().mode() & 0o077 != 0 {
             return Err("existing_config_not_private");
         }
-        Config::from_json(&setup::read_bounded(&output)?)?;
+        let config = Config::from_json(&setup::read_bounded(&output)?)?;
+        dependencies::verify_configuration(&config, &output)?;
         emit(
             json!({"status":"already_configured","message":"Your saved configuration is valid. TV authorization and ChatGPT connection still require explicit verification; no network access was performed.","output":output,"control_verified":false,"executed":false}),
             input.json,
@@ -632,7 +635,7 @@ fn setup_command(input: &Options) -> Result<i32, &'static str> {
     if let Some(progress) = progress.as_mut() {
         progress.target(&plan, manual)?;
     }
-    let adb = executable(options, "--adb", "adb")?;
+    let adb = dependencies::adb(options)?;
     let curl = executable(options, "--curl", "curl")?;
     let server_port: u16 = options
         .get("--server-port")

@@ -24,6 +24,7 @@ pub struct Challenge {
     pub installation_id: String,
     pub configuration_revision: String,
     pub device: String,
+    pub bridge_generation: String,
     pub issued_at_unix_ms: u64,
     pub expires_at_unix_ms: u64,
 }
@@ -39,6 +40,7 @@ struct RequestFile {
 struct ResponseFile {
     schema: u32,
     nonce: String,
+    bridge_generation: String,
     code: String,
     observed_at_unix_ms: u64,
     local_elapsed_ms: u64,
@@ -290,7 +292,13 @@ impl ProofStore {
         let cleanup = self.remove(&temp);
         result.and(cleanup)
     }
-    fn checked(&self, nonce: &str, config: &[u8], now: u64) -> Result<RequestFile, &'static str> {
+    fn checked(
+        &self,
+        nonce: &str,
+        config: &[u8],
+        generation: &str,
+        now: u64,
+    ) -> Result<RequestFile, &'static str> {
         if !token(nonce) {
             return Err("proof_invalid_challenge");
         }
@@ -301,6 +309,7 @@ impl ProofStore {
             || !tv_domain::identifier(&request.challenge.installation_id)
             || !tv_domain::identifier(&request.challenge.configuration_revision)
             || !tv_domain::identifier(&request.challenge.device)
+            || !tv_domain::identifier(&request.challenge.bridge_generation)
         {
             return Err("proof_challenge_mismatch");
         }
@@ -323,6 +332,9 @@ impl ProofStore {
         if request.snapshot.as_bytes() != config {
             return Err("proof_configuration_changed");
         }
+        if request.challenge.bridge_generation != generation {
+            return Err("proof_runtime_changed");
+        }
         Ok(request)
     }
     pub fn issue(
@@ -331,11 +343,13 @@ impl ProofStore {
         revision: &str,
         config: &[u8],
         device: &str,
+        generation: &str,
         now: u64,
     ) -> Result<Challenge, &'static str> {
         if !tv_domain::identifier(installation_id)
             || !tv_domain::identifier(revision)
             || !tv_domain::identifier(device)
+            || !tv_domain::identifier(generation)
             || config.len() > MAX_SNAPSHOT
         {
             return Err("proof_invalid_binding");
@@ -357,6 +371,7 @@ impl ProofStore {
             installation_id: installation_id.into(),
             configuration_revision: revision.into(),
             device: device.into(),
+            bridge_generation: generation.into(),
             issued_at_unix_ms: now,
             expires_at_unix_ms: now
                 .checked_add(CHALLENGE_VALIDITY_MS)
@@ -372,19 +387,41 @@ impl ProofStore {
         )?;
         Ok(challenge)
     }
-    pub fn request(&self, nonce: &str, config: &[u8], now: u64) -> Result<Challenge, &'static str> {
+    pub fn request(
+        &self,
+        nonce: &str,
+        config: &[u8],
+        generation: &str,
+        now: u64,
+    ) -> Result<Challenge, &'static str> {
         let _lock = self.lock()?;
-        Ok(self.checked(nonce, config, now)?.challenge)
+        Ok(self.checked(nonce, config, generation, now)?.challenge)
+    }
+    /// Invalidate all pending evidence after an approved configuration transition.
+    /// Unknown entries, unsafe links and nonprivate files are still refused.
+    pub fn invalidate(&self) -> Result<(), &'static str> {
+        let _lock = self.lock()?;
+        for name in ["request.json", "response.json"] {
+            match self.file(name, libc::O_RDONLY) {
+                Ok(_) => self.remove(name)?,
+                Err("proof_not_found") => {}
+                Err(e) => return Err(e),
+            }
+        }
+        self.directory
+            .sync_all()
+            .map_err(|_| "proof_cleanup_failed")
     }
     pub fn complete(
         &self,
         nonce: &str,
         config: &[u8],
+        generation: &str,
         receipt: &Receipt,
         now: u64,
     ) -> Result<VerificationCode, &'static str> {
         let _lock = self.lock()?;
-        let request = self.checked(nonce, config, now)?;
+        let request = self.checked(nonce, config, generation, now)?;
         if receipt.request_id != nonce
             || receipt.status != Status::Observed
             || receipt.cached
@@ -401,6 +438,7 @@ impl ProofStore {
             &ResponseFile {
                 schema: 1,
                 nonce: nonce.into(),
+                bridge_generation: generation.into(),
                 code: code.clone(),
                 observed_at_unix_ms: now,
                 local_elapsed_ms: receipt.local_elapsed_ms,
@@ -420,13 +458,14 @@ impl ProofStore {
         now: u64,
     ) -> Result<Confirmation, &'static str> {
         let _lock = self.lock()?;
-        let request = self.checked(&challenge.nonce, config, now)?;
+        let request = self.checked(&challenge.nonce, config, &challenge.bridge_generation, now)?;
         if &request.challenge != challenge {
             return Err("proof_binding_mismatch");
         }
         let response: ResponseFile = self.read("response.json")?;
         if response.schema != 1
             || response.nonce != challenge.nonce
+            || response.bridge_generation != challenge.bridge_generation
             || !token(&response.code)
             || response.observed_at_unix_ms < challenge.issued_at_unix_ms
             || response.observed_at_unix_ms > now

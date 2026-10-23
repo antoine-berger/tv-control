@@ -240,7 +240,7 @@ if [ "$mode" = uninstall ]; then
     config_parent=${XDG_CONFIG_HOME:-$HOME/.config}/tv-control
     case "$version" in v0.2.*) ;; *)
         if [ -f "$config_parent/connection/tunnel/.tv-control-owner" ]; then
-            "$prefix/versions/$version/tv-control" disconnect "$config_parent/tv-control.local.json" --json > /dev/null || fail controller_stop_failed_installation_preserved
+            "$prefix/versions/$version/tv-control" disconnect "$config_parent/tv-control.local.json" --json --launcher "$prefix/tv-control" > /dev/null || fail controller_stop_failed_installation_preserved
         fi
         ;;
     esac

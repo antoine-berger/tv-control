@@ -11,7 +11,7 @@ use std::{
     io::{self, Read, Write},
     net::{SocketAddrV4, TcpListener, TcpStream},
     os::{
-        fd::AsRawFd,
+        fd::{AsRawFd, FromRawFd},
         unix::{
             fs::{MetadataExt, OpenOptionsExt, PermissionsExt},
             process::CommandExt,
@@ -108,6 +108,8 @@ pub struct OwnedAdbRuntime {
     spec: AdbRuntimeSpec,
     protocol: u32,
     child: OwnedChild,
+    // Retained after the child field so teardown kills/reaps before releasing the port.
+    _listener: TcpListener,
     _lock: SessionLock,
 }
 impl OwnedAdbRuntime {
@@ -176,13 +178,23 @@ impl OwnedAdbRuntime {
             return Err(Failure::before("adb_client_protocol_unavailable"));
         }
         let protocol = protocol(&output.stdout)?;
-        // Do not invoke any manager-capable command if a listener already occupies the port.
+        // Use ADB's socket-activation interface, retaining the exact bound listener.
+        // Official contract: https://android.googlesource.com/platform/packages/modules/adb/+/refs/heads/android-s-beta-5/SOCKET-ACTIVATION.txt
+        // A release/rebind gap would let a different server satisfy our version probe.
         let reservation = TcpListener::bind(("127.0.0.1", spec.port))
             .map_err(|_| Failure::before("adb_runtime_port_in_use"))?;
-        let address = format!("tcp:127.0.0.1:{}", spec.port);
+        // Keep the inherited descriptor above stdin/out/err even when the caller closed them.
+        let listener_fd = unsafe { libc::fcntl(reservation.as_raw_fd(), libc::F_DUPFD_CLOEXEC, 3) };
+        if listener_fd < 0 {
+            return Err(Failure::before("adb_runtime_listener_failed"));
+        }
+        // SAFETY: fcntl returned a new, exclusively owned socket descriptor.
+        let listener = unsafe { TcpListener::from_raw_fd(listener_fd) };
         drop(reservation);
+        let address = format!("acceptfd:{listener_fd}");
         ctx.check()?;
-        let child = Command::new(&spec.executable)
+        let mut command = Command::new(&spec.executable);
+        command
             .args([
                 "-L",
                 &address,
@@ -196,13 +208,28 @@ impl OwnedAdbRuntime {
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
-            .process_group(0)
+            .process_group(0);
+        // SAFETY: the child callback only calls async-signal-safe fcntl. Clear CLOEXEC
+        // in the forked child alone; other concurrently spawned children cannot inherit it.
+        unsafe {
+            command.pre_exec(move || {
+                let flags = libc::fcntl(listener_fd, libc::F_GETFD);
+                if flags < 0
+                    || libc::fcntl(listener_fd, libc::F_SETFD, flags & !libc::FD_CLOEXEC) < 0
+                {
+                    return Err(io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+        let child = command
             .spawn()
             .map_err(|_| Failure::before("adb_runtime_spawn_failed"))?;
         let mut runtime = Self {
             spec,
             protocol,
             child: OwnedChild(child),
+            _listener: listener,
             _lock: lock,
         };
         loop {
@@ -343,6 +370,7 @@ fn adb_environment(home: &Path) -> BTreeMap<std::ffi::OsString, std::ffi::OsStri
         ("ADB_MDNS_AUTO_CONNECT".into(), "0".into()),
         ("ADB_MDNS".into(), "0".into()),
         ("ADB_USB".into(), "0".into()),
+        ("ADB_EMU".into(), "0".into()),
         ("PATH".into(), "/usr/bin:/bin".into()),
     ])
 }

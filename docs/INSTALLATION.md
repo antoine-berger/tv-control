@@ -80,9 +80,90 @@ process running as the same user, and filesystem durability is not guaranteed.
 
 Configuration choices and connection progress have separate private checkpoints.
 Neither stores credentials or substitutes for fresh TV/runtime observations.
-Maintained ADB and the official tunnel-client are dependencies; account/plugin
-approvals and any missing dependency download are guided explicitly. Media
-preferences remain configuration work. See [onboarding](ONBOARDING.md).
+Maintained Android Platform Tools (ADB) and the official connection helper can be
+acquired after separate explicit approvals in the wizard on supported hosts, as below.
+Account/plugin approvals and media preferences remain separate configuration work.
+See [onboarding](ONBOARDING.md).
+
+## ADB prerequisite recovery
+
+A valid explicitly selected ADB or an executable already on PATH is preserved.
+If missing, guided setup offers installation or an absolute executable path, and
+can retry in the same session without losing the selected TV. JSON/noninteractive
+and dry-run setup never install dependencies. Installation requires explicit
+acceptance of the linked [Android SDK license](https://developer.android.com/studio/terms)
+and installation approval; it does not authorize an ADB identity or TV connection.
+
+- Linux x86-64: the wizard can install Google's pinned Platform-Tools 37.0.1 ADB
+  privately beside configuration under `connection-dependencies`. Its ZIP's embedded
+  SHA-256 pin was verified against the Homebrew cask and Google's official HTTPS
+  repository metadata (which separately publishes SHA-1). The complete archive's
+  twelve exact paths are checked, then only `adb`, `NOTICE.txt` and
+  `source.properties` are streamed to fixed private destination names. ELF machine
+  checks happen without executing ADB. A receipt verifies subsequent setup reuse.
+- This Google build requires a compatible glibc runtime and system libraries.
+  Automatic acquisition is offered only when the x86-64 loader
+  `/lib64/ld-linux-x86-64.so.2` exists; that check alone does not qualify every host.
+  The inspected pinned binary needs glibc symbols through 2.16 and `libgcc_s.so.1`;
+  it does not need the ZIP's `lib64/libc++.so`. Pure-musl routers and Linux ARM64
+  have no supported Google archive in this flow. Install a maintained native ADB
+  through the host's package manager, then retry or enter its absolute path.
+- macOS: if Homebrew already exists, the wizard offers
+  `brew install android-platform-tools`, using Homebrew's current cask and checksum.
+  Without Homebrew, install official Platform-Tools yourself and enter the ADB path
+  or retry. No Homebrew bootstrap, sudo, shell-profile edits, security bypass,
+  daemon start, pairing or device access occurs during dependency acquisition.
+
+Failed downloads/declined approvals preserve setup choices. A private partial
+installation is never published. Existing external ADB files are not overwritten;
+explicitly installing or entering a new path selects it for the new configuration.
+Private artifacts and configuration remain after controller uninstall.
+
+Sources: [Google release notes](https://developer.android.com/tools/releases/platform-tools),
+[Google repository metadata](https://dl.google.com/android/repository/repository2-3.xml),
+[Homebrew cask](https://github.com/Homebrew/homebrew-cask/blob/main/Casks/a/android-platform-tools.rb).
+
+## Connection helper
+
+The interactive journey reuses an existing `tunnel-client` on PATH. If missing:
+
+- Linux x86-64/ARM64: with approval, download the official `openai/tunnel-client`
+  v0.0.17 ZIP over HTTPS into private staging. SHA-256 pins are embedded in the
+  adapter, checked against the upstream release's `SHA256SUMS.txt` when updating
+  this code. The archive must contain exactly the seven expected root files.
+  Files are streamed individually, never extracted to archive-supplied paths;
+  ELF architecture is checked without executing either binary. The client,
+  bundled cloudflared, companion manifest, license notices and SBOM are published
+  atomically under the private connection directory, with executable mode 0700.
+  `curl`, `unzip` and `sha256sum` (or `shasum -a 256`) in `/usr/bin` or `/bin` are required.
+- macOS: with separate approval, run `brew install openai/tools/tunnel-client`.
+  Homebrew must already exist; the wizard does not install Homebrew. This uses
+  Homebrew's prefix and the current official formula/dependencies, not the pinned
+  private Linux installation. Automatic Homebrew updates and analytics are disabled
+  for this invocation. Upstream's ZIPs are not notarized; the wizard never bypasses
+  Gatekeeper or strips quarantine attributes.
+
+No dependency acquisition creates credentials, a tunnel, a background process,
+account access or a plugin. Those have their own later approvals. Noninteractive
+installer and dry-run modes do not acquire the connection helper.
+
+An interrupted Linux download leaves no published partial installation; rerunning
+retries it. An intact private install is checksum-verified and reused without a
+new download, including during resume and disconnect. Modified files, foreign
+installations, symlinks, hard links and unexpected members fail closed. No existing
+PATH binary is overwritten. Configuration and private dependencies are retained by
+controller uninstall. Cooperative locks do not protect against a hostile process
+running as the same user. Checksums establish integrity relative to the reviewed
+upstream release; they are not independent publisher signatures.
+
+If Homebrew is missing/fails, required Linux tools are missing, or acquisition
+fails, the checkpoint is preserved. Correct the prerequisite and rerun the same
+command. The wizard still needs a supported host/runtime, the listed system tools or package
+manager, account permissions and the user's TV/chat approvals to finish setup.
+
+Upstream references: [v0.0.17 release](https://github.com/openai/tunnel-client/releases/tag/v0.0.17),
+[checksums](https://github.com/openai/tunnel-client/releases/download/v0.0.17/SHA256SUMS.txt),
+[macOS installation](https://github.com/openai/tunnel-client/blob/v0.0.17/README.md#install-with-homebrew).
 
 ## Verify before execution
 

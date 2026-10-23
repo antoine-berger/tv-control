@@ -32,6 +32,7 @@ impl Fixture {
                 "fixture_revision",
                 &snapshot,
                 "screen",
+                "generation_a",
                 tv_adapters::runtime::SystemClock::default().unix_ms(),
             )
             .unwrap();
@@ -39,6 +40,7 @@ impl Fixture {
             proof: BridgeProof {
                 state: state.clone(),
                 snapshot,
+                generation: "generation_a".into(),
             },
             state,
             challenge,

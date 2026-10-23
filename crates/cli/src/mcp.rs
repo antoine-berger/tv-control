@@ -50,6 +50,7 @@ pub fn serve(control: Arc<dyn Control>, config: Arc<Config>) -> Result<(), &'sta
 struct BridgeProof {
     state: std::path::PathBuf,
     snapshot: Arc<Vec<u8>>,
+    generation: String,
 }
 fn complete_verification(
     proof: &BridgeProof,
@@ -72,6 +73,7 @@ fn complete_verification(
     let code = store.complete(
         nonce,
         &proof.snapshot,
+        &proof.generation,
         result,
         tv_adapters::runtime::SystemClock::default().unix_ms(),
     )?;
@@ -79,6 +81,7 @@ fn complete_verification(
         if let Ok(challenge) = store.request(
             nonce,
             &proof.snapshot,
+            &proof.generation,
             tv_adapters::runtime::SystemClock::default().unix_ms(),
         ) {
             let _ = store.cancel(&challenge);
@@ -92,6 +95,7 @@ pub fn serve_bridge(
     config: Arc<Config>,
     state: std::path::PathBuf,
     snapshot: Vec<u8>,
+    generation: String,
     cancellation: &dyn Cancellation,
 ) -> Result<(), &'static str> {
     serve_inner(
@@ -100,6 +104,7 @@ pub fn serve_bridge(
         Some(BridgeProof {
             state,
             snapshot: Arc::new(snapshot),
+            generation,
         }),
         cancellation,
     )
@@ -243,7 +248,7 @@ fn serve_inner(
                     let challenge = match tv_adapters::connection_proof::ProofStore::open(
                         &proof.state.join("verification"),
                     )
-                    .and_then(|store| store.request(nonce, &proof.snapshot, now))
+                    .and_then(|store| store.request(nonce, &proof.snapshot, &proof.generation, now))
                     {
                         Ok(c) => c,
                         Err(code) => {
