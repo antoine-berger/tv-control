@@ -223,17 +223,65 @@ impl Progress {
         self.save()
     }
     pub fn matches_target(&self, candidate: &Candidate, now_monotonic_ms: u64) -> bool {
-        let plan = onboarding::plan_setup(candidate.clone(), now_monotonic_ms);
         self.state
             .discovery_service
             .as_ref()
             .is_some_and(|instance| {
-                onboarding::connection_service(&plan)
-                    .is_some_and(|s| s.instance.as_ref() == Some(instance))
+                matches_saved_control_service(candidate, instance, now_monotonic_ms)
             })
     }
     fn save(&mut self) -> Result<(), &'static str> {
         self.state.writer_version = env!("CARGO_PKG_VERSION").into();
         self.store.save(&self.state)
+    }
+}
+
+fn matches_saved_control_service(candidate: &Candidate, instance: &str, now: u64) -> bool {
+    // Setup retains the original advertisement as a refresh anchor. Resume is
+    // safe only if that anchor and the currently usable plan agree with the checkpoint.
+    [now, 0].into_iter().all(|at| {
+        let plan = onboarding::plan_setup(candidate.clone(), at);
+        onboarding::connection_service(&plan)
+            .is_some_and(|service| service.instance.as_deref() == Some(instance))
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn resume_refuses_a_different_original_anchor_at_the_ttl_boundary() {
+        let old = "old._adb._tcp.local";
+        let new = "new._adb-tls-connect._tcp.local";
+        let mut candidate = Candidate {
+            id: "screen_192_0_2_10".into(),
+            label: "Display".into(),
+            address: std::net::Ipv4Addr::new(192, 0, 2, 10),
+            services: vec![
+                AdvertisedService {
+                    kind: ServiceKind::AdbLegacy,
+                    port: Some(5555),
+                    instance: Some(old.into()),
+                    valid_until_monotonic_ms: Some(120_000),
+                },
+                AdvertisedService {
+                    kind: ServiceKind::AdbTlsConnect,
+                    port: Some(9001),
+                    instance: Some(new.into()),
+                    valid_until_monotonic_ms: Some(2_001),
+                },
+            ],
+        };
+        assert!(matches_saved_control_service(&candidate, new, 2_000));
+        assert!(!matches_saved_control_service(&candidate, old, 2_000));
+        // At 2001 the usable plan selects OLD, while the retained anchor selects NEW.
+        // Neither checkpoint may resume through those divergent selections.
+        assert!(!matches_saved_control_service(&candidate, old, 2_001));
+        assert!(!matches_saved_control_service(&candidate, new, 2_001));
+        candidate.services.truncate(1);
+        assert!(matches_saved_control_service(&candidate, old, 2_001));
+        candidate.services[0].valid_until_monotonic_ms = Some(2_001);
+        assert!(!matches_saved_control_service(&candidate, old, 2_001));
     }
 }
