@@ -24,7 +24,7 @@ struct Temp(PathBuf);
 impl Temp {
     fn new() -> Self {
         static NEXT: AtomicU64 = AtomicU64::new(0);
-        let p = std::env::temp_dir().join(format!(
+        let p = std::env::temp_dir().canonicalize().unwrap().join(format!(
             "tv-journal-integration-{}-{}",
             std::process::id(),
             NEXT.fetch_add(1, Ordering::Relaxed)
