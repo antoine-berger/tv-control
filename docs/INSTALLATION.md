@@ -26,6 +26,8 @@ returns HTTP 200 and exactly the published script bytes, with the matching inter
 version. Keep the versioned releases and their assets unchanged.
 
 Discovery displays a short Searching for TVs message and supports Ctrl-C.
+Its default receive window is 2 seconds, with a separate 10-second overall
+search timeout. It returns after the short window rather than waiting 10 seconds.
 A local display name can be chosen after selection; this changes configuration
 metadata only and never renames the remote device.
 

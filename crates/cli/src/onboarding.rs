@@ -30,6 +30,48 @@ struct Options {
     no_checkpoint: bool,
     guided: bool,
 }
+const MAX_DISCOVERY_TIMEOUT_MS: u64 = 10_000;
+struct DiscoveryTiming {
+    window_ms: u64,
+    timeout_ms: u64,
+}
+impl Default for DiscoveryTiming {
+    fn default() -> Self {
+        Self {
+            window_ms: 2_000,
+            timeout_ms: MAX_DISCOVERY_TIMEOUT_MS,
+        }
+    }
+}
+impl DiscoveryTiming {
+    fn from_options(options: &Options) -> tv_domain::PortResult<Self> {
+        let defaults = Self::default();
+        let window_ms = options
+            .get("--duration-ms")
+            .map(str::parse::<u64>)
+            .transpose()
+            .map_err(|_| tv_domain::Failure::before("invalid_discovery_duration"))?
+            .unwrap_or(defaults.window_ms);
+        let timeout_ms = options
+            .get("--timeout-ms")
+            .map(str::parse::<u64>)
+            .transpose()
+            .map_err(|_| tv_domain::Failure::before("invalid_discovery_timeout"))?
+            .unwrap_or(defaults.timeout_ms);
+        if !(100..=5000).contains(&window_ms) {
+            return Err(tv_domain::Failure::before(
+                "discovery_duration_out_of_range",
+            ));
+        }
+        if timeout_ms < window_ms || timeout_ms > MAX_DISCOVERY_TIMEOUT_MS {
+            return Err(tv_domain::Failure::before("discovery_timeout_out_of_range"));
+        }
+        Ok(Self {
+            window_ms,
+            timeout_ms,
+        })
+    }
+}
 impl Options {
     fn parse(args: &[String]) -> Result<Self, &'static str> {
         let mut out = Self::default();
@@ -43,9 +85,10 @@ impl Options {
                 "--probe" => out.probe = true,
                 "--no-checkpoint" => out.no_checkpoint = true,
                 "--guided" => out.guided = true,
-                key @ ("--fixture" | "--interface" | "--duration-ms" | "--device" | "--output"
-                | "--adb" | "--curl" | "--server-port" | "--manual-endpoint"
-                | "--manual-kind" | "--tunnel-id" | "--checkpoint" | "--name") => {
+                key @ ("--fixture" | "--interface" | "--duration-ms" | "--timeout-ms"
+                | "--device" | "--output" | "--adb" | "--curl" | "--server-port"
+                | "--manual-endpoint" | "--manual-kind" | "--tunnel-id" | "--checkpoint"
+                | "--name") => {
                     i += 1;
                     let value = args.get(i).ok_or("option_value_missing")?;
                     if value.starts_with("--")
@@ -217,23 +260,15 @@ fn discover_on(
     clock: &dyn Clock,
     selected: &str,
 ) -> tv_domain::PortResult<Vec<Candidate>> {
-    let duration: u64 = options
-        .get("--duration-ms")
-        .unwrap_or("2000")
-        .parse()
-        .map_err(|_| tv_domain::Failure::before("invalid_discovery_duration"))?;
-    if !(100..=5000).contains(&duration) {
-        return Err(tv_domain::Failure::before(
-            "discovery_duration_out_of_range",
-        ));
-    }
+    let timing = DiscoveryTiming::from_options(options)?;
     // Start both bounds only after interface selection and all human input.
-    let window_end = clock.monotonic_ms().saturating_add(duration);
+    let start = clock.monotonic_ms();
+    let window_end = start.saturating_add(timing.window_ms);
     let flag = CancelFlag::default();
     let ctx = Context {
         clock,
         cancellation: &flag,
-        deadline_monotonic_ms: window_end.saturating_add(250),
+        deadline_monotonic_ms: start.saturating_add(timing.timeout_ms),
     };
     onboarding::discover(port, selected, window_end, &ctx)
 }
@@ -691,11 +726,12 @@ pub fn run(command: &str, args: &[String]) -> Result<i32, &'static str> {
         "doctor" => &["--device"],
         "connect-chatgpt" => &["--tunnel-id"],
         "interfaces" => &["--fixture"],
-        "discover" => &["--fixture", "--interface", "--duration-ms"],
+        "discover" => &["--fixture", "--interface", "--duration-ms", "--timeout-ms"],
         _ => &[
             "--fixture",
             "--interface",
             "--duration-ms",
+            "--timeout-ms",
             "--device",
             "--output",
             "--adb",
@@ -872,7 +908,7 @@ mod tests {
             ) -> tv_domain::PortResult<Vec<Candidate>> {
                 assert_eq!(ctx.clock.monotonic_ms(), 31_000);
                 assert_eq!(end, 33_000);
-                assert_eq!(ctx.deadline_monotonic_ms, 33_250);
+                assert_eq!(ctx.deadline_monotonic_ms, 41_000);
                 ctx.check()?;
                 Ok(vec![])
             }
@@ -882,6 +918,64 @@ mod tests {
         assert!(discover_on(&Options::default(), &Probe, &clock, "lan")
             .unwrap()
             .is_empty());
+    }
+    #[test]
+    fn discovery_timeout_configuration_is_bounded_and_independent() {
+        let defaults = DiscoveryTiming::from_options(&Options::default()).unwrap();
+        assert_eq!(defaults.window_ms, 2_000);
+        assert_eq!(defaults.timeout_ms, 10_000);
+        for timeout in [2_000, 5_000, 10_000] {
+            let options = Options::parse(&["--timeout-ms".into(), timeout.to_string()]).unwrap();
+            assert_eq!(
+                DiscoveryTiming::from_options(&options).unwrap().timeout_ms,
+                timeout
+            );
+        }
+        for timeout in ["0", "1999", "10001", "18446744073709551615"] {
+            let options = Options::parse(&["--timeout-ms".into(), timeout.into()]).unwrap();
+            assert_eq!(
+                DiscoveryTiming::from_options(&options).err().unwrap().code,
+                "discovery_timeout_out_of_range"
+            );
+        }
+        let options = Options::parse(&["--timeout-ms".into(), "invalid".into()]).unwrap();
+        assert_eq!(
+            DiscoveryTiming::from_options(&options).err().unwrap().code,
+            "invalid_discovery_timeout"
+        );
+    }
+    #[test]
+    fn search_results_must_complete_before_the_ten_second_deadline() {
+        struct Probe(u64);
+        impl NetworkDiscovery for Probe {
+            fn interfaces(&self) -> tv_domain::PortResult<Vec<LocalInterface>> {
+                Ok(vec![LocalInterface {
+                    name: "lan".into(),
+                    address: Ipv4Addr::new(192, 0, 2, 1),
+                    netmask: Ipv4Addr::new(255, 255, 255, 0),
+                }])
+            }
+            fn discover(
+                &self,
+                _: &LocalInterface,
+                end: u64,
+                ctx: &Context<'_>,
+            ) -> tv_domain::PortResult<Vec<Candidate>> {
+                assert_eq!(end, 2_000);
+                assert_eq!(ctx.deadline_monotonic_ms, 10_000);
+                ctx.clock.sleep_ms(self.0);
+                Ok(vec![])
+            }
+        }
+        for elapsed in [3_000, 9_999, 10_000] {
+            let clock = MenuClock(AtomicU64::new(0));
+            let result = discover_on(&Options::default(), &Probe(elapsed), &clock, "lan");
+            if elapsed < 10_000 {
+                assert!(result.is_ok());
+            } else {
+                assert_eq!(result.unwrap_err().code, "expired");
+            }
+        }
     }
     #[test]
     fn opaque_adb_and_ssdp_server_values_are_not_presented_as_friendly_names() {

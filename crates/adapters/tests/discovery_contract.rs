@@ -98,6 +98,43 @@ fn receive_window_never_masks_a_real_deadline_or_cancellation() {
         "cancelled"
     );
 }
+#[test]
+fn ten_second_budget_keeps_short_receive_window_and_checks_cancellation() {
+    for overshoot in [0, 300, 11_000] {
+        let clock = LateWake {
+            time: AtomicU64::new(0),
+            overshoot,
+            cancel: AtomicBool::new(false),
+        };
+        let ctx = Context {
+            clock: &clock,
+            cancellation: &clock,
+            deadline_monotonic_ms: 10_000,
+        };
+        let result = receive_snapshot(&interface(), 2_000, &ctx, |_, _| {
+            Err(std::io::ErrorKind::WouldBlock.into())
+        });
+        if overshoot < 10_000 {
+            assert!(result.unwrap().is_empty());
+            assert!(
+                clock.monotonic_ms() < 3_000,
+                "did not return after the short window"
+            );
+        } else {
+            assert_eq!(result.unwrap_err().code, "expired");
+        }
+        clock.time.store(0, Ordering::SeqCst);
+        clock.cancel.store(true, Ordering::SeqCst);
+        assert_eq!(
+            receive_snapshot(&interface(), 2_000, &ctx, |_, _| {
+                panic!("cancelled search must not receive")
+            })
+            .unwrap_err()
+            .code,
+            "cancelled"
+        );
+    }
+}
 fn interface() -> LocalInterface {
     LocalInterface {
         name: "lan-fixture".into(),

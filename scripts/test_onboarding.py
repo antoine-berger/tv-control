@@ -17,6 +17,12 @@ class Onboarding(unittest.TestCase):
  def test_interfaces_and_discovery_use_offline_wire_fixture(self):
   p=self.run_cli('interfaces','--fixture',str(ROOT/'examples/discovery.json'),'--json');self.assertEqual(p.value['interfaces'][0]['name'],'lan-fixture')
   p=self.run_cli('discover','--fixture',str(ROOT/'examples/discovery.json'),'--interface','lan-fixture','--json');self.assertEqual(len(p.value['candidates']),3);self.assertTrue(p.value['simulation']);self.assertTrue(all(not c['control_verified'] for c in p.value['candidates']))
+ def test_discovery_timeout_configuration_applies_to_discovery_and_setup(self):
+  args=['--fixture',str(ROOT/'examples/discovery.json'),'--interface','lan-fixture','--json']
+  p=self.run_cli('discover',*args,'--timeout-ms','10000');self.assertEqual(p.returncode,0,p.stdout);self.assertEqual(p.value['status'],'discovered')
+  p=self.run_cli('setup',*self.base,'--json','--timeout-ms','10000');self.assertEqual(p.returncode,0,p.stdout);self.assertEqual(p.value['status'],'confirmation_required');self.assertFalse(self.output.exists())
+  for timeout,code in [('10001','discovery_timeout_out_of_range'),('1999','discovery_timeout_out_of_range'),('invalid','invalid_discovery_timeout')]:
+   p=self.run_cli('discover',*args,'--timeout-ms',timeout);self.assertEqual(p.returncode,1,p.stdout);self.assertEqual(p.value['code'],code)
  def test_readable_names_match_text_json_and_selection_with_raw_diagnostics(self):
   data=json.loads((ROOT/'examples/discovery.json').read_text())
   opaque='adb-0123456789abcdef';server='Linux/2.6 UPnP/1.1 quick_ssdp/1.1'

@@ -83,8 +83,16 @@ with IP TTL 255; SSDP uses multicast TTL 1. There is no IP/port range
 scan, external DNS resolution, HTTP device-description request or ADB subprocess.
 Replies are restricted to the chosen subnet and capped at 256 packets, 8192 bytes
 per packet and 64 candidate addresses. Duplicate DIAL replies share one slot.
-Default duration is 2 seconds; `--duration-ms` accepts 100–5000. No traffic is sent
-by `--dry-run` without a fixture. No default interface is selected silently.
+The receive window defaults to 2 seconds; `--duration-ms` accepts 100–5000.
+The separate overall search timeout defaults to 10 seconds. Advanced callers can
+set `--timeout-ms` between the receive-window duration and 10000 milliseconds.
+Both bounds start after human input. Search returns when its short window ends;
+it does not wait for the full timeout. The budget includes interface validation,
+socket setup, sends, reception and result collection. OS scheduling or an OS call
+can still delay return; late results are rejected rather than reported as success.
+This discovery budget does not change TV command deadlines or qualify the
+chat-to-TV latency target. It is a budget choice, not a diagnosis of an OS failure.
+No traffic is sent by `--dry-run` without a fixture. No default interface is selected silently.
 
 This is a **unicast-reply discovery snapshot**, not a continuously subscribed
 multicast monitor. The ephemeral socket does not join mDNS port 5353. Received
