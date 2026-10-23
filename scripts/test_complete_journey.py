@@ -431,6 +431,13 @@ class CompleteJourney(unittest.TestCase):
         self.assertIn('Ready.',terminal.text);self.assertNotIn('Choose the display',terminal.text)
         self.assertEqual(len(downloads.read_text().splitlines()),2)
         self.assertTrue((installer.prefix/'tv-control').is_file());self.assert_private_records()
+        saved_configuration=self.config.read_bytes()
+        result=installer.run_script(['--prefix',str(installer.prefix),'--uninstall','--json'],env=env)
+        self.assertEqual(result.returncode,0,result.stdout+result.stderr)
+        self.assertEqual(result.value['status'],'uninstalled')
+        self.assertFalse(installer.prefix.exists())
+        self.assertEqual(self.config.read_bytes(),saved_configuration)
+        self.assertTrue(self.port_free(), 'uninstall left the approved controller running')
     def test_configuration_without_adb_cannot_start_any_runtime(self):
         config=json.loads((ROOT/'examples/config.json').read_text())
         config['devices'].pop('screen');config['workflows']={}
