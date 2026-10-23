@@ -39,6 +39,7 @@ jobs:
       - run: python3 scripts/check_architecture.py
       - run: python3 scripts/audit_publication.py
       - run: python3 -W error::ResourceWarning scripts/test_mcp.py target/release/tv-control
+      - run: python3 -W error::ResourceWarning scripts/test_generic_mcp.py target/release/tv-control
       - run: python3 -W error::ResourceWarning scripts/test_onboarding.py target/release/tv-control
       - run: python3 -W error::ResourceWarning scripts/test_install_flow.py target/release/tv-control
       - run: python3 -W error::ResourceWarning scripts/test_zero_arg_ux.py target/release/tv-control

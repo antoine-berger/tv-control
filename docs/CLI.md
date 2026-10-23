@@ -82,16 +82,21 @@ budget here.
 | Observe | `{"type":"observe"}` | Read state; no mutation requested |
 | Pause | `{"type":"pause"}` | Playback state is paused |
 | Resume | `{"type":"resume"}` | Native playing state, or matching media with increasing position for position-based evidence |
-| Open app | `{"type":"open_app","app":"player"}` | Configured app is in the foreground |
+| Open app | `{"type":"open_app","app":"player"}` | Resolved installed app (or legacy configured app) is in the foreground |
 | Set volume | `{"type":"set_volume","index":5}` | Observed calibrated Android music stream index matches |
 | Resume media | `{"type":"resume_media","media":"series"}` | Matching item, expected seek range and two observations with increasing position |
 
-Action availability depends on the [adapter](ADAPTERS.md). App and media arguments
-are aliases, not package names, titles or URLs. There is no free-form shell tool.
+Action availability depends on the [adapter](ADAPTERS.md). With the explicit generic
+ADB grant, app selectors may be observed names, package IDs or exact discovered
+components. Without it, configured app aliases keep their restricted behavior.
+Media arguments remain configured aliases. There is no free-form shell tool.
+The generic `navigate`, `search` and `activate` shapes in [MCP](MCP.md#generic-adb-reads-and-intents)
+are also accepted by `execute`. `execute`, `workflow`, MCP and the managed bridge
+share the same persistent mutation journal beside the configuration.
 
 ## Receipts and exit codes
 
-A receipt contains `request_id`, `status`, `code`, `cached`, `local_elapsed_ms`,
+A legacy receipt contains `request_id`, `status`, `code`, `cached`, `local_elapsed_ms`,
 `timing_scope` and an optional `observed` state. `code` explains the result;
 `timing_scope` is `controller_local_not_user_to_tv`.
 

@@ -279,3 +279,5 @@ fn desired(
 }
 
 pub mod onboarding;
+
+pub mod generic;

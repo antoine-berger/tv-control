@@ -43,7 +43,7 @@ int main(int argc,char **argv) {
   self.bin=self.root/'commands';self.bin.mkdir();uname=self.bin/'uname';uname.write_text('#!/bin/sh\ncase "$1" in -s) printf "%s\\n" "$TV_TEST_OS";; -m) printf "%s\\n" "$TV_TEST_ARCH";; esac\n');uname.chmod(0o700)
   self.env=os.environ.copy();self.env.update(PATH=str(self.bin)+os.pathsep+os.environ['PATH'],TV_TEST_OS=platform.system(),TV_TEST_ARCH=platform.machine(),XDG_CONFIG_HOME=str(self.root/'config'))
  def tearDown(self):self.tmp.cleanup()
- def asset(self,version='v0.3.1',target=HOST_TARGET,mutation=None,binary_target=None):
+ def asset(self,version='v0.4.0',target=HOST_TARGET,mutation=None,binary_target=None):
   folder=self.root/(version+'-'+target+('-'+mutation if mutation else ''));folder.mkdir(exist_ok=True);archive=folder/('tv-control-'+target+'.tar.gz')
   with tarfile.open(archive,'w:gz') as bundle:
    for name in BASE:
@@ -124,14 +124,14 @@ int main(int argc,char **argv) {
    feeder.join(timeout=2);os.close(master)
   self.assertFalse(feeder.is_alive());self.assertFalse(feed_errors,feed_errors)
   result=subprocess.CompletedProcess(args,os.waitstatus_to_exitcode(status),output.decode(errors='replace'),'');result.response_delays=delays;return result
- def install(self,archive,version='v0.3.1',extra=(),sh=None):return self.run_script(['--prefix',str(self.prefix),'--version',version,'--archive',str(archive),'--json',*extra],sh=sh)
+ def install(self,archive,version='v0.4.0',extra=(),sh=None):return self.run_script(['--prefix',str(self.prefix),'--version',version,'--archive',str(archive),'--json',*extra],sh=sh)
  def test_all_shells_install_launch_update_and_uninstall_without_user_config_removal(self):
   old=self.asset('v0.2.0');new=self.asset()
   for sh in SHELLS:
    with self.subTest(shell=sh):
     p=self.install(old,'v0.2.0',sh=sh);self.assertEqual(p.returncode,0,p.stdout+p.stderr);self.assertEqual(p.value['status'],'installed');self.assertEqual(self.prefix.stat().st_mode&0o777,0o700)
     p=subprocess.run([str(self.prefix/'tv-control'),'--version'],text=True,capture_output=True,env=self.env);self.assertIn('/versions/v0.2.0/tv-control',p.stdout)
-    p=self.install(new,extra=['--update'],sh=sh);self.assertEqual(p.returncode,0,p.stdout+p.stderr);self.assertEqual((self.prefix/'current').read_text(),'v0.3.1\n');self.assertTrue((self.prefix/'versions/v0.2.0').is_dir())
+    p=self.install(new,extra=['--update'],sh=sh);self.assertEqual(p.returncode,0,p.stdout+p.stderr);self.assertEqual((self.prefix/'current').read_text(),'v0.4.0\n');self.assertTrue((self.prefix/'versions/v0.2.0').is_dir())
     marker=self.root/'user-config.local.json';marker.write_text('keep')
     p=self.run_script(['--prefix',str(self.prefix),'--uninstall','--json'],sh=sh);self.assertEqual(p.returncode,0,p.stdout+p.stderr);self.assertFalse(self.prefix.exists());self.assertEqual(marker.read_text(),'keep')
     self.assertFalse(list(self.root.glob('.tv-control-stage.*')));self.assertFalse(list(self.root.glob('.*.install-lock')))
@@ -160,7 +160,7 @@ int main(int argc,char **argv) {
   archive=self.asset();self.prefix.mkdir();keep=self.prefix/'keep';keep.write_text('keep');p=self.install(archive);self.assertEqual(p.value['code'],'prefix_not_owned_installation');self.assertEqual(keep.read_text(),'keep');keep.unlink();self.prefix.rmdir()
   target=self.root/'target';target.mkdir();self.prefix.symlink_to(target,target_is_directory=True);p=self.install(archive);self.assertEqual(p.value['code'],'symlink_path_refused');self.assertTrue(self.prefix.is_symlink())
  def test_modified_or_extra_files_block_uninstall_and_update(self):
-  archive=self.asset();self.assertEqual(self.install(archive).returncode,0);binary=self.prefix/'versions/v0.3.1/tv-control';binary.write_text('changed')
+  archive=self.asset();self.assertEqual(self.install(archive).returncode,0);binary=self.prefix/'versions/v0.4.0/tv-control';binary.write_text('changed')
   p=self.run_script(['--prefix',str(self.prefix),'--uninstall','--json']);self.assertEqual(p.value['code'],'installed_file_modified');self.assertTrue(binary.exists())
  def test_extra_files_and_failed_update_preserve_active_installation(self):
   old=self.asset('v0.2.0');self.assertEqual(self.install(old,'v0.2.0').returncode,0)
@@ -187,8 +187,8 @@ int main(int argc,char **argv) {
  def test_wrong_binary_machine_preserves_current_version(self):
   target='x86_64-linux-musl';old=self.asset('v0.2.0',target);env=self.env.copy();env.update(TV_TEST_OS='Linux',TV_TEST_ARCH='x86_64')
   args=['--prefix',str(self.prefix),'--version','v0.2.0','--archive',str(old),'--json'];self.assertEqual(self.run_script(args,env=env).returncode,0)
-  wrong=self.asset('v0.3.1',target,binary_target='aarch64-linux-musl');p=self.run_script(['--prefix',str(self.prefix),'--version','v0.3.1','--archive',str(wrong),'--update','--json'],env=env)
-  self.assertEqual(p.value['code'],'binary_architecture_mismatch');self.assertEqual((self.prefix/'current').read_text(),'v0.2.0\n');self.assertFalse((self.prefix/'versions/v0.3.1').exists())
+  wrong=self.asset('v0.4.0',target,binary_target='aarch64-linux-musl');p=self.run_script(['--prefix',str(self.prefix),'--version','v0.4.0','--archive',str(wrong),'--update','--json'],env=env)
+  self.assertEqual(p.value['code'],'binary_architecture_mismatch');self.assertEqual((self.prefix/'current').read_text(),'v0.2.0\n');self.assertFalse((self.prefix/'versions/v0.4.0').exists())
  def test_dry_run_and_agent_mode_never_start_setup(self):
   archive=self.asset();marker=self.root/'setup-marker';self.env['TV_TEST_SETUP_MARKER']=str(marker)
   p=self.install(archive,extra=['--dry-run']);self.assertEqual(p.value['status'],'planned');self.assertFalse(self.prefix.exists());self.assertFalse(marker.exists())
@@ -250,12 +250,12 @@ case "$url" in *.sha256) cp "$TV_TEST_CHECKSUM" "$output";; *) cp "$TV_TEST_ARCH
  def test_zero_arguments_install_and_rerun_resume_without_download(self):
   env,log,marker=self.zero_argument_environment()
   for count in range(2):
-   p=self.run_terminal([],[('Continue? Type yes:',b'yes\n')],env=env,fragmented=True);self.assertEqual(p.returncode,0,p.stdout);self.assertEqual(marker.read_text(),'setup\n');self.assertEqual(log.read_text().splitlines(),['download','download']);self.assertEqual((self.prefix/'current').read_text(),'v0.3.1\n')
+   p=self.run_terminal([],[('Continue? Type yes:',b'yes\n')],env=env,fragmented=True);self.assertEqual(p.returncode,0,p.stdout);self.assertEqual(marker.read_text(),'setup\n');self.assertEqual(log.read_text().splitlines(),['download','download']);self.assertEqual((self.prefix/'current').read_text(),'v0.4.0\n')
    self.assertFalse(list(self.prefix.parent.glob('.*.install-lock')));self.assertFalse(list(self.prefix.parent.glob('.tv-control-stage.*')))
  def test_zero_arguments_resume_after_setup_failure_and_update_old_version(self):
   env,log,marker=self.zero_argument_environment();old=self.asset('v0.2.0');self.assertEqual(self.install(old,'v0.2.0').returncode,0)
   env['TV_TEST_SETUP_FAIL_ONCE']=str(self.root/'failure-once')
-  p=self.run_terminal([],[('Continue? Type yes:',b'yes\n')],env=env,fragmented=True);self.assertEqual(p.returncode,31,p.stdout);self.assertFalse(marker.exists());self.assertEqual((self.prefix/'current').read_text(),'v0.3.1\n');self.assertTrue((self.prefix/'versions/v0.2.0').exists());self.assertFalse(list(self.prefix.parent.glob('.*.install-lock')))
+  p=self.run_terminal([],[('Continue? Type yes:',b'yes\n')],env=env,fragmented=True);self.assertEqual(p.returncode,31,p.stdout);self.assertFalse(marker.exists());self.assertEqual((self.prefix/'current').read_text(),'v0.4.0\n');self.assertTrue((self.prefix/'versions/v0.2.0').exists());self.assertFalse(list(self.prefix.parent.glob('.*.install-lock')))
   p=self.run_terminal([],[('Continue? Type yes:',b'yes\n')],env=env,fragmented=True);self.assertEqual(p.returncode,0,p.stdout);self.assertEqual(marker.read_text(),'setup\n');self.assertEqual(len(log.read_text().splitlines()),2)
  def test_zero_arguments_cancel_and_missing_terminal_do_not_write(self):
   env,log,marker=self.zero_argument_environment()
@@ -263,7 +263,7 @@ case "$url" in *.sha256) cp "$TV_TEST_CHECKSUM" "$output";; *) cp "$TV_TEST_ARCH
   p=self.run_script([],env=env,input='yes\n');self.assertEqual(p.returncode,1,p.stdout+p.stderr);self.assertIn('interactive_terminal_required',p.stderr);self.assertFalse(self.prefix.exists());self.assertFalse(log.exists())
  def test_existing_setup_reuse_checks_pin_and_refuses_archive_override(self):
   archive=self.asset();self.assertEqual(self.install(archive).returncode,0);marker=self.root/'setup-marker';env=self.env.copy();env.update(TV_TEST_SETUP_MARKER=str(marker),XDG_CONFIG_HOME=str(self.root/'config'))
-  args=['--prefix',str(self.prefix),'--version','v0.3.1','--setup']
+  args=['--prefix',str(self.prefix),'--version','v0.4.0','--setup']
   p=self.run_terminal([*args,'--sha256','0'*64],[('Continue? Type yes:',b'yes\n')],env=env);self.assertEqual(p.returncode,1,p.stdout);self.assertIn('checksum_mismatch',p.stdout);self.assertFalse(marker.exists())
   p=self.run_terminal([*args,'--archive',str(archive)],[('Continue? Type yes:',b'yes\n')],env=env);self.assertEqual(p.returncode,1,p.stdout);self.assertIn('setup_reuse_refuses_archive_override',p.stdout);self.assertFalse(marker.exists())
   digest=hashlib.sha256(archive.read_bytes()).hexdigest();p=self.run_terminal([*args,'--sha256',digest],[('Continue? Type yes:',b'yes\n')],env=env);self.assertEqual(p.returncode,0,p.stdout);self.assertTrue(marker.exists())
@@ -280,8 +280,8 @@ done
 case "$url" in *.sha256) cp "$TV_TEST_CHECKSUM" "$output";; *) cp "$TV_TEST_ARCHIVE" "$output";; esac
 ''');curl.chmod(0o700)
   env=self.env.copy();env.update(TV_TEST_CURL_LOG=str(log),TV_TEST_ARCHIVE=str(archive),TV_TEST_CHECKSUM=str(archive)+'.sha256')
-  p=self.run_script(['--prefix',str(self.prefix),'--version','v0.3.1','--json'],env=env);self.assertEqual(p.returncode,0,p.stdout+p.stderr)
-  text=log.read_text();self.assertIn('--proto',text);self.assertIn('--proto-redir',text);self.assertEqual(text.count('https://github.com/antoine-berger/tv-control/releases/download/v0.3.1/'),2);self.assertNotIn('latest',text)
+  p=self.run_script(['--prefix',str(self.prefix),'--version','v0.4.0','--json'],env=env);self.assertEqual(p.returncode,0,p.stdout+p.stderr)
+  text=log.read_text();self.assertIn('--proto',text);self.assertIn('--proto-redir',text);self.assertEqual(text.count('https://github.com/antoine-berger/tv-control/releases/download/v0.4.0/'),2);self.assertNotIn('latest',text)
  def test_download_failure_cleans_temporary_work(self):
   curl=self.bin/'curl';curl.write_text('#!/bin/sh\nexit 22\n');curl.chmod(0o700)
   p=self.run_script(['--prefix',str(self.prefix),'--json']);self.assertEqual(p.value['code'],'https_download_failed');self.assertFalse(self.prefix.exists());self.assertFalse(list(self.root.glob('.tv-control-stage.*')))
@@ -289,10 +289,10 @@ case "$url" in *.sha256) cp "$TV_TEST_CHECKSUM" "$output";; *) cp "$TV_TEST_ARCH
   old=self.asset('v0.2.0');self.assertEqual(self.install(old,'v0.2.0').returncode,0);new=self.asset()
   for command in ['cp','chmod']:
    mock=self.bin/command;mock.write_text('#!/bin/sh\nexit 73\n');mock.chmod(0o700)
-   p=self.install(new,extra=['--update']);self.assertEqual(p.returncode,73,p.stdout+p.stderr);self.assertEqual(p.value['code'],'installer_operation_failed');self.assertEqual((self.prefix/'current').read_text(),'v0.2.0\n');self.assertFalse((self.prefix/'versions/v0.3.1').exists());self.assertFalse(list(self.root.glob('.tv-control-stage.*')))
+   p=self.install(new,extra=['--update']);self.assertEqual(p.returncode,73,p.stdout+p.stderr);self.assertEqual(p.value['code'],'installer_operation_failed');self.assertEqual((self.prefix/'current').read_text(),'v0.2.0\n');self.assertFalse((self.prefix/'versions/v0.4.0').exists());self.assertFalse(list(self.root.glob('.tv-control-stage.*')))
    mock.unlink()
  def test_invalid_version_and_unknown_option_do_not_write(self):
-  p=self.run_script(['--prefix',str(self.prefix),'--version','v0.3.1\n../escape','--json']);self.assertEqual(p.value['code'],'invalid_version');self.assertFalse(self.prefix.exists())
+  p=self.run_script(['--prefix',str(self.prefix),'--version','v0.4.0\n../escape','--json']);self.assertEqual(p.value['code'],'invalid_version');self.assertFalse(self.prefix.exists())
   p=self.run_script(['--prefix',str(self.prefix),'--bad','--json']);self.assertNotEqual(p.returncode,0);self.assertFalse(self.prefix.exists())
 if __name__=='__main__':
  print('Installer shells: '+', '.join(' '.join(s) for s in SHELLS),file=sys.stderr)

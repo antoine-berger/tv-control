@@ -6,6 +6,9 @@ use tv_domain::identifier;
 #[serde(deny_unknown_fields)]
 pub struct Config {
     pub version: u32,
+    /// Explicit category grant; old configurations remain restricted.
+    #[serde(default)]
+    pub generic_adb_control: bool,
     pub preferences: Preferences,
     pub executables: Executables,
     #[serde(deserialize_with = "unique_map")]

@@ -291,8 +291,14 @@ pub fn bridge(path: &Path, state: &Path) -> Result<i32, &'static str> {
         &intent.revision,
         &intent.device,
     )?;
+    let journal = path
+        .parent()
+        .ok_or("configuration_path_invalid")?
+        .join(".tv-control-operations");
+    let (legacy, generic) = crate::mcp_services(config.clone(), &journal)?;
     crate::mcp::serve_bridge(
-        crate::service(config.clone()),
+        legacy,
+        generic,
         config,
         state.to_owned(),
         snapshot,

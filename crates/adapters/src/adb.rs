@@ -6,6 +6,8 @@ use std::collections::BTreeMap;
 use tv_application::Context;
 use tv_domain::*;
 
+mod apps;
+
 pub struct Adb<'a> {
     config: &'a Config,
     process: &'a dyn Process,
@@ -31,6 +33,7 @@ impl<'a> Adb<'a> {
         mutating: bool,
         ctx: &Context<'_>,
     ) -> PortResult<String> {
+        ctx.check()?;
         let Some(Device::Adb {
             endpoint,
             server_host,
@@ -62,9 +65,11 @@ impl<'a> Adb<'a> {
             })
             .filter(|_| version.success)
             .ok_or(Failure::before("adb_client_protocol_unavailable"))?;
+        ctx.check()?;
         if self.probe.version(server_host, *server_port, ctx)? != client_protocol {
             return Err(Failure::before("adb_server_protocol_mismatch"));
         }
+        ctx.check()?;
         let mut arguments: Vec<std::ffi::OsString> = [
             "-H",
             server_host,

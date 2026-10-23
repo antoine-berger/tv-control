@@ -25,3 +25,16 @@ Package membership is explicit in `package.py` and enforced by installer/checker
 contracts. New documentation does not automatically enter release archives.
 When editing packaged docs, keep local links within the packaged set or use an
 absolute repository link for source-only material.
+
+The generic MCP contract is covered by Rust `generic_mcp` wire tests and
+`generic_consent_contract`, alongside the existing stdio integration suite.
+`test_mcp.py` verifies the expanded four-tool listing, including the minimum
+4096-byte transport-output configuration. The cooperative installer proof remains
+a separate bridge-only tool. No tests authorize real device control.
+
+`python3 -W error::ResourceWarning scripts/test_generic_mcp.py target/release/tv-control`
+exercises the real MCP binary with a loopback ADB version server and a private
+fake ADB subprocess. It covers exact-name launch, durable restart replay,
+unsupported search and actual generated 1080p/4K PNG frames through the dedicated
+image budget, including oversize failure without closing the transport. It never
+contacts a real TV and is not a hardware latency qualification.

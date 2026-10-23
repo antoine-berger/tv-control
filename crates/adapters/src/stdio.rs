@@ -108,6 +108,9 @@ impl FrameReader {
         }
     }
 }
+/// Separate allowance only for explicit native PNG image responses (1 MiB binary).
+pub const MAX_IMAGE_FRAME_BYTES: usize = 1_500_000;
+
 struct Frame {
     bytes: Vec<u8>,
     deadline: Instant,
@@ -178,7 +181,7 @@ impl Output {
         self.stop.store(true, Ordering::Release);
     }
     pub fn send(&self, value: Value) {
-        self.enqueue(value, self.timeout_ms);
+        self.enqueue(value, self.timeout_ms, self.max_frame);
     }
     pub fn send_before(&self, value: Value, expires_at_unix_ms: u64) {
         let now = SystemTime::now()
@@ -189,9 +192,33 @@ impl Output {
         self.enqueue(
             value,
             self.timeout_ms.min(expires_at_unix_ms.saturating_sub(now)),
+            self.max_frame,
         );
     }
-    fn enqueue(&self, value: Value, budget: u64) {
+    /// Only explicit, adapter-validated screenshots use this bounded image lane.
+    /// The regular queue capacity, writer deadline and backpressure still apply.
+    pub fn send_image_before(&self, value: Value, expires_at_unix_ms: u64) {
+        let native_png = value.pointer("/result/content/0").is_some_and(|image| {
+            image["type"] == "image"
+                && image["mimeType"] == "image/png"
+                && image["data"].is_string()
+        });
+        if !native_png {
+            self.send_before(value, expires_at_unix_ms);
+            return;
+        }
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis()
+            .min(u64::MAX as u128) as u64;
+        self.enqueue(
+            value,
+            self.timeout_ms.min(expires_at_unix_ms.saturating_sub(now)),
+            MAX_IMAGE_FRAME_BYTES,
+        );
+    }
+    fn enqueue(&self, value: Value, budget: u64, max_frame: usize) {
         if self.is_stopped() {
             return;
         }
@@ -200,7 +227,7 @@ impl Output {
             return;
         };
         bytes.push(b'\n');
-        if bytes.len() > self.max_frame || budget == 0 {
+        if bytes.len() > max_frame || budget == 0 {
             self.shutdown();
             return;
         }
@@ -214,5 +241,60 @@ impl Output {
         {
             self.shutdown();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+    fn output() -> (Output, mpsc::Receiver<Frame>) {
+        let (sender, receiver) = mpsc::sync_channel(1);
+        (
+            Output {
+                sender,
+                stop: Arc::new(AtomicBool::new(false)),
+                max_frame: 4096,
+                timeout_ms: 1000,
+            },
+            receiver,
+        )
+    }
+    fn image(size: usize) -> Value {
+        json!({"result":{"content":[{"type":"image","mimeType":"image/png","data":"A".repeat(size.div_ceil(3)*4)}]}})
+    }
+    #[test]
+    fn image_queue_preserves_explicit_limits_and_deadlines() {
+        for size in [200 * 1024, 800 * 1024] {
+            let (out, rx) = output();
+            out.send_image_before(image(size), u64::MAX);
+            let frame = rx.try_recv().unwrap();
+            assert!(frame.bytes.len() > 4096 && frame.bytes.len() <= MAX_IMAGE_FRAME_BYTES);
+            assert!(frame.deadline > Instant::now());
+            assert!(!out.is_stopped());
+        }
+        let (out, rx) = output();
+        out.send_image_before(image(200 * 1024), 0);
+        assert!(out.is_stopped());
+        assert!(rx.try_recv().is_err());
+        let (out, rx) = output();
+        out.send(image(200 * 1024));
+        assert!(out.is_stopped());
+        assert!(rx.try_recv().is_err());
+        let (out, rx) = output();
+        out.send_image_before(json!({"text":"x".repeat(5000)}), u64::MAX);
+        assert!(out.is_stopped());
+        assert!(rx.try_recv().is_err());
+        let (out, rx) = output();
+        out.send_image_before(image(MAX_IMAGE_FRAME_BYTES), u64::MAX);
+        assert!(out.is_stopped());
+        assert!(rx.try_recv().is_err());
+    }
+    #[test]
+    fn image_queue_keeps_existing_backpressure() {
+        let (out, _rx) = output();
+        out.send_image_before(image(200 * 1024), u64::MAX);
+        out.send_image_before(image(200 * 1024), u64::MAX);
+        assert!(out.is_stopped());
     }
 }

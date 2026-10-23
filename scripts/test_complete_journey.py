@@ -284,6 +284,7 @@ class CompleteJourney(unittest.TestCase):
         with socket.socket() as listener:
             listener.bind(('127.0.0.1', 0)); self.port=listener.getsockname()[1]
         config=json.loads((ROOT/'examples/config.json').read_text())
+        config['generic_adb_control']=True
         config['executables']['adb']=str(self.bin/'adb')
         config['devices']={'screen':{'adapter':'adb','coordination_group':'screen','endpoint':'192.0.2.10:5555','server_host':'127.0.0.1','server_port':self.port,'media_app':None,'volume_max_index':None}}
         for key in ['apps','servers','media','workflows']: config[key]={}
@@ -762,7 +763,7 @@ class CompleteJourney(unittest.TestCase):
         # owned this controller. Its uninstall must not even query the tunnel.
         other_prefix=installer.root/'another installation'
         archive=installer.asset()
-        result=installer.run_script(['--prefix',str(other_prefix),'--version','v0.3.1','--archive',str(archive),'--json'],env=env)
+        result=installer.run_script(['--prefix',str(other_prefix),'--version','v0.4.0','--archive',str(archive),'--json'],env=env)
         self.assertEqual(result.returncode,0,result.stdout+result.stderr)
         events=(self.root/'tunnel-events.jsonl').read_bytes()
         result=installer.run_script(['--prefix',str(other_prefix),'--uninstall','--json'],env=env)
@@ -812,11 +813,32 @@ class CompleteJourney(unittest.TestCase):
 
     def test_configuration_without_adb_cannot_start_any_runtime(self):
         config=json.loads((ROOT/'examples/config.json').read_text())
+        config['generic_adb_control']=True
         config['devices'].pop('screen');config['workflows']={}
         self.config.write_text(json.dumps(config))
         terminal=self.terminal();self.assertNotEqual(terminal.wait(),0,terminal.text)
         self.assertIn('onboarding_requires_adb',terminal.text);self.assertNotIn('Ready.',terminal.text)
         self.assertFalse((self.root/'adb-events.jsonl').exists());self.assertFalse((self.root/'tunnel-events.jsonl').exists())
+    def test_generic_permission_upgrade_requires_explicit_approval(self):
+        config=json.loads(self.config.read_text());config.pop('generic_adb_control')
+        self.config.write_text(json.dumps(config));before=self.config.read_bytes()
+        terminal=self.terminal();terminal.until(r'apps installed later.*\[y/N\]');terminal.line('n')
+        self.assertNotEqual(terminal.wait(),0,terminal.text)
+        self.assertEqual(self.config.read_bytes(),before)
+        self.assertFalse((self.root/'adb-events.jsonl').exists())
+        self.assertFalse((self.root/'tunnel-events.jsonl').exists())
+
+    def test_generic_permission_upgrade_is_saved_only_after_yes(self):
+        config=json.loads(self.config.read_text());config['generic_adb_control']=False
+        self.config.write_text(json.dumps(config))
+        terminal=self.terminal();terminal.until(r'apps installed later.*\[y/N\]');terminal.line('y')
+        terminal.until(r'private ADB identity.*\[y/N\]');terminal.line('n')
+        self.assertNotEqual(terminal.wait(),0,terminal.text)
+        saved=json.loads(self.config.read_text());self.assertTrue(saved.pop('generic_adb_control'))
+        config.pop('generic_adb_control');self.assertEqual(saved,config)
+        self.assertFalse((self.root/'adb-events.jsonl').exists())
+        self.assertFalse((self.root/'tunnel-events.jsonl').exists())
+
     def test_adb_refusal_spawns_no_device_or_tunnel_child(self):
         terminal=self.terminal();terminal.until(r'private ADB identity.*\[y/N\]');terminal.line('n')
         self.assertNotEqual(terminal.wait(),0,terminal.text)

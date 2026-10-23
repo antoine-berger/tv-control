@@ -1,3 +1,4 @@
+mod generic_mcp;
 mod journey;
 mod journey_fixture;
 mod mcp;
@@ -67,12 +68,63 @@ fn service(cfg: Arc<Config>) -> Arc<dyn Control> {
         },
     })
 }
+fn operation_path(config: &str) -> Result<std::path::PathBuf, &'static str> {
+    Ok(std::path::Path::new(config)
+        .canonicalize()
+        .map_err(|_| "configuration_unreadable")?
+        .parent()
+        .ok_or("configuration_path_invalid")?
+        .join(".tv-control-operations"))
+}
+type McpServices = (Arc<dyn Control>, Arc<dyn tv_application::generic::Control>);
+fn mcp_services(cfg: Arc<Config>, path: &std::path::Path) -> Result<McpServices, &'static str> {
+    let process = Arc::new(BoundedProcess {
+        max_output: 8 * 1024 * 1024,
+        poll_ms: cfg.preferences.process_poll_ms,
+    });
+    let devices = tv_adapters::generic_adb::GenericAdb::new(
+        cfg.clone(),
+        process,
+        Arc::new(tv_adapters::adb_server::SmartSocketProbe {
+            poll_ms: cfg.preferences.process_poll_ms,
+        }),
+    )
+    .with_cache_dir(
+        path.parent()
+            .ok_or("configuration_path_invalid")?
+            .join(".tv-control-catalogue"),
+    );
+    let journal: Arc<dyn tv_application::generic::Journal> =
+        Arc::new(tv_adapters::operation_journal::OperationJournal::open(
+            path,
+            cfg.preferences.dedup_entries,
+            cfg.preferences.dedup_retention_ms,
+        )?);
+    let legacy = Arc::new(tv_application::generic::LegacyGuard::new(
+        service(cfg.clone()),
+        journal.clone(),
+        Arc::new(SystemClock::default()),
+        cfg.devices
+            .iter()
+            .map(|(alias, d)| (alias.clone(), d.coordination_group().to_string()))
+            .collect(),
+        cfg.preferences.max_budget_ms,
+    ));
+    let generic = Arc::new(tv_application::generic::Service::new(
+        devices,
+        journal,
+        SystemClock::default(),
+        cfg.preferences.max_budget_ms,
+        cfg.preferences.verification_poll_ms,
+    ));
+    Ok((legacy, generic))
+}
 fn capabilities(cfg: &Config) -> Value {
     json!({"transport":"stdio","protocol_version":"2025-11-25","max_budget_ms":cfg.preferences.max_budget_ms,
-        "deduplication":"bounded_in_memory_this_process_only","captures":false,"shell_tool":false,"network_listener":false,
+        "deduplication":"durable_shared_journal", "generic_adb_control":cfg.generic_adb_control,"captures":false,"shell_tool":false,"network_listener":false,
         "devices":cfg.devices.iter().map(|(alias,d)| match d {
             tv_adapters::config::Device::Adb {media_app,volume_max_index,..}=>json!({"alias":alias,"adapter":"adb","actions":{
-                "observe":true,"open_app":true,"pause":media_app.is_some(),"resume":media_app.is_some(),"set_volume":volume_max_index.is_some(),"resume_media":false},
+                "observe":true,"open_app":true,"pause":cfg.generic_adb_control || media_app.is_some(),"resume":cfg.generic_adb_control || media_app.is_some(),"navigate":cfg.generic_adb_control,"search":"discovered_per_app","ui":"device_dependent","set_volume":volume_max_index.is_some(),"resume_media":false},
                 "volume_unit":"android_music_stream_index_requires_calibration"}),
             tv_adapters::config::Device::Jellyfin {..}=>json!({"alias":alias,"adapter":"jellyfin","actions":{
                 "observe":true,"open_app":false,"pause":true,"resume":true,"set_volume":false,"resume_media":true},"qualification":"requires_patched_server_and_compatible_client"})
@@ -154,7 +206,9 @@ fn run() -> Result<i32, &'static str> {
             Ok(0)
         }
         "mcp" if args.len() == 3 => {
-            mcp::serve(service(cfg.clone()), cfg)?;
+            let state = operation_path(&args[2])?;
+            let (legacy, generic) = mcp_services(cfg.clone(), &state)?;
+            mcp::serve(legacy, generic, cfg)?;
             Ok(0)
         }
         "execute" if args.len() == 4 => {
@@ -171,9 +225,19 @@ fn run() -> Result<i32, &'static str> {
             if bytes.len() > cfg.preferences.max_frame_bytes {
                 return Err("request_too_large");
             }
-            let request: wire::WireRequest =
+            let mut value: Value =
                 serde_json::from_slice(&bytes).map_err(|_| "invalid_request_json")?;
-            let result = service(cfg).execute(request.into(), &CancelFlag::default());
+            let (legacy, generic) = mcp_services(cfg.clone(), &operation_path(&args[2])?)?;
+            if generic_mcp::routes_generic(&cfg, "tv_control", &value) {
+                generic_mcp::translate_alias(&cfg, &mut value);
+                let call = generic_mcp::Call::parse("tv_control", value)?;
+                let response = call.execute(&*generic, &CancelFlag::default());
+                println!("{}", response.value);
+                return Ok(if response.failed { 2 } else { 0 });
+            }
+            let request: wire::WireRequest =
+                serde_json::from_value(value).map_err(|_| "invalid_request_json")?;
+            let result = legacy.execute(request.into(), &CancelFlag::default());
             println!("{}", wire::receipt(&result));
             Ok(
                 if matches!(result.status, Status::Verified | Status::Observed) {
@@ -197,7 +261,8 @@ fn run() -> Result<i32, &'static str> {
                     .checked_add(ttl)
                     .ok_or("invalid_ttl")?,
             };
-            let result = service(cfg).execute(req, &CancelFlag::default());
+            let (legacy, _) = mcp_services(cfg, &operation_path(&args[2])?)?;
+            let result = legacy.execute(req, &CancelFlag::default());
             println!("{}", wire::receipt(&result));
             Ok(if result.status == Status::Verified {
                 0

@@ -151,3 +151,104 @@ fn expired_before_publication_does_not_create_a_response_or_return_a_code() {
     assert!(!fixture.path("response.json").exists());
     assert!(fixture.path("request.json").is_file());
 }
+
+#[test]
+fn generic_tools_paginate_without_exceeding_output_budget() {
+    let mut list = tools();
+    crate::generic_mcp::extend_tools(&mut list);
+    list["tools"].as_array_mut().unwrap().push(
+        json!({"name":"extra","description":"x".repeat(1000),"inputSchema":{"type":"object"}}),
+    );
+    let first = tools_page(json!(1), list.clone(), None, 4096).unwrap();
+    assert!(first.to_string().len() < 4096);
+    let cursor = first.pointer("/result/nextCursor").unwrap();
+    let second = tools_page(json!(2), list, Some(cursor), 4096).unwrap();
+    assert!(second.to_string().len() < 4096);
+    assert!(second.pointer("/result/nextCursor").is_none());
+}
+#[test]
+fn large_generic_lists_are_explicitly_truncated_not_silently_dropped() {
+    let items = (0..32)
+        .map(|n| json!({"id":n,"label":"x".repeat(200)}))
+        .collect::<Vec<_>>();
+    let frame = bounded_tool_result(json!(1), json!({"apps":items}), false, 4096);
+    assert!(frame.to_string().len() < 4096);
+    assert_eq!(
+        frame.pointer("/result/structuredContent/truncated"),
+        Some(&json!(true))
+    );
+    assert!(!frame["result"]["structuredContent"]["apps"]
+        .as_array()
+        .unwrap()
+        .is_empty());
+}
+
+#[test]
+fn screenshot_is_native_image_only_and_respects_output_budget() {
+    let image = crate::generic_mcp::Response {
+        value: json!({"width":1,"height":1,"format":"png"}),
+        failed: false,
+        image: Some(vec![1, 2, 3]),
+    };
+    let frame = generic_tool_result(json!(1), image, 4096);
+    assert_eq!(frame["result"]["content"][0]["type"], "image");
+    assert_eq!(frame["result"]["content"][0]["data"], "AQID");
+    assert!(frame["result"]["structuredContent"].get("data").is_none());
+    let huge = crate::generic_mcp::Response {
+        value: json!({"width":100,"height":100}),
+        failed: false,
+        image: Some(vec![0; 1024 * 1024 + 1]),
+    };
+    let limited = generic_tool_result(json!(2), huge, 4096);
+    assert_eq!(
+        limited["result"]["structuredContent"]["code"],
+        "screenshot_too_large"
+    );
+    assert_eq!(limited["result"]["isError"], true);
+    for (bytes, expected) in [
+        (b"".as_slice(), ""),
+        (b"f".as_slice(), "Zg=="),
+        (b"fo".as_slice(), "Zm8="),
+        (b"foo".as_slice(), "Zm9v"),
+    ] {
+        assert_eq!(base64(bytes), expected);
+    }
+}
+
+#[test]
+fn realistic_screenshot_sizes_use_only_the_bounded_image_allowance() {
+    for (size, width, height) in [(200 * 1024, 1920, 1080), (800 * 1024, 3840, 2160)] {
+        let frame = generic_tool_result(
+            json!(1),
+            crate::generic_mcp::Response {
+                value: json!({"width":width,"height":height,"format":"png"}),
+                failed: false,
+                image: Some(vec![0; size]),
+            },
+            4096,
+        );
+        assert_eq!(frame["result"]["isError"], false);
+        assert_eq!(
+            frame["result"]["content"][0]["data"]
+                .as_str()
+                .unwrap()
+                .len(),
+            size.div_ceil(3) * 4
+        );
+        assert!(frame.to_string().len() > 4096);
+        assert!(frame.to_string().len() < MAX_IMAGE_FRAME_BYTES);
+    }
+    let text = generic_tool_result(
+        json!(1),
+        crate::generic_mcp::Response {
+            value: json!({"text":"x".repeat(200*1024)}),
+            failed: false,
+            image: None,
+        },
+        4096,
+    );
+    assert_eq!(
+        text["result"]["structuredContent"]["code"],
+        "response_too_large"
+    );
+}

@@ -123,7 +123,7 @@ class MCP(unittest.TestCase):
     def test_tools_schema_and_unknown_arguments(self):
         self.send({"jsonrpc":"2.0","id":2,"method":"tools/list"})
         tools = self.receive()["result"]["tools"]
-        self.assertEqual({t["name"] for t in tools}, {"tv_control", "tv_capabilities"})
+        self.assertEqual({t["name"] for t in tools}, {"tv_control", "tv_capabilities", "tv_read", "tv_operation"})
         self.send({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"tv_control","arguments":{"shell":"anything"}}})
         self.assertEqual(self.receive()["error"]["code"], -32602)
     def reinitialize(self, rpc_id):
@@ -142,7 +142,7 @@ class MCP(unittest.TestCase):
             self.assertEqual(self.receive()["error"]["message"], "initialize_first")
             self.send({"jsonrpc":"2.0","method":"notifications/initialized"})
             self.send({"jsonrpc":"2.0","id":rpc_id+2,"method":"tools/list"})
-            self.assertEqual(len(self.receive()["result"]["tools"]), 2)
+            self.assertEqual(len(self.receive()["result"]["tools"]), 4)
         self.assertEqual(Fixture.post_count, 0)
 
     def test_malformed_reinitialize_preserves_validated_session(self):
@@ -151,13 +151,13 @@ class MCP(unittest.TestCase):
             self.send({"jsonrpc":"2.0","id":10,"method":"initialize","params":params})
             self.assertEqual(self.receive()["error"]["code"], -32602)
             self.send({"jsonrpc":"2.0","id":11,"method":"tools/list"})
-            self.assertEqual(len(self.receive()["result"]["tools"]), 2)
+            self.assertEqual(len(self.receive()["result"]["tools"]), 4)
         self.reinitialize(12)
         # Even an interrupted handshake can be replaced by another valid one.
         self.reinitialize(13)
         self.send({"jsonrpc":"2.0","method":"notifications/initialized"})
         self.send({"jsonrpc":"2.0","id":14,"method":"tools/list"})
-        self.assertEqual(len(self.receive()["result"]["tools"]), 2)
+        self.assertEqual(len(self.receive()["result"]["tools"]), 4)
 
     def test_reinitialize_preserves_action_deduplication(self):
         self.call(2, {"type":"pause"})
@@ -258,7 +258,7 @@ class MCP(unittest.TestCase):
             proc.stdin.write(b'{"jsonrpc":"2.0","method":"notifications/initialized"}\n')
             proc.stdin.flush()
             result = exchange({"jsonrpc":"2.0","id":2,"method":"tools/list"})
-            self.assertEqual({t["name"] for t in result["result"]["tools"]}, {"tv_control", "tv_capabilities"})
+            self.assertEqual({t["name"] for t in result["result"]["tools"]}, {"tv_control", "tv_capabilities", "tv_read", "tv_operation"})
             self.assertEqual(exchange({"jsonrpc":"2.0","id":3,"method":"ping"})["result"], {})
             self.assertIsNone(proc.poll())
         finally:

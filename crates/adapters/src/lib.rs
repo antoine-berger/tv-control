@@ -74,3 +74,9 @@ pub mod setup;
 pub mod setup_checkpoint;
 
 pub mod tunnel_dependency;
+
+pub mod operation_journal;
+
+pub mod generic_adb;
+
+pub mod apk_labels;

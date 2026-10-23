@@ -26,6 +26,7 @@ Rediscover after device/debugging changes. See [guided setup](ONBOARDING.md).
 | Section | Purpose |
 | --- | --- |
 | `version` | Must be `1` |
+| `generic_adb_control` | Optional explicit category grant, default `false` for old configurations |
 | `preferences` | Deadlines, polling, transport and memory bounds |
 | `executables` | Absolute paths for `adb` and `curl`; both fields are required |
 | `devices` | Named ADB or Jellyfin targets; at least one is required |
@@ -34,7 +35,7 @@ Rediscover after device/debugging changes. See [guided setup](ONBOARDING.md).
 | `media` | Media aliases mapped to a server and series ID |
 | `workflows` | Aliases for a single configured Jellyfin series-resume action |
 
-All sections are required; maps other than `devices` can be empty when unused. Map aliases must be unique,
+All sections except `generic_adb_control` are required; maps other than `devices` can be empty when unused. Map aliases must be unique,
 1–64 ASCII letters, digits, underscores or hyphens. Limits are 64 devices, apps,
 media entries and workflows, and 16 servers. App packages must be unique.
 
@@ -57,8 +58,9 @@ numeric IP address and nonzero port already known to the ADB daemon. The server
 address must be IPv4 loopback with a nonzero port. There is no discovery, pairing
 or connection setup command.
 
-`media_app` references an `apps` alias. Omit it or use `null` to disable targeted
-pause/resume. App entries contain a `package`, such as `org.example.player`, with
+`media_app` references an `apps` alias for the legacy restricted path. Omit it or
+use `null` to disable legacy targeted pause/resume. With the explicit generic
+grant, the controller instead targets the uniquely observed foreground app/session. App entries contain a `package`, such as `org.example.player`, with
 at most 200 characters; each dot-separated component starts with a letter and
 contains only ASCII letters, digits or underscores.
 
@@ -130,7 +132,7 @@ Every preference is explicit; there are no installation-specific defaults.
 | `max_budget_ms` | Maximum remaining request budget, 1–10,000 ms |
 | `verification_poll_ms` | Wait between verification reads, 1–500 ms |
 | `process_poll_ms` | Subprocess and stdio polling interval, 1–50 ms |
-| `max_output_bytes` | Bounded subprocess I/O and serialized MCP output, 4,096 bytes–1 MiB; the example uses 65,536 bytes |
+| `max_output_bytes` | Bounded subprocess I/O and ordinary serialized MCP text output, 4,096 bytes–1 MiB; the example uses 65,536 bytes. Explicit screenshots alone use a fixed 1,500,000-byte image frame cap (1 MiB PNG maximum) |
 | `max_frame_bytes` | Incoming request/frame limit, 1,024–65,536 bytes |
 | `max_inflight` | Concurrent MCP control calls, 1–8 |
 | `dedup_entries` | In-memory request entries, 1–4,096 |
@@ -144,3 +146,18 @@ must also fit configured capability listings; larger configurations may need mor
 space. Poll intervals do not
 create fresh deadlines; the original request budget covers the whole operation.
 See [MCP backpressure](MCP.md#transport-bounds) and [request semantics](CLI.md#deadlines-and-retries).
+
+## Generic ADB permission and catalogue
+
+`generic_adb_control` grants opening installed applications, playback, native
+search and UI navigation on configured ADB targets, including applications
+installed later. The interactive onboarding flow asks for this category grant
+before saving it. Updating the binary does not grant it. Rejecting the prompt
+leaves the configuration unchanged; old configured aliases remain available.
+
+The discovered catalogue is not configuration or an allowlist. Bounded private
+cache data is stored separately in `.tv-control-catalogue` beside the configuration.
+Onboarding warms it after ADB access is authorized. Missing names do not invalidate
+connection verification; subsequent read requests can continue discovery.
+Operation recovery uses `.tv-control-operations` in that same directory. Preserve
+that journal when restarting a bridge; deleting it removes duplicate protection.

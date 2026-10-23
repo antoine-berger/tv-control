@@ -134,3 +134,5 @@ pub fn identifier(value: &str) -> bool {
 }
 
 pub mod onboarding;
+
+pub mod generic;

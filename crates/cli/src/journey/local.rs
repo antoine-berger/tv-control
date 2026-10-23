@@ -207,6 +207,30 @@ impl AdbSetupPort for Journey<'_> {
                     };
                 }
             }
+            if self.config.generic_adb_control {
+                use tv_application::generic::Device;
+                let parent = self.path.parent().ok_or("configuration_path_invalid")?;
+                let device = tv_adapters::generic_adb::GenericAdb::new(
+                    self.config.clone(),
+                    std::sync::Arc::new(BoundedProcess {
+                        max_output: 8 * 1024 * 1024,
+                        poll_ms: self.config.preferences.process_poll_ms,
+                    }),
+                    std::sync::Arc::new(tv_adapters::adb_server::SmartSocketProbe {
+                        poll_ms: self.config.preferences.process_poll_ms,
+                    }),
+                )
+                .with_cache_dir(parent.join(".tv-control-catalogue"));
+                eprintln!("Discovering installed TV apps (read-only)...");
+                match device.apps(&self.configuration.device, &bounded(ctx, 30_000)) {
+                    Ok(apps) => {
+                        let labels = apps.iter().filter(|app|app.label.is_some()).count();
+                        eprintln!("Discovered {} apps; {} display names available. Missing names remain available by app ID.",apps.len(),labels);
+                    }
+                    Err(error) => eprintln!("App catalogue is not ready ({}). Discovery can resume from the conversation; connection checks continue.",error.code),
+                }
+                ctx.check().map_err(|error| error.code)?;
+            }
             let receipt = self.observed(random_token()?, &bounded(ctx, 10_000))?;
             Ok(self.fresh(
                 ReadOnlyAccess {

@@ -192,8 +192,8 @@ pub fn run(path: &Path, as_json: bool, launcher: Option<&Path>) -> Result<i32, &
     let path = path
         .canonicalize()
         .map_err(|_| "configuration_unreadable")?;
-    let snapshot = private_read(&path)?;
-    let config = Arc::new(Config::from_json(&snapshot)?);
+    let mut snapshot = private_read(&path)?;
+    let mut config = Arc::new(Config::from_json(&snapshot)?);
     let controller_binary = match launcher {
         Some(path) => {
             let m = path
@@ -233,6 +233,14 @@ pub fn run(path: &Path, as_json: bool, launcher: Option<&Path>) -> Result<i32, &
         .ok_or("onboarding_requires_adb")?;
     if devices.next().is_some() {
         return Err("onboarding_requires_single_adb_device");
+    }
+    if !config.generic_adb_control {
+        let approved = terminal.line(
+            "Allow this controller to open installed apps, control playback, search and navigate this TV via ADB? This includes apps installed later. [y/N] ",
+            false, &ctx,
+        )?.as_deref() == Some("y");
+        snapshot = tv_adapters::setup::grant_generic_control(&path, &snapshot, approved)?;
+        config = Arc::new(Config::from_json(&snapshot)?);
     }
     let installation = previous
         .as_ref()

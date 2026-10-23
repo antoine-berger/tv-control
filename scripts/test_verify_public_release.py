@@ -17,7 +17,7 @@ import test_release
 import verify_public_release as verify
 
 SHA = test_release.SHA
-TAG = "v0.3.1"
+TAG = "v0.4.0"
 
 
 class PublicAPI:
@@ -61,7 +61,7 @@ class Candidate(unittest.TestCase):
         manifest, urls = verify.candidate(self.api, 456, SHA, TAG)
         self.assertEqual(set(urls), verify.ASSET_NAMES)
         digest = verify.manifest_digest(manifest)
-        for key, value in (("release_id", 457), ("source_sha", "b" * 40), ("tag", "v0.4.0")):
+        for key, value in (("release_id", 457), ("source_sha", "b" * 40), ("tag", "v9.9.9")):
             changed = {**manifest, key: value}
             self.assertNotEqual(verify.manifest_digest(changed), digest)
         changed = copy.deepcopy(manifest)
@@ -70,7 +70,7 @@ class Candidate(unittest.TestCase):
         self.assertTrue(all(method == "GET" for method, _ in self.api.calls))
 
     def test_wrong_release_id_and_changed_metadata_rejected(self):
-        for key, value in (("id", 999), ("tag_name", "v0.4.0"), ("draft", True), ("prerelease", False)):
+        for key, value in (("id", 999), ("tag_name", "v9.9.9"), ("draft", True), ("prerelease", False)):
             with self.subTest(key=key):
                 self.api = PublicAPI()
                 self.api.item[key] = value
@@ -107,14 +107,14 @@ class Candidate(unittest.TestCase):
         env, event = test_release.environment(), test_release.event()
         env["GITHUB_REF"] = event["ref"] = "refs/heads/" + branch
         env["GITHUB_WORKFLOW_REF"] = f"{release.REPOSITORY}/{release.WORKFLOW}@{event['ref']}"
-        selected = verify.context(env, event, SHA, "0.3.1")
+        selected = verify.context(env, event, SHA, "0.4.0")
         self.assertEqual(selected["release_id"], 456)
         self.assertEqual(selected["manifest_sha256"], digest)
         with self.assertRaises(ValueError):
-            release.context(env, event, SHA, "0.3.1")
+            release.context(env, event, SHA, "0.4.0")
         env["GITHUB_REF"] += "extra"
         with self.assertRaises(ValueError):
-            verify.context(env, event, SHA, "0.3.1")
+            verify.context(env, event, SHA, "0.4.0")
 
     def test_read_only_client_refuses_writes_before_network(self):
         with self.assertRaises(ValueError):
@@ -130,14 +130,14 @@ class ControllerAuthentication(unittest.TestCase):
         env["GITHUB_SHA"] = event["after"] = controller
         env["GITHUB_REF"] = event["ref"] = "refs/heads/" + branch
         env["GITHUB_WORKFLOW_REF"] = f"{release.REPOSITORY}/{release.WORKFLOW}@{event['ref']}"
-        selected = verify.context(env, event, controller, "0.3.1")
+        selected = verify.context(env, event, controller, "0.4.0")
         self.assertEqual(selected["source_sha"], SHA)
         self.assertEqual(selected["controller_sha"], controller)
         with self.assertRaises(ValueError):
-            verify.context(env, event, SHA, "0.3.1")
+            verify.context(env, event, SHA, "0.4.0")
         env["GITHUB_REF"] = env["GITHUB_REF"].replace("-c" + controller, "-c" + SHA)
         with self.assertRaises(ValueError):
-            verify.context(env, event, controller, "0.3.1")
+            verify.context(env, event, controller, "0.4.0")
 
     def test_authenticated_metadata_get_only(self):
         api = verify.MetadataGitHub("test-ephemeral-value")

@@ -127,3 +127,28 @@ pub fn shell_quote(value: &str) -> Result<String, &'static str> {
     }
     Ok(format!("'{}'", value.replace('\'', "'\\''")))
 }
+
+/// Save a category grant only after explicit interactive approval. Caller holds
+/// the onboarding session lock; a concurrent configuration edit fails closed.
+pub fn grant_generic_control(
+    path: &Path,
+    expected: &[u8],
+    approved: bool,
+) -> Result<Vec<u8>, &'static str> {
+    if !approved {
+        return Err("generic_control_not_authorized");
+    }
+    let mut config = Config::from_json(expected)?;
+    if config.generic_adb_control {
+        return Ok(expected.to_vec());
+    }
+    let mut current = crate::pipeline_store::AtomicFile::open(path.to_owned(), 1_048_576)?;
+    if current.bytes() != Some(expected) {
+        return Err("configuration_changed");
+    }
+    config.generic_adb_control = true;
+    let replacement =
+        serde_json::to_vec_pretty(&config).map_err(|_| "configuration_encode_failed")?;
+    current.write(replacement.clone())?;
+    Ok(replacement)
+}
