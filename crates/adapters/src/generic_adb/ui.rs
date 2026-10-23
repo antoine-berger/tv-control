@@ -73,6 +73,11 @@ pub(super) fn parse_ui(device: &str, session: u128, raw: &str) -> PortResult<UiS
         }
         let bounds =
             parse_bounds(attributes.get("bounds").ok_or_else(invalid)?).ok_or_else(invalid)?;
+        // Off-screen or clipped nodes can remain enabled/focusable in Android.
+        // They cannot be safely tapped, but must not invalidate visible siblings.
+        if bounds[0] >= bounds[2] || bounds[1] >= bounds[3] {
+            continue;
+        }
         let text = attributes
             .get("content-desc")
             .filter(|s| !s.is_empty())
@@ -192,5 +197,5 @@ fn parse_bounds(raw: &str) -> Option<[u32; 4]> {
         right.parse().ok()?,
         bottom.parse().ok()?,
     ];
-    (rect[0] < rect[2] && rect[1] < rect[3] && rect.iter().all(|v| *v <= 65535)).then_some(rect)
+    rect.iter().all(|v| *v <= 65535).then_some(rect)
 }

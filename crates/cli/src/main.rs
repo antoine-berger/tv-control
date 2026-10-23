@@ -121,10 +121,10 @@ fn mcp_services(cfg: Arc<Config>, path: &std::path::Path) -> Result<McpServices,
 }
 fn capabilities(cfg: &Config) -> Value {
     json!({"transport":"stdio","protocol_version":"2025-11-25","max_budget_ms":cfg.preferences.max_budget_ms,
-        "deduplication":"durable_shared_journal", "generic_adb_control":cfg.generic_adb_control,"captures":false,"shell_tool":false,"network_listener":false,
+        "deduplication":"durable_shared_journal", "generic_adb_control":cfg.generic_adb_control,"captures":cfg.devices.values().any(|d| matches!(d, tv_adapters::config::Device::Adb {..})),"capture_mode":"explicit_read_device_dependent","shell_tool":false,"network_listener":false,
         "devices":cfg.devices.iter().map(|(alias,d)| match d {
             tv_adapters::config::Device::Adb {media_app,volume_max_index,..}=>json!({"alias":alias,"adapter":"adb","actions":{
-                "observe":true,"open_app":true,"pause":cfg.generic_adb_control || media_app.is_some(),"resume":cfg.generic_adb_control || media_app.is_some(),"navigate":cfg.generic_adb_control,"search":"discovered_per_app","ui":"device_dependent","set_volume":volume_max_index.is_some(),"resume_media":false},
+                "observe":true,"open_app":true,"pause":cfg.generic_adb_control || media_app.is_some(),"resume":cfg.generic_adb_control || media_app.is_some(),"navigate":cfg.generic_adb_control,"search":"native_or_explicit_launcher_dispatch","open_url":cfg.generic_adb_control,"ui":"device_dependent","set_volume":volume_max_index.is_some(),"resume_media":false},
                 "volume_unit":"android_music_stream_index_requires_calibration"}),
             tv_adapters::config::Device::Jellyfin {..}=>json!({"alias":alias,"adapter":"jellyfin","actions":{
                 "observe":true,"open_app":false,"pause":true,"resume":true,"set_volume":false,"resume_media":true},"qualification":"requires_patched_server_and_compatible_client"})

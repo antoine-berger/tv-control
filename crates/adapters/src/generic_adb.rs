@@ -230,8 +230,15 @@ impl GenericAdb {
                 Failure::before("adb_read_failed")
             }
         };
-        if !result.success || result.stdout.len() > limit {
+        if !result.success {
             return Err(error());
+        }
+        if result.stdout.len() > limit {
+            return Err(if mutating {
+                Failure::uncertain("adb_output_limit")
+            } else {
+                Failure::before("adb_output_limit")
+            });
         }
         let output = result.stdout;
         ctx.check().map_err(|e| {
@@ -279,7 +286,14 @@ impl GenericAdb {
     fn read_ui(&self, alias: &str, ctx: &Context<'_>) -> PortResult<UiSnapshot> {
         let raw = self.shell_bytes(
             alias,
-            &["uiautomator", "dump", "--compressed", "/proc/self/fd/1"],
+            // Some Android builds cannot write the hierarchy through /proc/self/fd/1.
+            // Use a private, unique temporary file and clean it up on shell exit.
+            // This fixed script contains no device- or caller-supplied shell text.
+            &[
+                "sh",
+                "-c",
+                "umask 077; f=$(mktemp /data/local/tmp/tv-control-ui.XXXXXX) || exit 1; trap 'rm -f \"$f\"' EXIT; uiautomator dump --compressed \"$f\" >/dev/null && cat \"$f\"",
+            ],
             &[],
             false,
             512 * 1024,
@@ -296,10 +310,7 @@ impl GenericAdb {
         ctx: &Context<'_>,
     ) -> PortResult<()> {
         let component = match query {
-            Some(_) => app
-                .search_component
-                .as_deref()
-                .ok_or(Failure::before("search_unsupported"))?,
+            Some(_) => app.search_component.as_deref().unwrap_or(&app.component),
             None => &app.component,
         };
         if !valid_component(component) || component.split('/').next() != Some(app.id.as_str()) {
@@ -320,6 +331,60 @@ impl GenericAdb {
             s.starts_with("Error:")
                 || s.starts_with("Exception")
                 || s.starts_with("SecurityException")
+        }) {
+            return Err(Failure::uncertain("app_launch_not_confirmed"));
+        }
+        Ok(())
+    }
+    fn open_url(&self, alias: &str, app: &App, url: &str, ctx: &Context<'_>) -> PortResult<()> {
+        // Restrict resolution and launch to the discovered app, not a global browser chooser.
+        let raw = self.shell(
+            alias,
+            &[
+                "cmd",
+                "package",
+                "query-activities",
+                "--user",
+                "current",
+                "-a",
+                "android.intent.action.VIEW",
+                "-d",
+                url,
+                "-p",
+                &app.id,
+            ],
+            &[],
+            false,
+            ctx,
+        )?;
+        let handlers = parse_candidates(&raw)?;
+        if !handlers.iter().any(|candidate| candidate.app.id == app.id) {
+            return Err(Failure::before("url_unsupported"));
+        }
+        let output = self.shell(
+            alias,
+            &[
+                "am",
+                "start",
+                "--user",
+                "current",
+                "-W",
+                "-a",
+                "android.intent.action.VIEW",
+                "-d",
+                url,
+                "-p",
+                &app.id,
+            ],
+            &[],
+            true,
+            ctx,
+        )?;
+        if output.lines().any(|line| {
+            let line = line.trim_start();
+            line.starts_with("Error:")
+                || line.starts_with("Exception")
+                || line.starts_with("SecurityException")
         }) {
             return Err(Failure::uncertain("app_launch_not_confirmed"));
         }
@@ -466,15 +531,23 @@ impl Device for GenericAdb {
         Ok(observed)
     }
     fn screenshot(&self, alias: &str, ctx: &Context<'_>) -> PortResult<Screenshot> {
-        let png = self.command_bytes(
-            alias,
-            "exec-out",
-            &["screencap", "-p"],
-            &[],
-            false,
-            1024 * 1024,
-            ctx,
-        )?;
+        let png = self
+            .command_bytes(
+                alias,
+                "exec-out",
+                &["screencap", "-p"],
+                &[],
+                false,
+                8 * 1024 * 1024,
+                ctx,
+            )
+            .map_err(|error| {
+                if matches!(error.code, "adb_output_limit" | "process_output_limit") {
+                    Failure::before("screenshot_too_large")
+                } else {
+                    error
+                }
+            })?;
         let (width, height) = validate_png(&png)?;
         ctx.check()?;
         Ok(Screenshot { png, width, height })
@@ -508,6 +581,12 @@ impl Device for GenericAdb {
                 alias,
                 app.ok_or(Failure::before("app_not_resolved"))?,
                 None,
+                ctx,
+            ),
+            Intent::OpenUrl { url, .. } => self.open_url(
+                alias,
+                app.ok_or(Failure::before("app_not_resolved"))?,
+                url,
                 ctx,
             ),
             Intent::Search { query, .. } => self.launch(

@@ -35,7 +35,7 @@ fn generic_tool_result(
         return bounded_tool_result(id, response.value, response.failed, max_bytes);
     };
     // Only validated explicit image payloads receive the separate bounded lane.
-    if png.len() > 1024 * 1024 || png.len().div_ceil(3) * 4 >= MAX_IMAGE_FRAME_BYTES {
+    if png.len() > 8 * 1024 * 1024 || png.len().div_ceil(3) * 4 >= MAX_IMAGE_FRAME_BYTES {
         return tool_result(id, json!({"code":"screenshot_too_large"}), true);
     }
     let frame = json!({"jsonrpc":"2.0","id":id,"result":{"content":[{"type":"image","mimeType":"image/png","data":base64(&png)},{"type":"text","text":response.value.to_string()}],"structuredContent":response.value,"isError":false}});

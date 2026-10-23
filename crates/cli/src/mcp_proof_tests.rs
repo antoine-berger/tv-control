@@ -197,7 +197,7 @@ fn screenshot_is_native_image_only_and_respects_output_budget() {
     let huge = crate::generic_mcp::Response {
         value: json!({"width":100,"height":100}),
         failed: false,
-        image: Some(vec![0; 1024 * 1024 + 1]),
+        image: Some(vec![0; 8 * 1024 * 1024 + 1]),
     };
     let limited = generic_tool_result(json!(2), huge, 4096);
     assert_eq!(
@@ -217,7 +217,11 @@ fn screenshot_is_native_image_only_and_respects_output_budget() {
 
 #[test]
 fn realistic_screenshot_sizes_use_only_the_bounded_image_allowance() {
-    for (size, width, height) in [(200 * 1024, 1920, 1080), (800 * 1024, 3840, 2160)] {
+    for (size, width, height) in [
+        (200 * 1024, 1920, 1080),
+        (2 * 1024 * 1024, 3840, 2160),
+        (8 * 1024 * 1024, 3840, 2160),
+    ] {
         let frame = generic_tool_result(
             json!(1),
             crate::generic_mcp::Response {

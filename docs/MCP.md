@@ -146,8 +146,12 @@ against a current snapshot.
 {"request_id":"activate_1","device":"screen","expires_at_unix_ms":1,"action":{"type":"activate","reference":"returned_fresh_reference"}}
 ```
 
-Native search is exposed only for apps with a discovered compatible Android
-search activity. Navigation/search dispatch does not prove that a particular
+Search prefers a discovered Android search activity, otherwise dispatches SEARCH
+to the discovered launcher. Apps may ignore it: inspect UI or an explicit capture
+before claiming search results. `open_url` takes `app` and a bounded HTTP(S) `url`,
+checks a handler in that discovered package, and dispatches ACTION_VIEW without
+a global chooser. Credentials, control characters and non-HTTP schemes are rejected.
+Navigation/search/URL dispatch does not prove that a particular
 episode is playing. Missing labels or unsupported UI are reported honestly;
 there is no hardcoded per-app alias or automatic cross-app substitution.
 
@@ -166,8 +170,8 @@ text and structured data for client compatibility; output bounds include both.
 `tv_read` with `read: {"type":"screenshot"}` requests one read-only PNG capture.
 It is never attached to normal state, catalogue, UI or control responses. MCP
 returns a native image content block plus compact width/height metadata, not
-base64 text for the model to parse. PNG capture is bounded to 1 MiB; explicit native image responses have a separate
-1,500,000-byte frame allowance including base64, metadata and JSON framing.
+base64 text for the model to parse. PNG capture is bounded to 8 MiB; explicit native image responses have a separate
+12 MiB frame allowance including base64, metadata and JSON framing.
 Ordinary text still uses the configured output budget. Oversized captures return
 `screenshot_too_large`; the existing bounded queue, deadlines and backpressure
 apply to image delivery too. Protected surfaces may be blank and devices

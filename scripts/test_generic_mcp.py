@@ -37,7 +37,7 @@ if command[:3]==['cmd','package','query-activities']:
 elif command==['dumpsys','activity','activities']:
     print('mResumedActivity: ActivityRecord{123 u0 '+state['package']+'/.Main t1}')
 elif command[:2]==['am','start']:
-    component=command[command.index('-n')+1]
+    component=command[command.index('-n')+1] if '-n' in command else command[command.index('-p')+1]
     state['package']=component.split('/')[0];state['launches']+=1
     state_path.write_text(json.dumps(state));print('Status: ok')
 elif command==['dumpsys','media_session']:
@@ -135,14 +135,20 @@ class GenericMcp(unittest.TestCase):
         self.assertEqual(json.loads((self.root/'state.json').read_text())['launches'],1)
         result=self.control('open_video',{'type':'open_app','app':'YouTube Music'})
         self.assertEqual(result['structuredContent']['code'],'request_id_conflict')
-    def test_native_search_unsupported_does_not_launch(self):
+    def test_search_fallback_reports_dispatch_not_content(self):
         result=self.control('search',{'type':'search','app':'YouTube','query':'cats'})
-        self.assertEqual(result['structuredContent']['code'],'search_unsupported')
-        self.assertEqual(json.loads((self.root/'state.json').read_text())['launches'],0)
+        self.assertEqual(result['structuredContent']['code'],'command_dispatched_state_observed')
+        self.assertEqual(result['structuredContent']['status'],'observed')
+        self.assertEqual(json.loads((self.root/'state.json').read_text())['launches'],1)
+    def test_open_url_dispatch_is_not_verified_playback(self):
+        result=self.control('url',{'type':'open_url','app':'YouTube','url':'https://video.example/watch?v=1&list=2'})
+        self.assertEqual(result['structuredContent']['status'],'observed')
+        self.assertEqual(result['structuredContent']['code'],'command_dispatched_state_observed')
+        self.assertEqual(json.loads((self.root/'state.json').read_text())['launches'],1)
     def test_realistic_screenshots_use_native_image_only_when_requested(self):
-        for width,height in [(1920,1080),(3840,2160)]:
-            image=png(width,height)
-            self.assertGreater(len(image),65536);self.assertLess(len(image),1024*1024)
+        for width,height,block in [(1920,1080,64),(3840,2160,64),(3840,2160,16)]:
+            image=png(width,height,block)
+            self.assertGreater(len(image),65536);self.assertLess(len(image),8*1024*1024)
             (self.root/'screen.png').write_bytes(image)
             result=self.tool('tv_read',{'device':'screen','expires_at_unix_ms':int(time.time()*1000)+9000,'read':{'type':'screenshot'}})
             self.assertFalse(result['isError'],result)
@@ -152,11 +158,12 @@ class GenericMcp(unittest.TestCase):
         result=self.control('plain',{'type':'open_app','app':'YouTube'})
         self.assertTrue(all(item['type']=='text' for item in result['content']))
     def test_oversized_screenshot_fails_without_closing_transport(self):
-        image=png(3840,2160,block=16)
-        self.assertGreater(len(image),1024*1024)
+        image=b'x' * (8*1024*1024+1)
+        self.assertGreater(len(image),8*1024*1024)
         (self.root/'screen.png').write_bytes(image)
         result=self.tool('tv_read',{'device':'screen','expires_at_unix_ms':int(time.time()*1000)+9000,'read':{'type':'screenshot'}})
         self.assertTrue(result['isError'])
+        self.assertEqual(result['structuredContent']['code'],'screenshot_too_large')
         self.assertTrue(all(item['type']=='text' for item in result['content']))
         self.rpc('ping',{})
 

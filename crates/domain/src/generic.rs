@@ -28,6 +28,10 @@ pub enum Intent {
     OpenApp {
         app: String,
     },
+    OpenUrl {
+        app: String,
+        url: String,
+    },
     Pause,
     Resume,
     Navigate {

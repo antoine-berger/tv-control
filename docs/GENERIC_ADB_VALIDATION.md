@@ -70,9 +70,10 @@ latency. These fixture results are not a user-to-TV latency guarantee.
 Labels require the device's `unzip` command and supported base-APK resources;
 split/overlay or unsupported resource qualifiers may leave labels missing.
 Missing labels remain explicit and read-only discovery is retryable; exact
-package/component selection is available without invented names. Search is only
-exposed for discovered supported handlers and never promises arbitrary content
-playback. Screenshot reads require explicit opt-in, accept PNGs up to 1 MiB,
+package/component selection is available without invented names. Search uses a
+discovered handler or an explicit launcher intent that an app may ignore; its
+receipt only confirms dispatch. HTTP(S) content URLs require a handler in the
+selected package and likewise do not prove arbitrary content playback. Screenshot reads require explicit opt-in, accept PNGs up to 8 MiB,
 and may fail on protected screens or larger captures. Normal reads never return
 images. Exact activity launch is acknowledged with package-level foreground
 evidence, not a claim that the activity itself was observed.

@@ -108,8 +108,8 @@ impl FrameReader {
         }
     }
 }
-/// Separate allowance only for explicit native PNG image responses (1 MiB binary).
-pub const MAX_IMAGE_FRAME_BYTES: usize = 1_500_000;
+/// Separate allowance only for explicit native PNG image responses (8 MiB binary).
+pub const MAX_IMAGE_FRAME_BYTES: usize = 12 * 1024 * 1024;
 
 struct Frame {
     bytes: Vec<u8>,

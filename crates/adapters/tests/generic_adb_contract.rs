@@ -184,8 +184,8 @@ fn navigation_is_one_bounded_command() {
     assert!(calls[1].mutating);
 }
 #[test]
-fn search_query_is_one_quoted_argument_and_requires_handler() {
-    let (adb, process, _) = adapter(true, &[VERSION, "Status: ok"]);
+fn search_query_is_one_quoted_argument_with_explicit_launcher_fallback() {
+    let (adb, process, _) = adapter(true, &[VERSION, "Status: ok", "Status: ok"]);
     let clock = TestClock::default();
     let flag = CancelFlag::default();
     let query = "it's fun; reboot $(x)";
@@ -205,21 +205,25 @@ fn search_query_is_one_quoted_argument_and_requires_handler() {
     drop(calls);
     let mut unsupported = app();
     unsupported.search_component = None;
-    assert_eq!(
-        adb.apply(
-            "screen",
-            &Intent::Search {
-                app: "Example Player".into(),
-                query: "q".into()
-            },
-            Some(&unsupported),
-            &ctx(&clock, &flag)
-        )
-        .unwrap_err()
-        .code,
-        "search_unsupported"
-    );
-    assert_eq!(process.calls.lock().unwrap().len(), 2);
+    adb.apply(
+        "screen",
+        &Intent::Search {
+            app: "Example Player".into(),
+            query: "q".into(),
+        },
+        Some(&unsupported),
+        &ctx(&clock, &flag),
+    )
+    .unwrap();
+    let calls = process.calls.lock().unwrap();
+    assert_eq!(calls.len(), 3);
+    assert!(calls[2]
+        .args
+        .last()
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .contains("'-n' 'org.example.player/.Main'"));
 }
 #[test]
 fn discovered_apps_are_current_user_components_without_configuration_aliases() {
@@ -505,7 +509,7 @@ fn screenshots_reject_missing_oversized_and_corrupt_png() {
     corrupt[20] ^= 1;
     for bad in [
         Vec::new(),
-        vec![0; 1024 * 1024 + 1],
+        vec![0; 8 * 1024 * 1024 + 1],
         b"protected screen".to_vec(),
         corrupt,
         PNG[..PNG.len() - 12].to_vec(),
@@ -516,4 +520,113 @@ fn screenshots_reject_missing_oversized_and_corrupt_png() {
         let flag = CancelFlag::default();
         assert!(adb.screenshot("screen", &ctx(&clock, &flag)).is_err());
     }
+}
+
+#[test]
+fn ui_dump_uses_private_temporary_file_and_removes_it() {
+    let (adb, process, _) = adapter(false, &[VERSION, UI]);
+    let clock = TestClock::default();
+    let flag = CancelFlag::default();
+    adb.ui("screen", &ctx(&clock, &flag)).unwrap();
+    let calls = process.calls.lock().unwrap();
+    let command = calls[1].args.last().unwrap().to_str().unwrap();
+    assert!(command.contains("umask 077"));
+    assert!(command.contains("mktemp /data/local/tmp/tv-control-ui.XXXXXX"));
+    assert!(command.contains("trap"));
+    assert!(command.contains("rm -f"));
+    assert!(!command.contains("/proc/self/fd/1"));
+    assert!(!calls[1].mutating);
+}
+
+#[test]
+fn screenshot_above_one_mib_is_accepted_within_the_explicit_bound() {
+    let mut png = PNG[..PNG.len() - 12].to_vec();
+    let mut data = b"Comment\0".to_vec();
+    data.extend(vec![b'x'; 2 * 1024 * 1024]);
+    png.extend_from_slice(&(data.len() as u32).to_be_bytes());
+    let start = png.len();
+    png.extend_from_slice(b"tEXt");
+    png.extend_from_slice(&data);
+    let mut crc = u32::MAX;
+    for byte in &png[start..] {
+        crc ^= u32::from(*byte);
+        for _ in 0..8 {
+            crc = (crc >> 1) ^ (0xedb88320u32 & 0u32.wrapping_sub(crc & 1));
+        }
+    }
+    png.extend_from_slice(&(!crc).to_be_bytes());
+    png.extend_from_slice(&PNG[PNG.len() - 12..]);
+    let (adb, process, _) = adapter(false, &[VERSION]);
+    process.replies.lock().unwrap().push_back(Ok(png.clone()));
+    let clock = TestClock::default();
+    let flag = CancelFlag::default();
+    assert_eq!(
+        adb.screenshot("screen", &ctx(&clock, &flag)).unwrap().png,
+        png
+    );
+}
+
+#[test]
+fn screenshot_size_limit_is_not_reported_as_transport_failure() {
+    let (adb, process, _) = adapter(false, &[VERSION]);
+    process
+        .replies
+        .lock()
+        .unwrap()
+        .push_back(Ok(vec![0; 8 * 1024 * 1024 + 1]));
+    let clock = TestClock::default();
+    let flag = CancelFlag::default();
+    assert_eq!(
+        adb.screenshot("screen", &ctx(&clock, &flag))
+            .unwrap_err()
+            .code,
+        "screenshot_too_large"
+    );
+}
+
+#[test]
+fn url_is_targeted_to_discovered_package_and_quoted() {
+    let (adb, process, _) = adapter(true, &[VERSION, APP, "Status: ok"]);
+    let clock = TestClock::default();
+    let flag = CancelFlag::default();
+    let url = "https://video.example/watch?v=123&list=456";
+    adb.apply(
+        "screen",
+        &Intent::OpenUrl {
+            app: "Example Player".into(),
+            url: url.into(),
+        },
+        Some(&app()),
+        &ctx(&clock, &flag),
+    )
+    .unwrap();
+    let calls = process.calls.lock().unwrap();
+    assert_eq!(calls.len(), 3);
+    assert!(!calls[1].mutating);
+    let command = calls[2].args.last().unwrap().to_str().unwrap();
+    assert!(command.contains("'-d' 'https://video.example/watch?v=123&list=456'"));
+    assert!(command.ends_with("'-p' 'org.example.player'"));
+    assert!(!command.contains("'-n'"));
+}
+#[test]
+fn unsupported_url_never_dispatches() {
+    let (adb, process, _) = adapter(true, &[VERSION, "No activities found"]);
+    let clock = TestClock::default();
+    let flag = CancelFlag::default();
+    let result = adb.apply(
+        "screen",
+        &Intent::OpenUrl {
+            app: "Example Player".into(),
+            url: "https://video.example/watch".into(),
+        },
+        Some(&app()),
+        &ctx(&clock, &flag),
+    );
+    assert_eq!(result.unwrap_err().code, "url_unsupported");
+    assert!(process
+        .calls
+        .lock()
+        .unwrap()
+        .iter()
+        .all(|call| !call.mutating));
 }

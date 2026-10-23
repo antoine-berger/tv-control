@@ -70,6 +70,7 @@ struct Entry {
 enum IntentWire {
     Legacy { action: String },
     OpenApp { app: String },
+    OpenUrl { app: String, url: String },
     Pause,
     Resume,
     Navigate { keys: Vec<String> },
@@ -83,6 +84,10 @@ impl From<&Intent> for IntentWire {
                 action: action.clone(),
             },
             Intent::OpenApp { app } => Self::OpenApp { app: app.clone() },
+            Intent::OpenUrl { app, url } => Self::OpenUrl {
+                app: app.clone(),
+                url: url.clone(),
+            },
             Intent::Pause => Self::Pause,
             Intent::Resume => Self::Resume,
             Intent::Navigate { keys } => Self::Navigate {

@@ -163,7 +163,9 @@ impl<D: Device, C: Clock> Service<D, C> {
     fn run(&self, request: &Request, ctx: &Context<'_>, reply: &mut Reply) -> PortResult<()> {
         ctx.check()?;
         let mut resolved = None;
-        if let Intent::OpenApp { app } | Intent::Search { app, .. } = &request.intent {
+        if let Intent::OpenApp { app } | Intent::OpenUrl { app, .. } | Intent::Search { app, .. } =
+            &request.intent
+        {
             let discovery_ctx = Context {
                 clock: ctx.clock,
                 cancellation: ctx.cancellation,
@@ -203,13 +205,6 @@ impl<D: Device, C: Clock> Service<D, C> {
                 }
             }
         }
-        if matches!(&request.intent, Intent::Search { .. })
-            && resolved
-                .as_ref()
-                .is_some_and(|a| a.search_component.is_none())
-        {
-            return Err(Failure::before("search_unsupported"));
-        }
         ctx.check()?;
         // Native intents have a precise postcondition; navigation and search only
         // promise dispatch plus a fresh observation, never content playback.
@@ -239,7 +234,10 @@ impl<D: Device, C: Clock> Service<D, C> {
             ctx.check().map_err(|e| Failure::uncertain(e.code))?;
             if matches!(
                 request.intent,
-                Intent::Navigate { .. } | Intent::Search { .. } | Intent::Activate { .. }
+                Intent::Navigate { .. }
+                    | Intent::Search { .. }
+                    | Intent::OpenUrl { .. }
+                    | Intent::Activate { .. }
             ) {
                 reply.status = Status::Observed;
                 reply.code = "command_dispatched_state_observed".into();
@@ -427,11 +425,25 @@ fn valid_intent(intent: &Intent) -> bool {
     match intent {
         Intent::Legacy { .. } => false,
         Intent::OpenApp { app } => valid_text(app, 512),
+        Intent::OpenUrl { app, url } => valid_text(app, 512) && valid_url(url),
         Intent::Search { app, query } => valid_text(app, 512) && valid_text(query, 500),
         Intent::Navigate { keys } => !keys.is_empty() && keys.len() <= 16,
         Intent::Activate { reference } => valid_text(reference, 200),
         Intent::Pause | Intent::Resume => true,
     }
+}
+fn valid_url(url: &str) -> bool {
+    if !valid_text(url, 2048) || url.chars().any(char::is_whitespace) {
+        return false;
+    }
+    let Some(rest) = url
+        .strip_prefix("https://")
+        .or_else(|| url.strip_prefix("http://"))
+    else {
+        return false;
+    };
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
+    !authority.is_empty() && !authority.contains('@') && !authority.contains('\\')
 }
 fn normalize(s: &str) -> String {
     s.split_whitespace()

@@ -34,7 +34,7 @@ The wizard offers approved dependency installation on supported hosts; macOS
 requires existing Homebrew for that route. Linux ARM64 and pure-musl hosts need a
 maintained native ADB supplied separately. [Requirements and recovery](docs/INSTALLATION.md).
 
-This source targets **v0.4.1**. The `latest` distribution installer advances only
+This source targets **v0.4.2**. The `latest` distribution installer advances only
 when the matching public release has passed download and package verification.
 See [releases](https://github.com/antoine-berger/tv-control/releases) for published assets.
 
@@ -92,8 +92,8 @@ Declining the onboarding prompt leaves the configuration unchanged.
   UI. App labels are observed, not guessed; use the returned ID if no label is
   available. Catalogue revision queries can return `unchanged` instead of the
   full catalogue.
-- `tv_control` accepts `open_app`, `pause`, `resume`, bounded `navigate`, supported
-  native `search`, or `activate` with a fresh UI reference. App ambiguity returns
+- `tv_control` accepts `open_app`, `pause`, `resume`, bounded `navigate`, `open_url` for HTTP(S) content in a discovered app,
+  `search`, or `activate` with a fresh UI reference. App ambiguity returns
   choices instead of selecting a similar application. UI text is untrusted data,
   never instructions to the agent.
 - `tv_operation` recovers a durable result by `request_id`, or requests
@@ -103,11 +103,13 @@ Declining the onboarding prompt leaves the configuration unchanged.
 Requests use one absolute client expiry throughout discovery, execution, and
 verification. `local_elapsed_ms` measures controller runtime, not request-to-TV
 latency. A navigation or search dispatch does not establish that a requested
-movie/episode is playing. Native search is available only for apps which expose
-an appropriate Android search activity; arbitrary content playback is not
-promised. Screenshots are an explicit read-only fallback only; ordinary commands never
-request them. Captures are limited to 1 MiB PNG and use a separate bounded
-1,500,000-byte image frame allowance; ordinary text budgets remain unchanged.
+movie/episode is playing. Search uses a discovered Android search activity when available, otherwise sends
+an explicit SEARCH intent to the discovered launcher. Apps may ignore that intent;
+verify the displayed results before selecting content. `open_url` checks that the
+chosen app handles the HTTP(S) URL, then sends ACTION_VIEW only to that package.
+Dispatch is not proof of requested content or playback. Screenshots are an explicit read-only fallback only; ordinary commands never
+request them. Captures are limited to 8 MiB PNG and use a separate bounded
+12 MiB image frame allowance; ordinary text budgets remain unchanged.
 Protected surfaces may be blank. No companion application is required.
 
 Operation state is private, bounded, and persisted beside the configuration in

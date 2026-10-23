@@ -242,7 +242,7 @@ fn explicit_package_works_without_label() {
     );
 }
 #[test]
-fn native_search_rejects_absent_capability() {
+fn search_without_advertised_handler_reports_dispatch_only() {
     let (s, d, _) = setup(vec![app("com.video", Some("Video"))]);
     assert_eq!(
         s.execute(
@@ -253,9 +253,9 @@ fn native_search_rejects_absent_capability() {
             &Never
         )
         .status,
-        Status::Unsupported
+        Status::Observed
     );
-    assert_eq!(d.effects.load(Ordering::SeqCst), 0);
+    assert_eq!(d.effects.load(Ordering::SeqCst), 1);
 }
 #[test]
 fn navigation_does_not_claim_verified_playback() {
@@ -350,4 +350,44 @@ fn explicit_component_dispatches_even_when_package_already_foreground() {
     assert_eq!(device.effects.load(Ordering::SeqCst), 1);
     assert_eq!(result.status, Status::Observed);
     assert_eq!(result.code, "command_dispatched_app_foreground");
+}
+
+#[test]
+fn url_dispatch_never_claims_verified_content() {
+    let (s, d, _) = setup(vec![app("com.video", Some("Video"))]);
+    let r = s.execute(
+        req(Intent::OpenUrl {
+            app: "Video".into(),
+            url: "https://video.example/watch?v=1".into(),
+        }),
+        &Never,
+    );
+    assert_eq!(r.status, Status::Observed);
+    assert_eq!(r.code, "command_dispatched_state_observed");
+    assert_eq!(d.effects.load(Ordering::SeqCst), 1);
+}
+#[test]
+fn unsafe_urls_fail_before_any_effect() {
+    for url in [
+        "file:///etc/passwd",
+        "intent://settings",
+        "https://",
+        "https://user:pass@example.org",
+        "https://example.org/\nreboot",
+        "https://example.org/a b",
+    ] {
+        let (s, d, _) = setup(vec![app("com.video", Some("Video"))]);
+        assert_eq!(
+            s.execute(
+                req(Intent::OpenUrl {
+                    app: "Video".into(),
+                    url: url.into()
+                }),
+                &Never
+            )
+            .status,
+            Status::Invalid
+        );
+        assert_eq!(d.effects.load(Ordering::SeqCst), 0);
+    }
 }

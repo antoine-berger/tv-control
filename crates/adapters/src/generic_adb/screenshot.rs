@@ -2,7 +2,7 @@
 use tv_domain::{Failure, PortResult};
 pub(super) fn validate_png(bytes: &[u8]) -> PortResult<(u32, u32)> {
     let invalid = || Failure::before("screenshot_invalid");
-    if bytes.len() > 1024 * 1024 || !bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+    if bytes.len() > 8 * 1024 * 1024 || !bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
         return Err(invalid());
     }
     let mut cursor = 8usize;

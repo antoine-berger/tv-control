@@ -13,7 +13,7 @@ fn rejects_hostile_and_malformed_xml() {
     for bad in [
         UI.replace("Search &amp; play", "&external;"),
         UI.replace("index=\"0\"", "index=\"0\" index=\"1\""),
-        UI.replace("[10,20][110,60]", "[10,20][0,0]"),
+        UI.replace("[10,20][110,60]", "[10,20][oops,0]"),
         format!("<!DOCTYPE foo>{UI}"),
         UI.replace("</hierarchy>", "</node></hierarchy>"),
     ] {
@@ -65,4 +65,15 @@ fn duplicate_media_tag_is_rejected() {
         .code,
         "media_tag_ambiguous"
     );
+}
+
+#[test]
+fn clipped_ui_nodes_do_not_hide_visible_siblings() {
+    let clipped = UI.replace("[10,20][110,60]", "[0,0][0,0]");
+    assert!(parse_ui("living", 1, &clipped).unwrap().elements.is_empty());
+    let node = "<node text=\"Hidden\" enabled=\"true\" focusable=\"true\" bounds=\"[0,0][0,0]\" />";
+    let mixed = UI.replace("</hierarchy>", &format!("{node}</hierarchy>"));
+    let view = parse_ui("living", 1, &mixed).unwrap();
+    assert_eq!(view.elements.len(), 1);
+    assert_eq!(view.elements[0].text, "Search & play");
 }
