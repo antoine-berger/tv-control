@@ -79,7 +79,7 @@ fn assert_listener_eventually_closed(port: u16) -> usize {
 }
 
 const FAKE_ADB: &str = r#"
-import fcntl,json,os,pathlib,socket,sys
+import fcntl,json,os,pathlib,socket,sys,time
 root=pathlib.Path(__file__).parent
 with (root/'events').open('a') as f: f.write(json.dumps({'args':sys.argv[1:],'home':os.environ.get('HOME'),'ambient':os.environ.get('TV_RUNTIME_SECRET'),'mdns':os.environ.get('ADB_MDNS_AUTO_CONNECT'),'emu':os.environ.get('ADB_EMU')})+'\n')
 if sys.argv[1:]==['version']: print('Android Debug Bridge version 1.0.41');sys.exit(0)
@@ -102,11 +102,30 @@ if '-L' in sys.argv:
         with conn:
             prefix=conn.recv(4);data=conn.recv(int(prefix,16))
             with (root/'requests').open('ab') as f:f.write(data+b'\n')
+            status=b'OKAY'
             if data==b'host:version':response=b'0029'
-            elif data==b'host:connect:192.0.2.10:5555':response=b'connected'
-            elif data==b'host:devices':response=('192.0.2.10:5555\t'+(root/'state').read_text().strip()).encode()
+            elif data==b'host:connect:192.0.2.10:5555':
+                assert not (root/'disconnect-remaining').exists(),'connect preceded transport removal'
+                (root/'disconnected').unlink(missing_ok=True)
+                if (root/'connect-delay').exists():time.sleep(float((root/'connect-delay').read_text()))
+                response=(root/'connect-diagnostic').read_bytes() if (root/'connect-diagnostic').exists() else b'connected'
+            elif data==b'host:disconnect:192.0.2.10:5555':
+                if (root/'cancel-on-disconnect').exists():(root/'cancelled').write_text('1')
+                if (root/'state').read_text().strip()=='missing' or (root/'disconnect-rejected').exists():status=b'FAIL';response=b"no such device '192.0.2.10:5555'"
+                else:
+                    (root/'disconnect-remaining').write_text((root/'disconnect-delay').read_text() if (root/'disconnect-delay').exists() else '0')
+                    response=b'disconnected'
+            elif data==b'host:devices':
+                if (root/'disconnect-remaining').exists():
+                    remaining=int((root/'disconnect-remaining').read_text())
+                    if remaining>0:(root/'disconnect-remaining').write_text(str(remaining-1))
+                    else:(root/'disconnect-remaining').unlink();(root/'disconnected').write_text('1')
+                state=(root/'state').read_text().strip()
+                response=(root/'devices').read_bytes() if (root/'devices').exists() else b'' if state=='missing' or (root/'disconnected').exists() else ('192.0.2.10:5555\t'+state).encode()
             else:sys.exit(90)
-            conn.sendall(b'OKAY'+format(len(response),'04x').encode()+response)
+            if data.startswith(b'host:disconnect:') and (root/'disconnect-frame').exists():
+                conn.sendall((root/'disconnect-frame').read_bytes());continue
+            conn.sendall(status+format(len(response),'04x').encode()+response)
 else:sys.exit(91)
 "#;
 fn spec(t: &Temp) -> AdbRuntimeSpec {
@@ -220,14 +239,245 @@ fn owned_loopback_runtime_waits_for_actual_authorization_and_cleans_up() {
     assert!(!requests.contains("host:kill"));
 }
 #[test]
+fn exact_device_state_not_connect_diagnostic_controls_authorization() {
+    let temp = Temp::new();
+    let clock = SystemClock::default();
+    let cancel = CancelFlag::default();
+    fs::write(temp.0.join("state"), "device").unwrap();
+    let mut runtime =
+        OwnedAdbRuntime::start(spec(&temp), true, &context(&clock, &cancel, 5000)).unwrap();
+    for (rows, expected) in [
+        ("", Ok(AdbAuthorization::Absent)),
+        ("192.0.2.11:5555\tdevice\n", Ok(AdbAuthorization::Absent)),
+        ("192.0.2.10:5555\toffline\n", Ok(AdbAuthorization::Offline)),
+        (
+            "192.0.2.10:5555\tconnecting\n",
+            Ok(AdbAuthorization::Connecting),
+        ),
+        (
+            "192.0.2.10:5555\tauthorizing\n",
+            Ok(AdbAuthorization::Connecting),
+        ),
+        (
+            "192.0.2.10:5555\tunauthorized\n",
+            Ok(AdbAuthorization::AwaitingAuthorization),
+        ),
+        (
+            "192.0.2.10:5555\tdevice\n",
+            Ok(AdbAuthorization::Authorized),
+        ),
+        (
+            "192.0.2.10:5555\trecovery\n",
+            Err("adb_device_state_unsupported"),
+        ),
+        ("192.0.2.10:5555\n", Err("adb_device_probe_failed")),
+        (
+            "192.0.2.10:5555\tdevice junk\n",
+            Err("adb_device_probe_failed"),
+        ),
+        (
+            "192.0.2.10:5555\n192.0.2.10:5555\tdevice\n",
+            Err("adb_device_probe_ambiguous"),
+        ),
+    ] {
+        fs::write(temp.0.join("devices"), rows).unwrap();
+        fs::write(
+            temp.0.join("connect-diagnostic"),
+            "failed to authenticate to 192.0.2.10:5555",
+        )
+        .unwrap();
+        assert_eq!(
+            runtime
+                .connect(&context(&clock, &cancel, 5000))
+                .map_err(|e| e.code),
+            expected,
+            "{rows:?}"
+        );
+    }
+    fs::write(temp.0.join("devices"), [0xff]).unwrap();
+    assert_eq!(
+        runtime
+            .authorization(&context(&clock, &cancel, 5000))
+            .unwrap_err()
+            .code,
+        "adb_device_probe_failed"
+    );
+}
+#[test]
+fn explicit_reconnect_is_target_only_bounded_and_retains_runtime_identity() {
+    let temp = Temp::new();
+    let clock = SystemClock::default();
+    let cancel = CancelFlag::default();
+    fs::write(temp.0.join("state"), "unauthorized").unwrap();
+    fs::write(
+        temp.0.join("connect-diagnostic"),
+        b"failure\x1b[31m\n\xff".repeat(100),
+    )
+    .unwrap();
+    let mut runtime =
+        OwnedAdbRuntime::start(spec(&temp), true, &context(&clock, &cancel, 5000)).unwrap();
+    let events = fs::read(temp.0.join("events")).unwrap();
+    fs::write(temp.0.join("disconnect-delay"), "3").unwrap();
+    assert_eq!(
+        runtime.reconnect(&context(&clock, &cancel, 5000)).unwrap(),
+        AdbAuthorization::AwaitingAuthorization
+    );
+    let diagnostic = runtime.connection_diagnostic().unwrap();
+    assert_eq!(diagnostic.len(), 256);
+    assert!(diagnostic
+        .bytes()
+        .all(|c| c.is_ascii_graphic() || c == b' '));
+    assert!(diagnostic.contains("\\x1b"));
+    let requests = fs::read_to_string(temp.0.join("requests")).unwrap();
+    let target: Vec<_> = requests
+        .lines()
+        .filter(|line| !matches!(*line, "host:version" | "host:devices"))
+        .collect();
+    assert_eq!(
+        target,
+        vec![
+            "host:disconnect:192.0.2.10:5555",
+            "host:connect:192.0.2.10:5555"
+        ]
+    );
+    assert_eq!(fs::read(temp.0.join("events")).unwrap(), events);
+    let before = fs::read(temp.0.join("requests")).unwrap();
+    assert_eq!(
+        runtime
+            .reconnect(&context(&clock, &cancel, 0))
+            .unwrap_err()
+            .code,
+        "expired"
+    );
+    assert_eq!(fs::read(temp.0.join("requests")).unwrap(), before);
+    fs::write(temp.0.join("connect-delay"), "0.3").unwrap();
+    let started = Instant::now();
+    assert_eq!(
+        runtime
+            .connect(&context(&clock, &cancel, 50))
+            .unwrap_err()
+            .code,
+        "expired"
+    );
+    assert!(started.elapsed() < Duration::from_secs(2));
+}
+#[test]
+fn rejected_disconnect_only_allows_retry_after_verified_target_absence() {
+    let temp = Temp::new();
+    let clock = SystemClock::default();
+    let cancel = CancelFlag::default();
+    fs::write(temp.0.join("state"), "unauthorized").unwrap();
+    fs::write(temp.0.join("disconnect-rejected"), "1").unwrap();
+    let mut runtime =
+        OwnedAdbRuntime::start(spec(&temp), true, &context(&clock, &cancel, 5000)).unwrap();
+    assert_eq!(
+        runtime
+            .reconnect(&context(&clock, &cancel, 5000))
+            .unwrap_err()
+            .code,
+        "adb_runtime_request_rejected"
+    );
+    assert!(!fs::read_to_string(temp.0.join("requests"))
+        .unwrap()
+        .contains("host:connect:"));
+    fs::write(temp.0.join("state"), "missing").unwrap();
+    assert_eq!(
+        runtime.reconnect(&context(&clock, &cancel, 5000)).unwrap(),
+        AdbAuthorization::Absent
+    );
+    assert_eq!(
+        fs::read_to_string(temp.0.join("requests"))
+            .unwrap()
+            .matches("host:connect:")
+            .count(),
+        1
+    );
+}
+#[test]
+fn malformed_disconnect_failures_are_not_recoverable_absence() {
+    let temp = Temp::new();
+    let clock = SystemClock::default();
+    let cancel = CancelFlag::default();
+    fs::write(temp.0.join("state"), "missing").unwrap();
+    let mut runtime =
+        OwnedAdbRuntime::start(spec(&temp), true, &context(&clock, &cancel, 5000)).unwrap();
+    for (frame, code) in [
+        (b"FAILzzzz".as_slice(), "adb_runtime_response_invalid"),
+        (b"FAILffff".as_slice(), "adb_runtime_response_invalid"),
+        (b"FAIL0004x".as_slice(), "adb_runtime_response_truncated"),
+        (b"NOPE0000".as_slice(), "adb_runtime_response_invalid"),
+    ] {
+        fs::write(temp.0.join("disconnect-frame"), frame).unwrap();
+        assert_eq!(
+            runtime
+                .reconnect(&context(&clock, &cancel, 5000))
+                .unwrap_err()
+                .code,
+            code
+        );
+    }
+    let requests = fs::read_to_string(temp.0.join("requests")).unwrap();
+    assert!(!requests.contains("host:connect:"));
+    assert!(!requests.contains("host:devices"));
+}
+#[test]
+fn retry_does_not_connect_before_delayed_removal_or_after_deadline() {
+    let temp = Temp::new();
+    let clock = SystemClock::default();
+    let cancel = CancelFlag::default();
+    fs::write(temp.0.join("state"), "unauthorized").unwrap();
+    fs::write(temp.0.join("disconnect-delay"), "100000").unwrap();
+    let mut runtime =
+        OwnedAdbRuntime::start(spec(&temp), true, &context(&clock, &cancel, 5000)).unwrap();
+    let started = Instant::now();
+    assert_eq!(
+        runtime
+            .reconnect(&context(&clock, &cancel, 50))
+            .unwrap_err()
+            .code,
+        "expired"
+    );
+    assert!(started.elapsed() < Duration::from_secs(2));
+    let requests = fs::read_to_string(temp.0.join("requests")).unwrap();
+    assert!(requests.contains("host:disconnect:192.0.2.10:5555"));
+    assert!(!requests.contains("host:connect:"));
+}
+#[test]
+fn cancellation_after_target_disconnect_prevents_connect_and_releases_listener() {
+    struct CancelOnFile(PathBuf);
+    impl tv_application::Cancellation for CancelOnFile {
+        fn is_cancelled(&self) -> bool {
+            self.0.exists()
+        }
+    }
+    let temp = Temp::new();
+    let clock = SystemClock::default();
+    let cancel = CancelOnFile(temp.0.join("cancelled"));
+    let ctx = Context {
+        clock: &clock,
+        cancellation: &cancel,
+        deadline_monotonic_ms: 5000,
+    };
+    fs::write(temp.0.join("state"), "unauthorized").unwrap();
+    fs::write(temp.0.join("cancel-on-disconnect"), "1").unwrap();
+    let mut runtime = OwnedAdbRuntime::start(spec(&temp), true, &ctx).unwrap();
+    let port = runtime.port();
+    assert_eq!(runtime.reconnect(&ctx).unwrap_err().code, "cancelled");
+    let requests = fs::read_to_string(temp.0.join("requests")).unwrap();
+    assert!(requests.contains("host:disconnect:192.0.2.10:5555"));
+    assert!(!requests.contains("host:connect:"));
+    drop(runtime);
+    assert_listener_eventually_closed(port);
+}
+#[test]
 fn listener_stays_reserved_when_owned_child_closes_its_copy() {
     let temp = Temp::new();
     let mut runtime_spec = spec(&temp);
     runtime_spec.executable = temp.script(
         "adb",
         &FAKE_ADB.replace(
-            "            conn.sendall(b'OKAY'+format(len(response),'04x').encode()+response)",
-            "            conn.sendall(b'OKAY'+format(len(response),'04x').encode()+response)\n            s.close();(root/'listener-closed').write_text('1')\n            import time;time.sleep(30)",
+            "            conn.sendall(status+format(len(response),'04x').encode()+response)",
+            "            conn.sendall(status+format(len(response),'04x').encode()+response)\n            s.close();(root/'listener-closed').write_text('1')\n            import time;time.sleep(30)",
         ),
     );
     let port = runtime_spec.port;

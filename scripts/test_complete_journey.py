@@ -50,11 +50,24 @@ if '-L' in args:
         with conn:
             try:request=exact(conn,int(exact(conn,4),16))
             except (EOFError,ValueError):continue
+            with (root/'adb-requests').open('ab') as log:log.write(request+b'\n')
+            status=b'OKAY'
             if request==b'host:version':response=b'0029'
-            elif request==b'host:devices':response=b'192.0.2.10:5555\t'+(root/'adb-authorization').read_bytes().strip()
-            elif request==b'host:connect:192.0.2.10:5555':response=b'connected'
+            elif request==b'host:devices':
+                state=(root/'adb-authorization').read_bytes().strip()
+                if (root/'adb-disconnected').exists():state=b'missing'
+                response=b'' if state==b'missing' else b'192.0.2.10:5555\t'+state
+            elif request==b'host:connect:192.0.2.10:5555':
+                (root/'adb-disconnected').unlink(missing_ok=True)
+                diagnostic=root/'adb-connect-diagnostic'
+                response=diagnostic.read_bytes() if diagnostic.exists() else b'connected'
+            elif request==b'host:disconnect:192.0.2.10:5555':
+                if (root/'adb-authorization').read_text().strip()=='missing':
+                    status=b'FAIL';response=b"no such device '192.0.2.10:5555'"
+                else:
+                    (root/'adb-disconnected').write_text('1');response=b'disconnected'
             else:raise RuntimeError('unexpected fixture request')
-            conn.sendall(b'OKAY'+format(len(response),'04x').encode()+response)
+            conn.sendall(status+format(len(response),'04x').encode()+response)
             try:conn.recv(1)
             except ConnectionResetError:pass
 elif args[-1:] == ['get-state']: print((root/'adb-authorization').read_text().strip())
@@ -368,6 +381,35 @@ class CompleteJourney(unittest.TestCase):
         terminal.line(code);self.assertEqual(terminal.wait(),0,terminal.text)
         self.assertIn('Ready.',terminal.text);self.assertNotIn(SECRET,terminal.text)
         self.assert_private_records()
+    def test_browser_guidance_precedes_inputs_and_permission_help_is_nonmutating(self):
+        terminal=self.terminal();terminal.until(r'private ADB identity.*\[y/N\]');terminal.line('y')
+        terminal.until('Tunnel ID:')
+        self.assertIn('https://platform.openai.com/settings/organization/tunnels',terminal.text)
+        self.assertIn('personal organization',terminal.text);self.assertIn('ChatGPT workspace',terminal.text)
+        self.assertNotIn('Runtime key (hidden',terminal.text)
+        terminal.line('help');terminal.until('Tunnel ID:')
+        self.assertIn('https://platform.openai.com/settings/organization/people/roles',terminal.text)
+        self.assertIn('https://platform.openai.com/settings/organization/people/groups',terminal.text)
+        self.assertIn('cannot grant account access',terminal.text)
+        self.assertFalse((self.root/'tunnel-events.jsonl').exists())
+        terminal.line(TUNNEL);terminal.until(r'background TV controller.*\[y/N\]');terminal.line('y')
+        terminal.until('Runtime key .*hidden.*:')
+        self.assertIn('https://platform.openai.com/settings/organization/api-keys',terminal.text)
+        self.assertIn('Restricted runtime key with Tunnels Read + Use',terminal.text)
+        self.assertIn('do not use All or an admin key',terminal.text)
+        self.assertIn('never into chat',terminal.text)
+        terminal.line(SECRET);terminal.until('Press Enter when the plugin is selected')
+        self.assertIn('https://chatgpt.com/plugins',terminal.text)
+        self.assertIn('No authentication',terminal.text);self.assertIn('Do not paste the runtime key into ChatGPT',terminal.text)
+        self.assertIn('type @ and select tv-control',terminal.text)
+        self.assertNotIn(SECRET,terminal.text)
+        terminal.line('q');self.assertNotEqual(terminal.wait(),0,terminal.text);self.assert_private_records()
+    def test_cancel_at_tunnel_guide_never_requests_key_or_starts_runtime(self):
+        terminal=self.terminal();terminal.until(r'private ADB identity.*\[y/N\]');terminal.line('y')
+        terminal.until('Tunnel ID:');terminal.line('q')
+        self.assertNotEqual(terminal.wait(),0,terminal.text)
+        self.assertNotIn('Runtime key (hidden',terminal.text)
+        self.assertFalse((self.root/'tunnel-events.jsonl').exists());self.assertTrue(self.port_free())
     def test_wrong_code_never_reports_ready(self):
         terminal=self.terminal();challenge=self.approve(terminal)
         self.channel().verify(challenge)
@@ -457,8 +499,95 @@ class CompleteJourney(unittest.TestCase):
         terminal.until('Press Enter after TV approval');terminal.line('q')
         self.assertNotEqual(terminal.wait(),0,terminal.text)
         self.assertNotIn('Ready.',terminal.text)
-        self.assertIn('Approve this computer on the TV',terminal.text)
+        self.assertIn('The TV has not authorized this private controller',terminal.text)
         self.assertFalse((self.root/'tunnel-events.jsonl').exists());self.assertTrue(self.port_free())
+    def test_missing_transport_never_claims_tv_approval_and_cancel_cleans_up(self):
+        (self.root/'adb-authorization').write_text('missing')
+        (self.root/'adb-connect-diagnostic').write_bytes(b'failed to connect: Connection refused\x1b[31m\n')
+        terminal=self.terminal();terminal.until(r'private ADB identity.*\[y/N\]');terminal.line('y')
+        terminal.until('Press Enter to retry connection')
+        self.assertNotIn('Approve this computer on the TV',terminal.text)
+        self.assertNotIn('The TV has not authorized this private controller',terminal.text)
+        self.assertIn('Connection refused',terminal.text)
+        self.assertNotIn('\x1b',terminal.text)
+        self.assertNotIn('Tunnel ID:',terminal.text)
+        self.assertEqual((self.root/'adb-requests').read_text().count('host:connect:'),1)
+        terminal.line('q');self.assertNotEqual(terminal.wait(),0,terminal.text)
+        self.assertTrue(self.port_free())
+        self.assertFalse((self.root/'tunnel-events.jsonl').exists())
+    def test_missing_target_disconnect_failure_still_allows_explicit_connect_retry(self):
+        (self.root/'adb-authorization').write_text('missing')
+        terminal=self.terminal();terminal.until(r'private ADB identity.*\[y/N\]');terminal.line('y')
+        terminal.until('Press Enter to retry connection');terminal.line('')
+        terminal.until('Press Enter to retry connection')
+        requests=(self.root/'adb-requests').read_text()
+        self.assertEqual(requests.count('host:connect:'),2)
+        self.assertEqual(requests.count('host:disconnect:'),1)
+        self.assertNotIn('Press Enter after TV approval',terminal.text)
+        terminal.line('q');self.assertNotEqual(terminal.wait(),0,terminal.text);self.assertTrue(self.port_free())
+    def test_offline_retry_retains_daemon_and_identity_then_waits_for_real_approval(self):
+        (self.root/'adb-authorization').write_text('offline')
+        terminal=self.terminal();terminal.until(r'private ADB identity.*\[y/N\]');terminal.line('y')
+        terminal.until('Press Enter to retry connection')
+        before=(self.root/'adb-events.jsonl').read_text()
+        identity=self.connection_parent/'connection/adb/adb-home/identity-sentinel'
+        identity.write_text('same-private-identity');identity.chmod(0o600)
+        (self.root/'adb-authorization').write_text('unauthorized');terminal.line('')
+        terminal.until('Press Enter after TV approval')
+        requests=(self.root/'adb-requests').read_text().splitlines()
+        self.assertEqual(requests.count('host:connect:192.0.2.10:5555'),2)
+        self.assertEqual(requests.count('host:disconnect:192.0.2.10:5555'),1)
+        self.assertFalse(any(r in ('host:kill','host:disconnect:') for r in requests))
+        self.assertEqual((self.root/'adb-events.jsonl').read_text(),before)
+        self.assertEqual(identity.read_text(),'same-private-identity')
+        (self.root/'adb-authorization').write_text('device');terminal.line('')
+        terminal.until('Tunnel ID:');terminal.line('q');self.assertNotEqual(terminal.wait(),0,terminal.text)
+        self.assertTrue(self.port_free())
+    def test_explicit_unauthorized_retry_disconnects_only_target_without_resetting_identity(self):
+        (self.root/'adb-authorization').write_text('unauthorized')
+        (self.root/'adb-connect-diagnostic').write_text('failed to authenticate to 192.0.2.10:5555')
+        terminal=self.terminal();terminal.until(r'private ADB identity.*\[y/N\]');terminal.line('y')
+        terminal.until('Press Enter after TV approval')
+        before=(self.root/'adb-events.jsonl').read_text()
+        terminal.line('retry');terminal.until('Press Enter after TV approval')
+        requests=(self.root/'adb-requests').read_text().splitlines()
+        self.assertEqual(requests.count('host:disconnect:192.0.2.10:5555'),1)
+        self.assertEqual(requests.count('host:connect:192.0.2.10:5555'),2)
+        self.assertEqual((self.root/'adb-events.jsonl').read_text(),before)
+        self.assertNotIn('Tunnel ID:',terminal.text)
+        terminal.line('q');self.assertNotEqual(terminal.wait(),0,terminal.text);self.assertTrue(self.port_free())
+    def test_handshake_checks_do_not_claim_approval_or_reconnect(self):
+        (self.root/'adb-authorization').write_text('authorizing')
+        terminal=self.terminal();terminal.until(r'private ADB identity.*\[y/N\]');terminal.line('y')
+        terminal.until('Press Enter to check connection')
+        self.assertNotIn('Press Enter after TV approval',terminal.text)
+        (self.root/'adb-authorization').write_text('connecting');terminal.line('')
+        terminal.until('Press Enter to check connection')
+        (self.root/'adb-authorization').write_text('unauthorized');terminal.line('')
+        terminal.until('Press Enter after TV approval')
+        requests=(self.root/'adb-requests').read_text()
+        self.assertEqual(requests.count('host:connect:'),1)
+        self.assertNotIn('host:disconnect:',requests)
+        terminal.line('q');self.assertNotEqual(terminal.wait(),0,terminal.text);self.assertTrue(self.port_free())
+    def test_lost_unauthorized_transport_switches_to_connection_recovery(self):
+        (self.root/'adb-authorization').write_text('unauthorized')
+        terminal=self.terminal();terminal.until(r'private ADB identity.*\[y/N\]');terminal.line('y')
+        terminal.until('Press Enter after TV approval')
+        (self.root/'adb-authorization').write_text('missing');terminal.line('')
+        terminal.until('Press Enter to retry connection')
+        requests=(self.root/'adb-requests').read_text()
+        self.assertEqual(requests.count('host:connect:'),1)
+        self.assertNotIn('host:disconnect:',requests)
+        self.assertNotIn('Tunnel ID:',terminal.text)
+        terminal.line('q');self.assertNotEqual(terminal.wait(),0,terminal.text);self.assertTrue(self.port_free())
+    def test_interrupt_offline_wait_keeps_no_runtime_or_tunnel(self):
+        (self.root/'adb-authorization').write_text('offline')
+        terminal=self.terminal();terminal.until(r'private ADB identity.*\[y/N\]');terminal.line('y')
+        terminal.until('Press Enter to retry connection')
+        os.kill(terminal.pid,signal.SIGINT)
+        self.assertNotEqual(terminal.wait(),0,terminal.text);self.assertTrue(self.port_free())
+        self.assertEqual((self.root/'adb-requests').read_text().count('host:connect:'),1)
+        self.assertFalse((self.root/'tunnel-events.jsonl').exists())
     def test_tv_approval_keeps_owned_identity_alive_until_confirmed(self):
         (self.root/'adb-authorization').write_text('unauthorized')
         terminal=self.terminal();terminal.until(r'private ADB identity.*\[y/N\]');terminal.line('y')

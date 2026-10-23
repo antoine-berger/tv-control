@@ -1,6 +1,6 @@
 //! Explicit tunnel consent, dependency acquisition, and readiness port.
 use super::runtime::{find_program, resolve_tunnel, RuntimeIntent};
-use super::{bounded, gate, Journey};
+use super::{bounded, gate, guidance, Journey};
 use std::{ffi::OsStr, path::PathBuf};
 use tv_adapters::{
     onboarding_tunnel::OfficialTunnel,
@@ -72,8 +72,15 @@ impl TunnelSetupPort for Journey<'_> {
             let id = match saved {
                 Some(id) => id,
                 None => {
-                    eprintln!("In Platform, select your organization/workspace and reuse or explicitly create a tunnel. Runtime access needs Tunnels Read + Use.");
-                    self.ask("Tunnel ID: ", false, ctx)?
+                    guidance::tunnel_setup();
+                    loop {
+                        let id = self.ask("Tunnel ID: ", false, ctx)?;
+                        if id == "help" {
+                            guidance::permissions();
+                        } else {
+                            break id;
+                        }
+                    }
                 }
             };
             if !self.tunnel_approved.get() {
@@ -83,7 +90,10 @@ impl TunnelSetupPort for Journey<'_> {
             if !self.existing_runtime.get() {
                 let key = match std::env::var("TV_CONTROL_TUNNEL_KEY") {
                     Ok(v) if !v.is_empty() => v,
-                    _ => self.ask("Runtime key (hidden; not saved): ", true, ctx)?,
+                    _ => {
+                        guidance::runtime_key();
+                        self.ask("Runtime key (hidden; not saved): ", true, ctx)?
+                    }
                 };
                 if key.is_empty() || key.chars().any(char::is_control) {
                     return Err("runtime_key_invalid");

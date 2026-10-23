@@ -1,6 +1,6 @@
 //! Cooperative conversation verification bound to the live controller generation.
 use super::runtime::private_read;
-use super::{bounded, gate, Journey};
+use super::{bounded, gate, guidance, Journey};
 use tv_adapters::{
     connection_proof::{random_token, ProofStore},
     onboarding_tunnel::OfficialTunnel,
@@ -29,7 +29,7 @@ impl ExternalConversationPort for Journey<'_> {
                 .tunnel_id
                 .clone()
                 .ok_or("tunnel_configuration_missing")?;
-            eprintln!("In ChatGPT: Plugins → Add custom MCP server → Tunnel ({id}). Approve, install and select it in your intended conversation.");
+            guidance::plugin(&id);
             self.ask(
                 "Press Enter when the plugin is selected, or q to resume later: ",
                 false,

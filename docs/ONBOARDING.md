@@ -39,6 +39,70 @@ MCP discovery, health, `clientInfo`, a received nonce or pressing Enter cannot
 prove conversation exposure. Verification is cooperative with the user selecting
 the intended chat: public tunnel metadata has no signed conversation identity.
 
+## Browser steps for the OpenAI connection
+
+The wizard prints each link before it asks for the corresponding value:
+
+1. Open [Platform Tunnels](https://platform.openai.com/settings/organization/tunnels)
+   and select the intended organization. Personal accounts use their personal
+   Platform organization. Open or create a tunnel and include the target ChatGPT
+   workspace in its associations. Copy the complete `tunnel_...` identifier into
+   **Tunnel ID**. Creating a tunnel requires Tunnels **Read + Manage**.
+2. After reviewing the background-controller consent, open
+   [Runtime API keys](https://platform.openai.com/settings/organization/api-keys)
+   in the same organization. Create a **Restricted** key with Tunnels **Read + Use**;
+   its owner also needs those organization permissions. Do not choose **All** or
+   use an administrator key. Enter the secret yourself in the terminal's hidden
+   **Runtime key** prompt, never in chat, screenshots, command arguments or a
+   configuration file. tv-control does not persist the key.
+3. Once the controller is ready, open [ChatGPT Plugins](https://chatgpt.com/plugins)
+   in a browser. Select **+ → Add custom MCP server**, give it a name, and choose
+   **Tunnel** under Connection. Select or paste the same tunnel ID. This project's
+   local stdio server uses **No authentication** at the MCP layer; OpenAI tunnel
+   organization/workspace permissions still apply. Review the risk warning
+   yourself, create the plugin, then install it. In the intended conversation,
+   type `@` and select that plugin before completing the verification prompt.
+
+If Platform access is blocked, type `help` at **Tunnel ID** for the organization
+roles/groups links. An organization owner or RBAC administrator must grant the
+required permissions; changes can take up to 30 minutes. ChatGPT custom MCP access
+is separately subject to workspace permissions and security restrictions. The
+installer cannot grant those permissions or guarantee account eligibility. No
+subscription, billing change or extra purchase is performed by this wizard.
+Use `q` to stop and resume after resolving account access. A newly created tunnel
+may take 25–30 seconds to become available; keep the controller running during
+plugin discovery and use.
+
+The exact signed-in Platform button labels may change. The destinations, key
+restriction and permission names above come from the [official onboarding guide](https://github.com/openai/tunnel-client/blob/master/docs/onboarding.md),
+[permissions guide](https://github.com/openai/tunnel-client/blob/master/docs/permissions.md)
+and [custom MCP instructions](https://developers.openai.com/api/docs/guides/custom-mcp-server).
+
+## TV authorization recovery
+
+An ADB `unauthorized` state means the private controller is not trusted; it does
+not prove that the TV displayed a dialog. Press Enter to check again, or type
+`retry` to disconnect and reconnect only the configured TV with the same private
+identity and owned daemon. This cannot guarantee a new TV dialog. Missing/offline
+transports and handshakes in progress have distinct guidance, never an approval
+claim. Each connection attempt has a 12-second local bound within the journey's
+overall deadline; TV command and discovery budgets are unchanged. `q` or Ctrl-C
+stops this foreground attempt without deleting identity files or resetting TV trust.
+
+If no authorization dialog appears while ADB reports `unauthorized`:
+
+1. Enter `q` to stop the foreground attempt.
+2. Use the TV's full **Restart** action, rather than standby. After it has fully
+   restarted, run the same installer again and approve the dialog if it appears.
+3. If the dialog is still absent, check the TV's debugging settings and vendor
+   documentation. Do not delete the controller identity or revoke all trusted
+   computers as an automatic retry step.
+
+A restart is troubleshooting, not a guaranteed fix. [AOSP's authorization service](https://android.googlesource.com/platform/frameworks/native/+/refs/heads/main/libs/adbd_auth/adbd_auth.cpp)
+queues prompts and tracks the dispatched prompt separately from authorized
+connections. A stale pending prompt is therefore a possible explanation for a
+missing dialog, not a confirmed diagnosis of this issue.
+
 ## Resume and stop
 
 Run the same installer after interruption. Private progress remembers choices,

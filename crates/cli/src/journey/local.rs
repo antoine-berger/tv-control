@@ -18,6 +18,51 @@ use tv_domain::pipeline::{
     Stage,
 };
 
+// ADB itself can wait ten seconds for its handshake. Leave bounded room for
+// the acknowledgement and subsequent state probe; TV command budgets are unchanged.
+const CONNECTION_ATTEMPT_MS: u64 = 12_000;
+
+fn connection_outcome(
+    result: tv_domain::PortResult<AdbAuthorization>,
+    ctx: &Context<'_>,
+) -> Result<AdbAuthorization, &'static str> {
+    ctx.check().map_err(|error| error.code)?;
+    match result {
+        Ok(state) => Ok(state),
+        Err(error) if error.code == "expired" => {
+            eprintln!("The ADB connection attempt timed out; TV approval was not confirmed.");
+            Ok(AdbAuthorization::Offline)
+        }
+        Err(error) => Err(error.code),
+    }
+}
+
+impl Journey<'_> {
+    fn connection_attempt(
+        &self,
+        retry: bool,
+        ctx: &Context<'_>,
+    ) -> Result<AdbAuthorization, &'static str> {
+        let attempt = bounded(ctx, CONNECTION_ATTEMPT_MS);
+        let mut owned = self.runtime.borrow_mut();
+        let runtime = owned.as_mut().ok_or("adb_runtime_missing")?;
+        let result = if retry {
+            runtime.reconnect(&attempt)
+        } else {
+            runtime.connect(&attempt)
+        };
+        // A local attempt timeout is resumable, but never suppress the caller's
+        // cancellation or overall deadline to offer another connection attempt.
+        ctx.check().map_err(|error| error.code)?;
+        if result != Ok(AdbAuthorization::Authorized) {
+            if let Some(diagnostic) = runtime.connection_diagnostic() {
+                eprintln!("ADB: {diagnostic}");
+            }
+        }
+        connection_outcome(result, ctx)
+    }
+}
+
 impl ConfigurationPort for Journey<'_> {
     fn configuration(&self, _: &Context<'_>) -> Gate<Configuration> {
         Gate::Observed(self.configuration.clone())
@@ -100,27 +145,39 @@ impl AdbSetupPort for Journey<'_> {
     fn observe(&self, binding: &DeviceBinding, ctx: &Context<'_>) -> Gate<Fresh<ReadOnlyAccess>> {
         gate((|| {
             if !self.existing_runtime.get() {
-                let mut state = self
-                    .runtime
-                    .borrow_mut()
-                    .as_mut()
-                    .ok_or("adb_runtime_missing")?
-                    .connect(&bounded(ctx, 10_000))
-                    .map_err(|e| e.code)?;
+                let mut state = self.connection_attempt(false, ctx)?;
                 while state != AdbAuthorization::Authorized {
-                    eprintln!("Approve this computer on the TV. Its private controller stays connected while you approve.");
-                    self.ask(
-                        "Press Enter after TV approval, or q to resume later: ",
-                        false,
-                        ctx,
-                    )?;
-                    state = self
-                        .runtime
-                        .borrow_mut()
-                        .as_mut()
-                        .ok_or("adb_runtime_missing")?
-                        .authorization(&bounded(ctx, 5_000))
-                        .map_err(|e| e.code)?;
+                    let prompt = match state {
+                        AdbAuthorization::AwaitingAuthorization => {
+                            eprintln!("The TV has not authorized this private controller. Check for a debugging authorization dialog.");
+                            "Press Enter after TV approval, type retry to reconnect this TV, or q to resume later: "
+                        }
+                        AdbAuthorization::Connecting => {
+                            eprintln!("ADB is still establishing the connection; TV approval is not yet confirmed.");
+                            "Press Enter to check connection, type retry to reconnect this TV, or q to resume later: "
+                        }
+                        AdbAuthorization::Offline | AdbAuthorization::Absent => {
+                            eprintln!("ADB has not confirmed a usable connection to the configured TV. Check its address, network debugging and TV settings.");
+                            "Press Enter to retry connection, or q to resume later: "
+                        }
+                        AdbAuthorization::Authorized => unreachable!(),
+                    };
+                    let response = self.ask(prompt, false, ctx)?;
+                    if response != "retry" && !response.is_empty() {
+                        continue;
+                    }
+                    state = if response == "retry"
+                        || matches!(state, AdbAuthorization::Offline | AdbAuthorization::Absent)
+                    {
+                        self.connection_attempt(true, ctx)?
+                    } else {
+                        self.runtime
+                            .borrow_mut()
+                            .as_mut()
+                            .ok_or("adb_runtime_missing")?
+                            .authorization(&bounded(ctx, 5_000))
+                            .map_err(|e| e.code)?
+                    };
                 }
             }
             let receipt = self.observed(random_token()?, &bounded(ctx, 10_000))?;
@@ -159,5 +216,56 @@ impl LocalMcpPort for Journey<'_> {
                 ctx,
             ))
         })())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::connection_outcome;
+    use tv_adapters::{
+        onboarding_runtime::AdbAuthorization,
+        runtime::{CancelFlag, SystemClock},
+    };
+    use tv_application::Context;
+    use tv_domain::Failure;
+
+    #[test]
+    fn only_local_attempt_expiry_is_retryable() {
+        let clock = SystemClock::default();
+        let cancel = CancelFlag::default();
+        let ctx = Context {
+            clock: &clock,
+            cancellation: &cancel,
+            deadline_monotonic_ms: 10_000,
+        };
+        assert_eq!(
+            connection_outcome(Err(Failure::before("expired")), &ctx),
+            Ok(AdbAuthorization::Offline)
+        );
+        assert_eq!(
+            connection_outcome(Err(Failure::before("adb_server_protocol_mismatch")), &ctx),
+            Err("adb_server_protocol_mismatch")
+        );
+        let expired = Context {
+            deadline_monotonic_ms: 0,
+            ..ctx
+        };
+        assert_eq!(
+            connection_outcome(Ok(AdbAuthorization::Authorized), &expired),
+            Err("expired")
+        );
+        assert_eq!(
+            connection_outcome(Err(Failure::before("expired")), &expired),
+            Err("expired")
+        );
+        cancel.cancel();
+        assert_eq!(
+            connection_outcome(Err(Failure::before("expired")), &ctx),
+            Err("cancelled")
+        );
+        assert_eq!(
+            connection_outcome(Ok(AdbAuthorization::Authorized), &ctx),
+            Err("cancelled")
+        );
     }
 }

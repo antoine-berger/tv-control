@@ -36,7 +36,9 @@ pub struct AdbRuntimeSpec {
 pub enum AdbAuthorization {
     Authorized,
     AwaitingAuthorization,
+    Connecting,
     Offline,
+    Absent,
 }
 
 struct OwnedChild(Child);
@@ -107,6 +109,7 @@ fn protocol(bytes: &[u8]) -> PortResult<u32> {
 pub struct OwnedAdbRuntime {
     spec: AdbRuntimeSpec,
     protocol: u32,
+    connection_diagnostic: Option<String>,
     child: OwnedChild,
     // Retained after the child field so teardown kills/reaps before releasing the port.
     _listener: TcpListener,
@@ -228,6 +231,7 @@ impl OwnedAdbRuntime {
         let mut runtime = Self {
             spec,
             protocol,
+            connection_diagnostic: None,
             child: OwnedChild(child),
             _listener: listener,
             _lock: lock,
@@ -301,8 +305,9 @@ impl OwnedAdbRuntime {
         }
         let mut header = [0; 8];
         socket_read(&mut stream, &mut header, self.spec.poll_ms, ctx)?;
-        if &header[..4] != b"OKAY" {
-            return Err(Failure::before("adb_runtime_request_rejected"));
+        let rejected = &header[..4] == b"FAIL";
+        if !rejected && &header[..4] != b"OKAY" {
+            return Err(Failure::before("adb_runtime_response_invalid"));
         }
         let length = std::str::from_utf8(&header[4..])
             .ok()
@@ -312,32 +317,88 @@ impl OwnedAdbRuntime {
         let mut bytes = vec![0; length];
         socket_read(&mut stream, &mut bytes, self.spec.poll_ms, ctx)?;
         self.running()?;
+        ctx.check()?;
+        if rejected {
+            return Err(Failure::before("adb_runtime_request_rejected"));
+        }
         Ok(bytes)
     }
     pub fn connect(&mut self, ctx: &Context<'_>) -> PortResult<AdbAuthorization> {
+        self.connection_diagnostic = None;
         let endpoint = self.spec.endpoint.clone();
-        let _acknowledgement = self.call(&format!("host:connect:{endpoint}"), ctx)?;
+        let acknowledgement = self.call(&format!("host:connect:{endpoint}"), ctx)?;
+        // Diagnostics are terminal-safe and bounded, never authorization evidence.
+        // In particular, "failed to authenticate" can accompany an unauthorized
+        // transport that is still eligible for a TV-side approval.
+        self.connection_diagnostic = Some(
+            acknowledgement
+                .iter()
+                .flat_map(|byte| std::ascii::escape_default(*byte))
+                .take(256)
+                .map(char::from)
+                .collect(),
+        );
         // The connect acknowledgement is never authorization evidence.
         self.authorization(ctx)
+    }
+    /// Explicit user retry only. Keep this owned daemon and private identity;
+    /// never disconnect other endpoints or invoke global daemon management.
+    pub fn reconnect(&mut self, ctx: &Context<'_>) -> PortResult<AdbAuthorization> {
+        self.connection_diagnostic = None;
+        let endpoint = self.spec.endpoint.clone();
+        match self.call(&format!("host:disconnect:{endpoint}"), ctx) {
+            Ok(_) => {
+                // The disconnect acknowledgement precedes asynchronous transport
+                // removal. Reconnecting before absence can reuse the old session.
+                while self.authorization(ctx)? != AdbAuthorization::Absent {
+                    ctx.wait(self.spec.poll_ms)?;
+                }
+            }
+            Err(error) if error.code == "adb_runtime_request_rejected" => {
+                // Official ADB rejects disconnect when no such transport exists.
+                // Require an independent exact-target absence, not error prose.
+                if self.authorization(ctx)? != AdbAuthorization::Absent {
+                    return Err(error);
+                }
+            }
+            Err(error) => return Err(error),
+        }
+        self.connect(ctx)
+    }
+    pub fn connection_diagnostic(&self) -> Option<&str> {
+        self.connection_diagnostic.as_deref()
     }
     pub fn authorization(&mut self, ctx: &Context<'_>) -> PortResult<AdbAuthorization> {
         let result = self.call("host:devices", ctx)?;
         let text =
             std::str::from_utf8(&result).map_err(|_| Failure::before("adb_device_probe_failed"))?;
-        let mut states = text.lines().filter_map(|line| {
-            let mut fields = line.split_whitespace();
-            (fields.next() == Some(self.spec.endpoint.as_str()))
-                .then(|| fields.next())
-                .flatten()
-        });
-        let state = states.next();
-        if states.next().is_some() {
+        let mut rows = text
+            .lines()
+            .filter(|line| line.split_whitespace().next() == Some(self.spec.endpoint.as_str()));
+        let row = rows.next();
+        if rows.next().is_some() {
             return Err(Failure::before("adb_device_probe_ambiguous"));
         }
+        let state = if let Some(row) = row {
+            let mut fields = row.split_whitespace().skip(1);
+            let state = fields
+                .next()
+                .ok_or(Failure::before("adb_device_probe_failed"))?;
+            if fields.next().is_some() {
+                return Err(Failure::before("adb_device_probe_failed"));
+            }
+            Some(state)
+        } else {
+            None
+        };
+        ctx.check()?;
         Ok(match state {
             Some("device") => AdbAuthorization::Authorized,
             Some("unauthorized") => AdbAuthorization::AwaitingAuthorization,
-            _ => AdbAuthorization::Offline,
+            Some("connecting" | "authorizing") => AdbAuthorization::Connecting,
+            Some("offline") => AdbAuthorization::Offline,
+            None => AdbAuthorization::Absent,
+            _ => return Err(Failure::before("adb_device_state_unsupported")),
         })
     }
     pub fn port(&self) -> u16 {

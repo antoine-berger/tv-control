@@ -1,5 +1,6 @@
 //! Composition of the guided journey. Account approvals remain explicit and resumable.
 mod conversation;
+mod guidance;
 mod local;
 mod runtime;
 mod tunnel;
