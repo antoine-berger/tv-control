@@ -15,13 +15,13 @@ is required. Only that job gets `contents: write` and `actions: read`.
    `Cargo.toml`; call the matching `v`-prefixed tag `V`. Confirm there is no tag,
    release or draft for `V`. Published v0.3.0 already exists and must not be
    overwritten; the publisher refuses to overwrite or resume an existing release.
-3. Let `C` be the exact tested main commit. Create branch
-   `release/V-C`, substituting the version tag and full 40-character SHA, initially at `C`'s
-   first parent. Then fast-forward it to `C` with an expected-old-SHA lease.
-   This produces a real push update without adding an empty commit or changing
-   the tested SHA. Verify the resulting run has event `push`, head SHA `C`, and
-   the exact selected release branch. Creating a branch at an already-existing
-   commit alone is not relied on to produce a push workflow run.
+3. Let `C` be the exact tested main commit. Create branch `release/V-C`,
+   substituting the version tag and full 40-character SHA, directly at `C`.
+   Direct creation triggered the v0.3.1 publication push; no parent staging or
+   extra commit is needed. Verify that a run actually appears with event `push`,
+   head SHA `C`, and the exact selected release branch. If no matching run
+   appears, stop and inspect the event/runner status rather than changing the
+   source or moving the branch to a different commit to force a trigger.
 4. Keep `main` at `C` through publication. The guard requires `main` HEAD and the
    checkout, push payload, run metadata, and release branch's encoded SHA to
    agree. A changed head, forced push, missing main CI success, or mismatch fails
@@ -80,9 +80,9 @@ asset or different release cannot pass under the same branch name.
 The controller SHA is the commit containing the verifier and workflow. It may
 be newer than the already published source SHA when correcting verification
 infrastructure. The plan command reads the controller from its own checkout.
-Create that exact branch at the controller commit's first parent, then leased
-fast-forward it to the controller commit, as with the publication trigger. The
-workflow checks its own event and checkout against the encoded controller SHA,
+Create that exact branch directly at the controller commit, then verify the
+matching `push` run exists, as with the publication trigger. The workflow checks
+its own event and checkout against the encoded controller SHA,
 then separately checks out the encoded source SHA with credentials disabled.
 Both `verify-public-release` matrix jobs must finish successfully at the
 controller SHA while explicitly reporting the selected published source SHA:
