@@ -367,7 +367,7 @@ fn resource_adapter(
 }
 #[test]
 fn real_resource_labels_survive_restart_and_invalidate_on_version_or_locale() {
-    let path = std::env::temp_dir().join(format!(
+    let path = std::env::temp_dir().canonicalize().unwrap().join(format!(
         "tv-label-cache-{}-{}",
         std::process::id(),
         std::time::SystemTime::now()
@@ -422,7 +422,7 @@ fn real_resource_labels_survive_restart_and_invalidate_on_version_or_locale() {
 }
 #[test]
 fn missing_resource_extractor_keeps_catalogue_but_not_invented_labels() {
-    let path = std::env::temp_dir().join(format!(
+    let path = std::env::temp_dir().canonicalize().unwrap().join(format!(
         "tv-label-unavailable-{}-{}",
         std::process::id(),
         std::time::SystemTime::now()
@@ -443,6 +443,40 @@ fn missing_resource_extractor_keeps_catalogue_but_not_invented_labels() {
     assert_eq!(apps[0].id, "org.example.player");
     assert!(!path.join("labels.json").exists());
     std::fs::remove_dir_all(path).unwrap();
+}
+
+#[test]
+fn label_cache_refuses_symlink_ancestors_without_writing() {
+    let root = std::env::temp_dir().canonicalize().unwrap().join(format!(
+        "tv-label-symlink-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir(&root).unwrap();
+    let real = root.join("real");
+    std::fs::create_dir(&real).unwrap();
+    let alias = root.join("alias");
+    std::os::unix::fs::symlink(&real, &alias).unwrap();
+    let cache = alias.join("cache");
+    let clock = TestClock::default();
+    let flag = CancelFlag::default();
+    // Both independent adapters must extract: no cache may be persisted through
+    // an untrusted symlink, even though the resource label itself is valid.
+    for _ in 0..2 {
+        let (adb, process) = resource_adapter(&cache, RESOURCE_APP, PROPS, true);
+        assert_eq!(
+            adb.apps("screen", &ctx(&clock, &flag)).unwrap()[0]
+                .label
+                .as_deref(),
+            Some("test1")
+        );
+        assert_eq!(process.calls.lock().unwrap().len(), 6);
+        assert!(!real.join("cache").exists());
+    }
+    std::fs::remove_dir_all(root).unwrap();
 }
 
 // A one-pixel RGBA PNG fixture, produced with standard zlib and PNG chunk CRCs.
