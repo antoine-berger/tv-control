@@ -1,4 +1,4 @@
-# Explicit cloud prereleases
+# Releases and distribution
 
 Normal `main` and pull-request CI never publishes. The only publication job is
 `release-prerelease`, after both existing CI matrices succeed. It uses the
@@ -10,11 +10,13 @@ is required. Only that job gets `contents: write` and `actions: read`.
 1. Review and merge the release workflow and all final source fixes onto `main`.
    Wait for a successful **main push CI run for that exact full commit SHA**.
    A successful run for an earlier source commit does not cover workflow changes.
-2. Read `[workspace.package].version` from `Cargo.toml`, currently `0.3.0`.
-   Confirm there is no `v0.3.0` tag, release, or draft release. The publisher will
-   refuse to overwrite or resume an existing one.
+2. Choose an unused version and update version/pin references and their tests
+   before the final main CI run. Read `[workspace.package].version` from
+   `Cargo.toml`; call the matching `v`-prefixed tag `V`. Confirm there is no tag,
+   release or draft for `V`. Published v0.3.0 already exists and must not be
+   overwritten; the publisher refuses to overwrite or resume an existing release.
 3. Let `C` be the exact tested main commit. Create branch
-   `release/v0.3.0-C`, substituting the full 40-character SHA, initially at `C`'s
+   `release/V-C`, substituting the version tag and full 40-character SHA, initially at `C`'s
    first parent. Then fast-forward it to `C` with an expected-old-SHA lease.
    This produces a real push update without adding an empty commit or changing
    the tested SHA. Verify the resulting run has event `push`, head SHA `C`, and
@@ -95,7 +97,7 @@ controller SHA while explicitly reporting the selected published source SHA:
    then runs native offline package install/discover/uninstall smoke tests.
    ARM64 Linux gets structural verification, not native execution.
 3. Each job also executes the downloaded public installer with explicit
-   `--version v0.3.0` in an isolated home/prefix, downloads from the real public
+   `--version V` (the selected release tag) in an isolated home/prefix, downloads from the real public
    endpoint, compares the installed executable with the verified package,
    performs fixture discovery, and uninstalls it.
 4. Each job re-reads release metadata after execution and fails if it changed.

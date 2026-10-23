@@ -10,7 +10,7 @@ cp examples/config.json config.local.json
 ./target/release/tv-control capabilities config.local.json
 ```
 
-Run commands from the repository root after [building](../README.md#quick-start).
+Run commands from the repository root after [building](DEVELOPMENT.md).
 `*.local.json` is ignored by Git; keep real configuration outside the checkout
 where practical. Validation checks structure, resource bounds and references. It
 does not check executable availability, credentials, device access or compatibility.

@@ -6,7 +6,7 @@ The Rust domain has no dependencies. The application depends only on the domain
 and defines `Control`, `DeviceControl`, `MediaCatalogue`, `StateStore`, `Clock`
 and `Cancellation` ports. Adapters implement those ports and the binary composes
 them. This keeps protocol, filesystem and environment details out of use cases.
-The [architecture check](../scripts/check_architecture.py) enforces the inner
+The [architecture check](https://github.com/antoine-berger/tv-control/blob/main/scripts/check_architecture.py) enforces the inner
 crate boundaries. Resource suitability still requires measurement.
 
 ## 002 — External maintained transports
@@ -21,8 +21,8 @@ is required. Router packages must be qualified rather than assumed compatible.
 
 Use synchronous application ports, bounded MCP workers and nonblocking Unix
 subprocess/stdio I/O. This avoids an async runtime and a reader thread per pipe.
-Unsafe code is confined to adapter-level Unix descriptor/process operations, with
-ownership comments; there is no unsafe domain/application code. Process-group
+Unsafe code is confined to Unix I/O, process, ownership and terminal operations
+in the adapters/CLI; there is no unsafe domain/application code. Process-group
 cleanup limits local work but is not a sandbox for hostile executables.
 
 ## 004 — Caller-owned deadline

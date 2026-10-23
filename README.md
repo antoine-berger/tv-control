@@ -1,52 +1,75 @@
 # tv-control
 
-A small Rust controller for Android TV and Jellyfin, with a CLI and MCP tools.
+Control Android TV and Jellyfin from a terminal or an MCP client such as ChatGPT.
+The Rust controller checks device state after each action and reports whether the
+result was observed, verified or uncertain.
 
-## Install
+- **Android TV (ADB):** read state, open configured apps, pause/resume and set
+  calibrated volume.
+- **Jellyfin:** control an active session or resume a configured series.
+- **CLI and MCP:** the same actions, explicit deadlines and bounded I/O. No
+  free-form shell commands or screen captures.
 
-Run in a terminal on macOS Apple Silicon, or Linux ARM64/x86-64:
+## Get started
+
+On macOS Apple Silicon or Linux x86-64/ARM64, run:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/antoine-berger/tv-control/latest/install.sh | sh
 ```
 
-The installer checks its files, selects the TV and guides device access and the
-ChatGPT connection. Run the same command to resume. Configuration is preserved;
-credentials are never saved in progress files. No flags are needed.
+This downloads and executes the installer. To inspect it first, see
+[download and checksum verification](docs/INSTALLATION.md#verify-before-execution).
 
-This source describes the v0.3.0 journey under review. The `latest` channel stays
-on its previously validated release until review, CI and public asset checks pass.
+The wizard selects your TV, saves a private configuration, asks you to authorize
+TV/background access, and guides the ChatGPT connection. Keep the TV available
+for its authorization prompt. Rerun the same command to resume interrupted setup.
 
-The `latest` download channel points to a published, validated release and may
-serve a prerelease. The script keeps its release version pinned internally.
+You need a reachable Android TV with debugging enabled, maintained ADB, and, for
+ChatGPT, the official tunnel client and eligible account/workspace permissions.
+The wizard offers approved dependency installation on supported hosts; macOS
+requires existing Homebrew for that route. Linux ARM64 and pure-musl hosts need a
+maintained native ADB supplied separately. [Requirements and recovery](docs/INSTALLATION.md).
 
-This command executes downloaded code. [Inspection and checksum verification](docs/INSTALLATION.md)
-are available before execution. Maintained Android Platform Tools are required
-for ADB. TV authorization and background access need explicit approval. The
-official tunnel client and account/workspace permissions are required for hosted
-access; browser approvals and plugin selection remain guided steps.
+The `latest` installer currently selects published **v0.3.0**. This branch may
+contain newer changes; rebuilding it is not the same as downloading that release.
+See [releases](https://github.com/antoine-berger/tv-control/releases/tag/v0.3.0) for published assets.
 
-## Scope
+## After installation
 
-ADB supports observed state, app opening, pause/resume and calibrated volume.
-Jellyfin supports session control and resuming configured media. Commands carry
-a deadline; dispatch alone does not count as a verified result. Cast and YouTube
-Music automation are not implemented. The ten-second chat-to-TV target and router
-runtime remain unqualified.
+The installer does not change your PATH. Use its stable launcher:
 
-The journey reports ready only after a read-only TV call through the selected
-conversation and a returned verification code. This cooperative check does not
-cryptographically attest conversation identity. Remote tunnel provisioning and
-new TLS ADB pairing are not performed automatically. Actual hosted and hardware
-use of this integration remains unqualified.
+```sh
+"$HOME/.local/share/tv-control/tv-control" --version
+"$HOME/.local/share/tv-control/tv-control" doctor \
+  "${XDG_CONFIG_HOME:-$HOME/.config}/tv-control/tv-control.local.json" --json
+```
+
+`doctor` is offline unless you add `--probe`. For device commands, first review
+[configuration](docs/CONFIGURATION.md) and the [CLI examples](docs/CLI.md).
+For ChatGPT, finish the [conversation verification step](docs/ONBOARDING.md): a
+local health check alone does not establish that the selected chat can use the TV.
+
+## Current limits
+
+TV approval, tunnel/account permissions and plugin selection remain interactive.
+New TLS ADB pairing and remote tunnel creation are not automatic. Cast and
+YouTube Music automation are not implemented.
+
+Automated checks cover simulated devices and installer flows. Actual TV playback,
+the hosted chat-to-TV journey, router deployment and a ten-second end-to-end target
+remain unqualified. A verified receipt describes adapter evidence, not proof of
+physical picture or sound. See [adapter limits](docs/ADAPTERS.md) and
+[acceptance checks](docs/ACCEPTANCE.md).
 
 ## Documentation
 
-- [Installation and recovery](docs/INSTALLATION.md)
-- [Device setup and chat connection](docs/ONBOARDING.md)
-- [Configuration](docs/CONFIGURATION.md), [CLI](docs/CLI.md) and [MCP](docs/MCP.md)
-- [Adapters and limits](docs/ADAPTERS.md)
-- [Development and source builds](docs/DEVELOPMENT.md), [architecture](docs/ADR.md)
-- [Router qualification](docs/ROUTER.md), [acceptance](docs/ACCEPTANCE.md) and [measurements](benchmarks/README.md)
+- **Use it:** [installation](docs/INSTALLATION.md), [onboarding](docs/ONBOARDING.md),
+  [troubleshooting](docs/INSTALLATION.md#troubleshooting)
+- **Configure it:** [configuration](docs/CONFIGURATION.md), [CLI](docs/CLI.md),
+  [MCP integration](docs/MCP.md)
+- **Contribute:** [build and test](docs/DEVELOPMENT.md), [source map](https://github.com/antoine-berger/tv-control/tree/main/crates#readme),
+  [architecture decisions](docs/ADR.md)
+- **Reference:** [all documentation](https://github.com/antoine-berger/tv-control/tree/main/docs#readme), [measurements](benchmarks/README.md)
 
-[MIT licence](LICENSE).
+[MIT license](LICENSE).

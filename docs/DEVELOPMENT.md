@@ -2,7 +2,7 @@
 
 Build on Linux or macOS Apple Silicon with a stable Rust toolchain and native linker. Python 3
 is used for repository checks and stdio integration fixtures. CI tests native Linux
-and macOS Apple Silicon builds and cross-builds the ARM64 musl candidate; it does not run on a
+and macOS Apple Silicon builds and cross-builds Linux x86-64 and ARM64 musl candidates; it does not run on a
 router or TV. Build a source checkout with:
 
 ```sh
@@ -11,7 +11,6 @@ cd tv-control
 cargo build --locked --release
 ./target/release/tv-control --help
 ```
-
 
 ## Architecture
 
@@ -39,6 +38,23 @@ the dependency graph. The binary embeds no model, browser, Rust async runtime or
 HTTP/TLS stack. ADB and curl remain external runtime dependencies for their
 respective adapters.
 
+## Find the right code
+
+Start with the [crate map](https://github.com/antoine-berger/tv-control/tree/main/crates#readme).
+Each crate README identifies its entry points and tests. For common changes:
+
+- Control actions and result semantics: domain types, application `Service`, then
+  the ADB/Jellyfin adapter and its contract tests.
+- TV discovery and saved setup: adapter `setup`/`discovery` and CLI `onboarding`.
+- Managed connection lifecycle: application `pipeline`/`onboarding`, adapter
+  runtime/tunnel/proof modules, then CLI `journey`.
+- MCP tools and wire format: CLI `mcp`, adapter `wire` and `scripts/test_mcp.py`.
+- Installation/release: `install.sh`, `scripts/package.py`, `scripts/release.py`
+  and `.github/workflows/ci.yml`. Package membership is deliberately allowlisted.
+
+Keep a change scoped to its owner; avoid adding I/O or serialization to the inner
+crates. Update the user-facing reference when a command or configuration changes.
+
 ## Checks
 
 Run from the repository root:
@@ -49,14 +65,22 @@ cargo clippy --locked --workspace --all-targets -- -D warnings
 cargo test --locked --workspace
 cargo build --locked --release
 python3 scripts/check_architecture.py
+python3 -W error::ResourceWarning scripts/test_release.py
+python3 -W error::ResourceWarning scripts/test_verify_public_release.py
 python3 -W error::ResourceWarning scripts/test_installer.py
 python3 -W error::ResourceWarning scripts/test_mcp.py target/release/tv-control
 python3 -W error::ResourceWarning scripts/test_onboarding.py target/release/tv-control
 python3 -W error::ResourceWarning scripts/test_install_flow.py target/release/tv-control
 python3 -W error::ResourceWarning scripts/test_zero_arg_ux.py target/release/tv-control
+python3 -W error::ResourceWarning scripts/test_journey_fixture.py target/release/tv-control
+python3 -W error::ResourceWarning scripts/test_complete_journey.py target/release/tv-control
 ./target/release/tv-control validate examples/config.json
 python3 scripts/audit_publication.py
 ```
+
+For installer changes, also run `sh -n install.sh`, `shellcheck -s sh install.sh`
+and, where available, `busybox sh -n install.sh`, as CI does. The workflow also
+checks cross-built archives; the commands above cover native development.
 
 The automated suite uses fake clocks, injected ports, fake executables and loopback
 HTTP/ADB fixtures. It does not require a real TV, Jellyfin account, pairing or a

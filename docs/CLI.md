@@ -2,11 +2,19 @@
 
 Examples assume a release build and commands run from the repository root.
 Use `./target/release/tv-control --help` for the command summary or `--version`
-for the package version. Every other command loads and validates its configuration.
+for the package version. Commands taking `CONFIG` load and validate that file;
+discovery and setup commands work before a configuration exists. For an installed
+copy, replace `./target/release/tv-control` with
+`"$HOME/.local/share/tv-control/tv-control"` (or your selected install prefix).
 
 ## Commands
 
 ```text
+tv-control interfaces [--json]
+tv-control discover [--interface NAME] [--json]
+tv-control setup [--json|--dry-run]
+tv-control doctor CONFIG [--probe] [--device ALIAS] [--json]
+tv-control connect-chatgpt CONFIG [--tunnel-id ID] [--json]
 tv-control validate CONFIG
 tv-control capabilities CONFIG
 tv-control execute CONFIG REQUEST.json|-
@@ -18,6 +26,11 @@ tv-control disconnect CONFIG [--json]
 
 | Command | Behavior |
 | --- | --- |
+| `interfaces` | List candidate IPv4 LAN interfaces |
+| `discover` | Search the selected LAN for unverified display advertisements |
+| `setup` | Prepare/save private configuration; does not authorize the TV or start the controller |
+| `doctor` | Check configuration offline; `--probe` requests a read-only device call |
+| `connect-chatgpt` | Print a manual connection plan; do not create a tunnel or plugin |
 | `validate` | Check configuration structure and references; print `{"valid":true}` |
 | `capabilities` | List configured aliases and adapter actions without device access |
 | `execute` | Execute one JSON request from a file, or from stdin with `-` |
@@ -130,8 +143,50 @@ TV command or stop a player that buffers before starting. A lost response after
 dispatch is also uncertain for the caller. Do not automatically replay an
 uncertain mutation, including after a restart; inspect current state first.
 
-## Guided onboarding
+## Discovery and setup
 
-`interfaces`, `discover`, `setup`, `doctor` and `connect-chatgpt` provide the guided
-setup and agent JSON interface. See [the complete onboarding reference](ONBOARDING.md)
-for options, dry runs, authorization boundaries and offline examples.
+Prefer the [installer](INSTALLATION.md) for the complete guided journey. Direct
+`setup` writes `tv-control.local.json` in the current directory by default;
+the installer selects the private configuration directory instead.
+
+| Options | Commands and meaning |
+| --- | --- |
+| `--json` | Structured output; setup previews without writing configuration unless `--confirm` is supplied. JSON mode never installs dependencies or grants device access. |
+| `--dry-run` | `setup` and `discover` skip live discovery; use a fixture for an offline preview with candidates. `doctor --probe --dry-run` skips the probe. |
+| `--fixture FILE` | `interfaces`, `discover`, `setup`: use recorded discovery data instead of a real network. |
+| `--interface NAME` | `discover`, `setup`: select a listed interface (or `NAME@IPv4`). |
+| `--duration-ms MS`, `--timeout-ms MS` | `discover`, `setup`: receive window and overall search timeout; defaults are 2,000 and 10,000 ms. |
+| `--device ID` | `setup`: select a discovered candidate ID. `doctor`: select a configured device alias. |
+| `--output FILE`, `--name NAME` | `setup`: configuration destination and optional local display name. No remote rename. |
+| `--adb PATH`, `--curl PATH` | `setup`: explicitly select dependency executables. |
+| `--server-port PORT` | `setup`: dedicated loopback ADB server port; default 15037. This is not the TV's connection port. |
+| `--manual-endpoint IPv4:PORT`, `--manual-kind legacy\|tls` | `setup`: explicitly supply an endpoint on the selected LAN and its protocol. Does not perform pairing. |
+| `--confirm` | `setup --json`: allow configuration publication; does not grant TV/tunnel access. |
+| `--resume` | `setup`: allow reuse of matching existing configuration; changed files are not overwritten. |
+| `--checkpoint FILE`, `--no-checkpoint` | `setup`: select or disable saved choices. JSON mode uses a checkpoint only when explicitly supplied; dry-run never writes one. |
+
+Offline examples, from a built checkout:
+
+```sh
+./target/release/tv-control interfaces --fixture examples/discovery.json --json
+./target/release/tv-control discover --fixture examples/discovery.json \
+  --interface lan-fixture --json
+./target/release/tv-control setup --dry-run --json
+./target/release/tv-control doctor examples/config.json --json
+```
+
+These do not contact a TV. A fixture is simulated data, not evidence of device
+access. For live discovery, omit `--fixture` after selecting your LAN interface.
+Avoid changing playback just to test configuration.
+
+## Guided connection
+
+`onboard CONFIG` continues from saved setup, asks for access approvals and verifies
+the conversation. `onboard CONFIG --json` reports pending without granting access.
+`disconnect CONFIG` stops only its exact owned controller and preserves
+configuration and TV trust. Use the [onboarding guide](ONBOARDING.md) for the
+interactive steps, runtime lifecycle and recovery.
+
+`bridge`, `onboard --launcher`, and `onboard --fixture FILE --json` are integration
+entry points used by the installer/runtime and offline tests, not alternate user
+setup shortcuts. The simulated journey always reports `ready:false`.

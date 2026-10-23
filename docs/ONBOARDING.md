@@ -1,7 +1,8 @@
 # Guided connection
 
-The v0.3.0 source implements the journey below. It remains subject to review and
-release qualification; `latest` is promoted separately.
+The installer guides the stages below. The published v0.3.0 release and newer
+source changes are distinct; `latest` is promoted only after release checks.
+Device and hosted-chat acceptance are separate from automated release checks.
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/antoine-berger/tv-control/latest/install.sh | sh
@@ -68,7 +69,8 @@ Cancelling after background access approval can leave that controller running
 for later completion. The explicit advanced stop command is:
 
 ```sh
-tv-control disconnect /absolute/path/to/tv-control.local.json
+"$HOME/.local/share/tv-control/tv-control" disconnect \
+  "${XDG_CONFIG_HOME:-$HOME/.config}/tv-control/tv-control.local.json"
 ```
 
 Stopping preserves configuration and TV trust. Removing local keys does not
