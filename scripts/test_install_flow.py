@@ -23,7 +23,7 @@ int main(int argc,char **argv) {
  if(!binary||!fixture)return 90;
  char **next=calloc((size_t)argc+5,sizeof(char*));if(!next)return 91;
  for(int i=0;i<argc;i++)next[i]=argv[i];next[0]=(char*)binary;
- if(argc>1&&!strcmp(argv[1],"setup")){next[argc]="--fixture";next[argc+1]=(char*)fixture;}
+ if(argc>1&&(!strcmp(argv[1],"setup")||!strcmp(argv[1],"discover"))){next[argc]="--fixture";next[argc+1]=(char*)fixture;}
  if(argc>1&&!strcmp(argv[1],"onboard")){argc=3;next[3]=0;const char *flow=getenv("TV_FLOW_ONBOARD_FIXTURE");if(!flow)return 93;next[argc]="--fixture";next[argc+1]=(char*)flow;next[argc+2]="--json";}
  execv(binary,next);return 92;
 }
@@ -51,14 +51,33 @@ int main(int argc,char **argv) {
  def test_install_failure_identical_rerun_and_completed_configuration(self):
   self.first_failure();self.data.pop('failure');self.write_fixture()
   p=self.run_install([('Continue? Type yes:',b'yes\n'),('Choose the display:',b'1\n'),('Local name [',b'\n')]);self.assertEqual(p.returncode,0,p.stdout);self.assertIn('Resuming local setup',p.stdout);self.assert_saved();original=self.output.read_bytes();self.assertEqual(len(self.downloads.read_text().splitlines()),2)
-  self.data['failure']={'stage':'mdns_send','os_error':13};self.write_fixture();p=self.run_install([('Continue? Type yes:',b'yes\n')]);self.assertEqual(p.returncode,0,p.stdout);self.assertNotIn('Find TVs on',p.stdout);self.assertEqual(self.output.read_bytes(),original);self.assertEqual(len(self.downloads.read_text().splitlines()),2)
+  self.data['failure']={'stage':'mdns_send','os_error':13};self.write_fixture();p=self.run_install([('Continue? Type yes:',b'yes\n'),('Search for other devices',b'n\n')]);self.assertEqual(p.returncode,0,p.stdout);self.assertNotIn('Find TVs on',p.stdout);self.assertEqual(self.output.read_bytes(),original);self.assertEqual(len(self.downloads.read_text().splitlines()),2)
  def test_upgrade_from_v022_preserves_existing_configuration(self):
   original_payload=self.h.native_stub
   if LEGACY is not None:self.h.native_stub=LEGACY.read_bytes()
   old=self.h.asset('v0.2.2');self.h.native_stub=original_payload;p=self.h.install(old,'v0.2.2');self.assertEqual(p.returncode,0,p.stdout+p.stderr)
   self.output.parent.mkdir(mode=0o700,parents=True)
   p=subprocess.run([str(LEGACY or BINARY),'setup','--fixture',str(self.fixture),'--interface','lan-fixture','--device','screen_192_0_2_10','--adb',str(self.h.bin/'adb'),'--curl',str(self.h.bin/'curl'),'--output',str(self.output),'--json','--confirm'],capture_output=True,text=True,timeout=5);self.assertEqual(p.returncode,0,p.stdout+p.stderr);before=self.output.read_bytes()
-  self.data['failure']={'stage':'mdns_send','os_error':13};self.write_fixture();p=self.run_install([('Continue? Type yes:',b'yes\n')]);self.assertEqual(p.returncode,0,p.stdout);self.assertEqual(self.output.read_bytes(),before);self.assertEqual((self.h.prefix/'current').read_text(),'v0.4.0\n');self.assertTrue((self.h.prefix/'versions/v0.2.2').exists());self.assertNotIn('Find TVs on',p.stdout)
+  self.data['failure']={'stage':'mdns_send','os_error':13};self.write_fixture();p=self.run_install([('Continue? Type yes:',b'yes\n'),('Search for other devices',b'n\n')]);self.assertEqual(p.returncode,0,p.stdout);self.assertEqual(self.output.read_bytes(),before);self.assertEqual((self.h.prefix/'current').read_text(),'v0.4.1\n');self.assertTrue((self.h.prefix/'versions/v0.2.2').exists());self.assertNotIn('Find TVs on',p.stdout)
+ def test_completed_update_optional_discovery_lists_only_and_preserves_config(self):
+  p=self.run_install([('Continue? Type yes:',b'yes\n'),('Choose the display:',b'1\n'),('Local name [',b'\n')]);self.assertEqual(p.returncode,0,p.stdout)
+  original=self.output.read_bytes();checkpoint=self.checkpoint.read_bytes()
+  p=self.run_install([('Continue? Type yes:',b'yes\n'),('Search for other devices',b'y\n'),('Choose a number:',b'1\n')])
+  self.assertEqual(p.returncode,0,p.stdout);self.assertIn('display candidate(s), all unverified',p.stdout)
+  self.assertNotIn('Choose the display:',p.stdout);self.assertNotIn('Local name [',p.stdout)
+  self.assertEqual(self.output.read_bytes(),original);self.assertEqual(self.checkpoint.read_bytes(),checkpoint)
+  self.assertEqual(len(self.downloads.read_text().splitlines()),2)
+ def test_optional_discovery_failure_does_not_turn_completed_update_into_failure(self):
+  p=self.run_install([('Continue? Type yes:',b'yes\n'),('Choose the display:',b'1\n'),('Local name [',b'\n')]);self.assertEqual(p.returncode,0,p.stdout)
+  original=self.output.read_bytes();self.fixture.write_text('{invalid fixture')
+  p=self.run_install([('Continue? Type yes:',b'yes\n'),('Search for other devices',b'y\n')])
+  self.assertEqual(p.returncode,0,p.stdout);self.assertIn('Optional discovery did not complete',p.stdout);self.assertEqual(self.output.read_bytes(),original)
+ def test_paused_controller_does_not_offer_optional_device_search(self):
+  p=self.run_install([('Continue? Type yes:',b'yes\n'),('Choose the display:',b'1\n'),('Local name [',b'\n')]);self.assertEqual(p.returncode,0,p.stdout)
+  original=self.output.read_bytes()
+  pathlib.Path(self.env['TV_FLOW_ONBOARD_FIXTURE']).write_text('{"schema":1,"stop_stage":"tunnel_consent","reason":"pending"}')
+  p=self.run_install([('Continue? Type yes:',b'yes\n')])
+  self.assertEqual(p.returncode,2,p.stdout);self.assertNotIn('Search for other devices',p.stdout);self.assertEqual(self.output.read_bytes(),original)
  def test_corrupt_progress_is_backed_up_then_setup_continues(self):
   self.first_failure();self.checkpoint.write_text('{interrupted');self.data.pop('failure');self.write_fixture()
   p=self.run_install([('Continue? Type yes:',b'yes\n'),('Keep a private backup',b'yes\n'),('Choose the display:',b'1\n'),('Local name [',b'\n')]);self.assertEqual(p.returncode,0,p.stdout);self.assert_saved();backups=list(self.output.parent.glob('*.corrupt-*'));self.assertEqual(len(backups),1);self.assertEqual(backups[0].read_text(),'{interrupted')

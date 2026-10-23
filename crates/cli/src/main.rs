@@ -154,6 +154,18 @@ fn run() -> Result<i32, &'static str> {
             Some(std::path::Path::new(&args[4])),
         );
     }
+    if args.get(1).is_some_and(|s| s == "verify-connection") {
+        if args.len() == 3 {
+            return journey::verify(std::path::Path::new(&args[2]), None);
+        }
+        if args.len() == 5 && args[3] == "--launcher" {
+            return journey::verify(
+                std::path::Path::new(&args[2]),
+                Some(std::path::Path::new(&args[4])),
+            );
+        }
+        return Err("invalid_verification_arguments");
+    }
     if args.get(1).is_some_and(|s| s == "bridge") && args.len() == 4 {
         return journey::bridge(
             std::path::Path::new(&args[2]),
@@ -180,7 +192,7 @@ fn run() -> Result<i32, &'static str> {
         if args[1] == "--version" {
             println!("tv-control {}", env!("CARGO_PKG_VERSION"));
         } else {
-            println!("tv-control setup [--json|--dry-run]\ntv-control onboard|disconnect CONFIG [--json]\ntv-control interfaces|discover [--interface NAME] [--json]\ntv-control doctor|connect-chatgpt CONFIG [--json]\ntv-control validate|capabilities|mcp CONFIG\ntv-control execute CONFIG REQUEST.json|-\ntv-control workflow CONFIG ALIAS REQUEST_ID TTL_MS\nSetup prepares configuration. Onboard guides explicit access approvals and verifies the selected conversation. JSON onboarding never grants access.");
+            println!("tv-control setup [--json|--dry-run]\ntv-control verify-connection CONFIG [--launcher PATH]\ntv-control onboard|disconnect CONFIG [--json]\ntv-control interfaces|discover [--interface NAME] [--json]\ntv-control doctor|connect-chatgpt CONFIG [--json]\ntv-control validate|capabilities|mcp CONFIG\ntv-control execute CONFIG REQUEST.json|-\ntv-control workflow CONFIG ALIAS REQUEST_ID TTL_MS\nSetup prepares configuration. Onboard guides explicit access approvals and verifies the selected conversation. JSON onboarding never grants access.");
         }
         return Ok(0);
     }

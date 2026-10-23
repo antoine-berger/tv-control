@@ -23,7 +23,10 @@ This downloads and executes the installer. To inspect it first, see
 
 The wizard selects your TV, saves a private configuration, asks you to authorize
 TV/background access, and guides the ChatGPT connection. Keep the TV available
-for its authorization prompt. Rerun the same command to resume interrupted setup.
+for its authorization prompt. Rerun the same command to update or resume: saved
+configuration is retained, and maintenance does not repeat device selection.
+Runtime-key storage is a separate opt-in private-file choice; older releases did
+not save that key. See [update and key recovery](docs/ONBOARDING.md#resume-and-stop).
 
 You need a reachable Android TV with debugging enabled, maintained ADB, and, for
 ChatGPT, the official tunnel client and eligible account/workspace permissions.
@@ -31,7 +34,7 @@ The wizard offers approved dependency installation on supported hosts; macOS
 requires existing Homebrew for that route. Linux ARM64 and pure-musl hosts need a
 maintained native ADB supplied separately. [Requirements and recovery](docs/INSTALLATION.md).
 
-This source targets **v0.4.0**. The `latest` distribution installer advances only
+This source targets **v0.4.1**. The `latest` distribution installer advances only
 when the matching public release has passed download and package verification.
 See [releases](https://github.com/antoine-berger/tv-control/releases) for published assets.
 

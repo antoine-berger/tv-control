@@ -1,7 +1,7 @@
 # Guided connection
 
-The installer guides the stages below. The published v0.3.0 release and newer
-source changes are distinct; `latest` is promoted only after release checks.
+The installer guides first installation through the stages below. Published releases
+and newer source changes are distinct; `latest` is promoted only after release checks.
 Device and hosted-chat acceptance are separate from automated release checks.
 
 ```sh
@@ -17,7 +17,7 @@ The terminal guides four stages:
    MCP sequentially. Connection acknowledgements and dispatch alone do not pass.
 3. **ChatGPT connection.** Use the official tunnel-client and an existing tunnel.
    Approve background TV access, then enter its restricted runtime key without
-   echo. The official manager supervises the bridge; the bridge owns ADB and MCP.
+   echo, then choose whether to save it privately for future updates. The official manager supervises the bridge; the bridge owns ADB and MCP.
    The controller continues after the installer finishes.
 4. **Conversation verification.** Create/install the custom tunnel plugin in
    ChatGPT and select it in the intended conversation. The wizard supplies a
@@ -54,7 +54,8 @@ The wizard prints each link before it asks for the corresponding value:
    its owner also needs those organization permissions. Do not choose **All** or
    use an administrator key. Enter the secret yourself in the terminal's hidden
    **Runtime key** prompt, never in chat, screenshots, command arguments or a
-   configuration file. tv-control does not persist the key.
+   TV configuration file. Saving the key is a separate, explicit choice; see
+   [credential storage and recovery](#credential-storage-and-recovery).
 3. Once the controller is ready, open [ChatGPT Plugins](https://chatgpt.com/plugins)
    in a browser. Select **+ → Add custom MCP server**, give it a name, and choose
    **Tunnel** under Connection. Select or paste the same tunnel ID. This project's
@@ -105,19 +106,31 @@ missing dialog, not a confirmed diagnosis of this issue.
 
 ## Resume and stop
 
-Run the same installer after interruption. Private progress remembers choices,
-not authorization claims. Each run revalidates access, MCP and runtime health.
-A healthy owned controller is reused without asking for its key again. The
-installer supplies a verified stable launcher path, preserving the runtime
-binding when payload version directories change. A running process can retain
-its earlier payload until restarted; previous payloads are preserved.
+Run the same installer to update an existing installation or resume an interrupted
+one. A valid saved configuration skips TV selection and pairing. On an exact
+owned connection, maintenance preserves the device identity, tunnel ID and approved
+access instead of replaying first-install questions. Additional device discovery
+is optional and list-only: it does not pair, switch devices or replace configuration.
 
-If the TV configuration changes, the wizard asks before stopping its exact owned
-controller. It confirms that the controller stopped, privately preserves the old
-launch intent, and starts a new configuration revision. TV and tunnel access must
-be approved again. A rejected change, foreign runtime or unverified stop leaves
-the old launch intent untouched. An interrupted update resumes from the complete
-persisted intent, without treating saved progress as approval.
+A healthy owned controller can remain running without entering a key. If no saved
+key is available, configuring one is optional; declining leaves that process alone.
+To activate the installed payload, accept the explicit restart prompt. The controller
+resolves a saved or newly supplied key **before** stopping the old process. A saved
+key is reused without asking you to enter it again. A stopped or unhealthy saved
+controller requires an explicit resume confirmation, not a fresh installation.
+The verified stable launcher preserves ownership across payload-version changes;
+old payloads remain available, and a running process retains its earlier code until
+restarted. Installation alone does not mean that new code is running.
+
+Changed configuration or expanded access, such as first enabling generic ADB
+control, requires separate approval. The required key is prepared before the old
+controller can be stopped. Declining migration preserves the existing controller.
+A foreign runtime, unsafe saved state or unverified stop fails closed rather than
+silently adopting it or starting a second controller.
+
+Maintenance reports local readiness only. It does not claim a new successful call
+from your conversation. A restart invalidates old conversation proof; explicit
+onboarding verification issues a fresh challenge when that evidence is needed.
 
 The connection directory is adjacent to the private TV configuration. It holds
 progress, a bounded 64 KiB event-code log, the private ADB home and official tunnel
@@ -125,9 +138,37 @@ state. Progress contains no credentials. The launch intent records approved
 configuration and launcher choices, not proof of TV authorization. Ephemeral
 verification files expire after 120 seconds and are removed on confirmation or
 cancellation. Unsafe ownership, links and changed files fail closed.
-Each proof also names the bridge's fresh process generation. A controller restart
-invalidates the earlier conversation call, so rerun the wizard and verify a new
-challenge rather than returning the old code.
+
+### Credential storage and recovery
+
+Releases through v0.4.0 deliberately kept the runtime key only in memory and passed
+it to the official helper through its environment. They did **not** save it in the
+TV configuration. A running process is not evidence of durable storage, and a
+stopped process provides no supported way to recover that old key. If it was never
+saved elsewhere and is now unavailable, create a replacement restricted runtime
+key for the same tunnel and enter it at the hidden terminal prompt. Never send it
+in chat or use an administrator key.
+
+New credential persistence is opt-in: the terminal asks before writing
+`connection/runtime-credential.json`. This is **unencrypted plaintext**, separate
+from the TV configuration and logs, restricted to your user with file mode `0600`
+in the private `0700` connection directory. It is not an OS keychain and does not
+protect against software already running as your user. The record is bound to
+this installation and tunnel; it is not reused for another connection. Declining
+storage keeps the supplied key in memory only, so a future restart needs it again.
+
+For advanced use, an explicitly supplied `TV_CONTROL_TUNNEL_KEY` overrides a valid
+saved key and offers the same save choice. Supply it through an appropriate secret
+manager; do not put the value in command arguments, shell history, logs or examples.
+An override does not bypass checks on corrupt, foreign or insecure stored state.
+
+Missing storage triggers recovery guidance; unreadable or invalid storage is an
+error, never silently treated as missing. Do not loosen permissions or delete state
+blindly to bypass it. Check the error code and restore a known-good private backup
+bound to this installation, or obtain help inspecting metadata without displaying
+the key. Unexpected hard links, including a write interrupted during atomic
+publication, need explicit review before repair. Keep a still-running controller
+running while resolving key availability. Rotate a key if its privacy is in doubt.
 
 Cancelling after background access approval can leave that controller running
 for later completion. The explicit advanced stop command is:
@@ -139,8 +180,8 @@ for later completion. The explicit advanced stop command is:
 
 Stopping preserves configuration and TV trust. Removing local keys does not
 revoke trust on the TV; revoke the computer on the TV when retiring it. No OS
-startup service is installed. A runtime that needs its key after restarting
-requires re-entry or an explicitly configured supported secret reference.
+startup service is installed. A future restart reuses an opted-in saved runtime key;
+without one it needs a separately supplied key.
 
 ## Requirements and limits
 
@@ -186,6 +227,27 @@ cancellation survive that handshake.
 If an older controller is still running with failed discovery, rerun the installer.
 Accept the explicit prompt to restart this owned controller with the installed
 version. This keeps its TV identity, configuration and tunnel ID. Enter the
-restricted runtime key privately if requested, repeat plugin selection, then obtain
-a fresh conversation verification code. Declining leaves the controller running;
+restricted runtime key privately only if none is available. Maintenance checks
+local readiness; use explicit conversation verification when a fresh chat proof is needed. Declining leaves the controller running;
 setup does not start a second ADB daemon or silently replace an existing runtime.
+
+### Resume or repeat conversation verification explicitly
+
+Maintenance does not repeat the plugin UI/challenge wizard after completed setup.
+If first setup was cancelled at conversation verification, the normal installer
+offers to resume just that step; no extra flags are required. Declining leaves
+it pending. To deliberately request a fresh proof at any other time, use the
+same configuration and installed stable launcher:
+
+```sh
+"$LAUNCHER" verify-connection "$CONFIG" --launcher "$LAUNCHER"
+```
+
+Here `LAUNCHER` is the absolute installed `tv-control` launcher path and `CONFIG`
+is the existing private TV configuration path. For a direct, non-installer
+binary installation, omit `--launcher` only if that exact binary owns the saved
+runtime intent. This command requires the existing controller to be locally
+ready and checks its exact identity and generation. It does not start or stop a
+controller, request a key, rediscover devices, or grant additional access. It
+issues a new challenge and only marks verification complete after the selected
+conversation makes the actual read-only call and its returned code is checked.

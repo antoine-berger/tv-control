@@ -5,7 +5,7 @@
 main() {
 set -eu
 umask 077
-DEFAULT_VERSION=v0.4.0
+DEFAULT_VERSION=v0.4.1
 RELEASE_ROOT=https://github.com/antoine-berger/tv-control/releases/download
 guided=no
 if [ "$#" -eq 0 ]; then guided=yes; fi
@@ -32,7 +32,7 @@ uid=
 usage() {
     cat <<'EOF'
 Usage: sh install.sh [options]
-  --version vX.Y.Z       Pin a release (default v0.4.0; never resolves latest)
+  --version vX.Y.Z       Pin a release (default v0.4.1; never resolves latest)
   --prefix ABSOLUTE_DIR  Dedicated install root (default ~/.local/share/tv-control)
   --non-interactive     Install without prompts; never runs setup or device access
   --interactive         Ask before installation; optionally offer guided setup
@@ -202,10 +202,27 @@ run_setup() {
             work=
         fi
         if [ "$lock_owned" = yes ]; then rmdir "$lock"; lock_owned=no; fi
+        saved_configuration=no
+        if [ -e "$config_parent/tv-control.local.json" ] || [ -L "$config_parent/tv-control.local.json" ]; then
+            saved_configuration=yes
+            printf 'Updating the existing controller; keeping your saved TV and connection settings.\n' >&3
+        fi
+        # The Rust setup reader validates the saved file and dependencies before
+        # returning without discovery. Do not trust shell existence as validation.
         set -- setup --resume --output "$config_parent/tv-control.local.json"
         case "$version" in v0.2.0|v0.2.1|v0.2.2) ;; *) set -- "$@" --guided ;; esac
         "$prefix/versions/$version/tv-control" "$@" <&3 >&3 2>&3 3<&-
         case "$version" in v0.2.*) ;; *) "$prefix/versions/$version/tv-control" onboard "$config_parent/tv-control.local.json" --launcher "$prefix/tv-control" <&3 >&3 2>&3 3<&- ;; esac
+        if [ "$saved_configuration" = yes ]; then
+            printf 'Search for other devices without changing your saved TV? [y/N]: ' >&3
+            if IFS= read -r answer <&3 && [ "$answer" = y ]; then
+                # Discovery is list-only and selects a LAN explicitly. It cannot
+                # replace configuration, pair, or authorize another device.
+                if ! "$prefix/versions/$version/tv-control" discover <&3 >&3 2>&3 3<&-; then
+                    printf 'Optional discovery did not complete. Your saved controller settings were not changed.\n' >&3
+                fi
+            fi
+        fi
 }
 if [ "$mode" != uninstall ]; then
     os=$(uname -s); machine=$(uname -m)
@@ -261,7 +278,7 @@ if [ -e "$prefix" ]; then
             stored_digest=$(sed -n '3p' "$prefix/versions/$version/.receipt")
             [ "$(printf '%s' "$stored_digest" | tr 'A-F' 'a-f')" = "$(printf '%s' "$expected_pin" | tr 'A-F' 'a-f')" ] || fail checksum_mismatch
         fi
-        result already_installed 'Existing installation verified; resuming setup.'
+        result already_installed 'Existing installation verified; checking saved configuration and controller.'
         run_setup
         exit 0
     fi

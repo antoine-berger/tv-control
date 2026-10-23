@@ -10,6 +10,7 @@ pub mod onboarding_tunnel;
 pub mod pipeline_store;
 pub mod process;
 pub mod runtime;
+pub mod runtime_credential;
 pub mod runtime_intent;
 pub mod stdio;
 pub mod wire;

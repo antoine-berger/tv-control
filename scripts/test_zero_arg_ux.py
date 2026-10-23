@@ -126,7 +126,7 @@ class ZeroArgumentUX(InstallFlow):
   p=self.terminal(self.finish());self.assertEqual(p.returncode,0,p.stdout)
   before=self.output.read_bytes();checkpoint=self.checkpoint.read_bytes()
   self.fixture.write_text('{unreadable discovery fixture')
-  p=self.terminal([('Continue? Type yes:',b'yes\n')])
+  p=self.terminal([('Continue? Type yes:',b'yes\n'),('Search for other devices',b'n\n')])
   self.assertEqual(p.returncode,0,p.stdout)
   self.assertIn('saved configuration is valid',p.stdout)
   self.assertNotIn('Searching for TVs',p.stdout)

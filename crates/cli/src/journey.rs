@@ -1,7 +1,9 @@
 //! Composition of the guided journey. Account approvals remain explicit and resumable.
 mod conversation;
+mod credential;
 mod guidance;
 mod local;
+mod maintenance;
 mod runtime;
 mod tunnel;
 
@@ -174,6 +176,17 @@ impl Drop for Journey<'_> {
 }
 
 pub fn run(path: &Path, as_json: bool, launcher: Option<&Path>) -> Result<i32, &'static str> {
+    run_mode(path, as_json, launcher, false)
+}
+pub fn verify(path: &Path, launcher: Option<&Path>) -> Result<i32, &'static str> {
+    run_mode(path, false, launcher, true)
+}
+fn run_mode(
+    path: &Path,
+    as_json: bool,
+    launcher: Option<&Path>,
+    verify_only: bool,
+) -> Result<i32, &'static str> {
     if as_json {
         println!(
             "{}",
@@ -234,28 +247,83 @@ pub fn run(path: &Path, as_json: bool, launcher: Option<&Path>) -> Result<i32, &
     if devices.next().is_some() {
         return Err("onboarding_requires_single_adb_device");
     }
-    if !config.generic_adb_control {
-        let approved = terminal.line(
+    let mut startup_key = None;
+    let mut verification_ready = false;
+    if !verify_only {
+        if let Some(code) = maintenance::resume(
+            &path,
+            &state,
+            &snapshot,
+            &config,
+            &device,
+            &controller_binary,
+            previous.as_ref(),
+            &terminal,
+            &ctx,
+            &mut startup_key,
+            &mut store,
+            &mut verification_ready,
+        )? {
+            if code == 0 && verification_ready
+                && previous.as_ref().is_some_and(|saved| {
+                    saved.stage == ProgressStage::ExternalConversation
+                        && saved.outcome != ProgressOutcome::Verified
+                })
+                && terminal.line("Your first conversation verification was not completed. Resume that verification now? [y/N] ", false, &ctx)?.as_deref() == Some("y") {
+                    // Reopen the explicit read-only verification route after
+                    // releasing the setup lock and terminal/signal ownership.
+                    drop(store);
+                    drop(interrupts);
+                    drop(terminal);
+                    return run_mode(&path, false, Some(&controller_binary), true);
+            }
+            return Ok(code);
+        }
+        if !config.generic_adb_control {
+            let approved = terminal.line(
             "Allow this controller to open installed apps, control playback, search and navigate this TV via ADB? This includes apps installed later. [y/N] ",
             false, &ctx,
         )?.as_deref() == Some("y");
-        snapshot = tv_adapters::setup::grant_generic_control(&path, &snapshot, approved)?;
-        config = Arc::new(Config::from_json(&snapshot)?);
+            snapshot = tv_adapters::setup::grant_generic_control(&path, &snapshot, approved)?;
+            config = Arc::new(Config::from_json(&snapshot)?);
+        }
     }
     let installation = previous
         .as_ref()
         .map(|p| p.installation_id.clone())
         .unwrap_or(random_token()?);
-    let revision = reconcile_runtime_intent(
-        &path,
-        &state,
-        &snapshot,
-        &device,
-        &controller_binary,
-        previous.as_ref(),
-        &terminal,
-        &ctx,
-    )?;
+    let revision = if verify_only {
+        let saved = previous
+            .as_ref()
+            .ok_or("verification_requires_existing_controller")?;
+        let intent: runtime::RuntimeIntent = serde_json::from_slice(&runtime::private_read_limit(
+            &state.join("runtime-intent.json"),
+            6_400_000,
+        )?)
+        .map_err(|_| "runtime_intent_invalid")?;
+        if intent.schema != 1
+            || saved.configuration_path != path
+            || intent.installation_id != installation
+            || intent.device != device
+            || intent.configuration.as_bytes() != snapshot
+            || intent.controller_binary != controller_binary
+            || !tv_domain::identifier(&intent.revision)
+        {
+            return Err("runtime_intent_mismatch");
+        }
+        intent.revision
+    } else {
+        reconcile_runtime_intent(
+            &path,
+            &state,
+            &snapshot,
+            &device,
+            &controller_binary,
+            previous.as_ref(),
+            &terminal,
+            &ctx,
+        )?
+    };
     let checkpoint = Checkpoint {
         schema: 1,
         installation_id: installation.clone(),
@@ -288,18 +356,22 @@ pub fn run(path: &Path, as_json: bool, launcher: Option<&Path>) -> Result<i32, &
         existing_runtime: Cell::new(false),
         runtime: RefCell::new(None),
         tunnel: RefCell::new(None),
-        key: RefCell::new(None),
+        key: RefCell::new(startup_key),
         challenge: RefCell::new(None),
     };
-    let outcome = Pipeline {
-        mode: EvidenceMode::Live,
-        configuration: &journey,
-        adb: &journey,
-        mcp: &journey,
-        tunnel: &journey,
-        external: &journey,
-    }
-    .run(&ctx);
+    let outcome = if verify_only {
+        journey.verify_existing(&ctx)
+    } else {
+        Pipeline {
+            mode: EvidenceMode::Live,
+            configuration: &journey,
+            adb: &journey,
+            mcp: &journey,
+            tunnel: &journey,
+            external: &journey,
+        }
+        .run(&ctx)
+    };
     let (code, status) = match outcome {
         PipelineOutcome::Ready { .. } => {
             eprintln!("Ready. Your selected conversation verified a read-only TV call. The controller remains running.");
@@ -320,7 +392,7 @@ pub fn run(path: &Path, as_json: bool, launcher: Option<&Path>) -> Result<i32, &
                 code: event,
                 elapsed_ms: clock.monotonic_ms(),
             })?;
-            eprintln!("Setup paused at {stage:?}: {reason:?}. Run the same installer to resume.");
+            eprintln!("Setup paused at {stage:?}: {reason:?}. Run the same installer for connection maintenance; use verify-connection with this configuration and the same --launcher path to resume conversation verification.");
             if journey.runtime.borrow().is_none() && journey.tunnel.borrow().is_some() {
                 eprintln!("A previously approved controller may still be running. Setup is not yet verified.");
             }

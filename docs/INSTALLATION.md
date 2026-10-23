@@ -20,12 +20,12 @@ This executes downloaded code. To inspect it first, follow
 [checksum verification](#verify-before-execution) below.
 
 The installer detects the platform, asks for confirmation, checks its payload and
-starts the wizard. It does not use sudo or edit shell profiles. An intact current
+starts first-time setup or maintenance for a saved connection. It does not use sudo or edit shell profiles. An intact current
 installation is reused; an older version is updated after confirmation. Previous
 payloads and external configuration are retained. Modified or unowned files are
 refused rather than overwritten.
 
-The wizard selects a LAN and TV, offers missing dependencies, and saves private
+On first installation, the wizard selects a LAN and TV, offers missing dependencies, and saves private
 configuration. Discovery normally listens for two seconds, within a ten-second
 overall timeout. Advertisements identify candidates, not authorized devices. If
 search fails or a TV has no usable advertisement, the wizard offers manual
@@ -75,9 +75,19 @@ refused. Do not bypass those checks to resume. Checkpoints use private atomic
 publication and cooperative locking; they are not protection from a hostile
 process running as your user.
 
-Configuration and connection progress are separate. A healthy owned controller
-can be reused without asking for its key again; changed configuration or a
-restarted controller needs fresh validation. See [runtime recovery](ONBOARDING.md#resume-and-stop).
+Configuration and connection progress are separate. Rerunning an installed system
+keeps the saved TV configuration and offers optional list-only discovery of other
+devices. It does not repeat selection or pairing. A healthy owned controller can be
+left running; applying a new payload requires an explicitly confirmed restart.
+Opted-in saved runtime keys are reused, and a required replacement is obtained before
+stopping the old process. Expanded access still needs separate approval. Maintenance
+reports local readiness, not a new conversation verification.
+
+Older releases did not save the runtime key. New storage is an explicit choice of
+an unencrypted private `0600` file, not a keychain or a field in the TV configuration.
+See [runtime recovery](ONBOARDING.md#resume-and-stop) and
+[credential storage](ONBOARDING.md#credential-storage-and-recovery) before retiring
+a running controller whose key you no longer have.
 
 ## ADB prerequisite recovery
 

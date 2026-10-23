@@ -342,20 +342,36 @@ class CompleteJourney(unittest.TestCase):
         with socket.socket() as listener:
             listener.settimeout(.1)
             return listener.connect_ex(('127.0.0.1',self.port)) != 0
-    def terminal(self, binary=BINARY, launcher=None):
-        args=['onboard',self.config]
+    def terminal(self, binary=BINARY, launcher=None, command='onboard'):
+        args=[command,self.config]
         if launcher: args+=['--launcher',launcher]
         terminal=Terminal(args,self.env,binary=binary);self.terminals.append(terminal);return terminal
-    def approve(self, terminal, saved=False, restart=False):
+    def approve(self, terminal, saved=False, restart=False, persist=False):
         terminal.until(r'private ADB identity.*\[y/N\]');terminal.line('y')
         if not saved:terminal.until('Tunnel ID:');terminal.line(TUNNEL)
         terminal.until(r'background TV controller.*\[y/N\]');terminal.line('y')
-        if not saved or restart:terminal.until('Runtime key .*hidden.*:');terminal.line(SECRET)
+        if not saved or restart:self.enter_key(terminal, persist)
         # An account UI approval is simulated here, never inferred as proof.
         terminal.until(r'Press Enter[^\n]*');terminal.line('')
         challenge=terminal.until(r'challenge ([0-9a-f]{32})').group(1).decode()
         terminal.until('Verification code returned')
         return challenge
+    def enter_key(self, terminal, persist=False):
+        terminal.until('Runtime key .*hidden.*:');terminal.line(SECRET)
+        terminal.until('Save this runtime key');terminal.line('y' if persist else 'n')
+    def prepare_migration(self, terminal):
+        terminal.until('Prepare a runtime key for this migration');terminal.line('y')
+        self.enter_key(terminal)
+    def preserve_runtime(self, terminal):
+        terminal.until('Configure a runtime key for future updates');terminal.line('n')
+        self.decline_verification(terminal)
+        self.assertEqual(terminal.wait(),0,terminal.text)
+        self.assertIn('No new conversation verification was performed',terminal.text)
+        self.assertNotIn('Verification code returned',terminal.text)
+        self.assertNotIn('Runtime key (hidden',terminal.text)
+        self.assertNotIn('private ADB identity',terminal.text)
+    def decline_verification(self, terminal):
+        terminal.until('Resume that verification now');terminal.line('n')
     def channel(self):
         deadline=time.monotonic()+5
         while time.monotonic()<deadline:
@@ -390,7 +406,7 @@ class CompleteJourney(unittest.TestCase):
         terminal=self.terminal();terminal.until(r'private ADB identity.*\[y/N\]');terminal.line('y')
         terminal.until('Tunnel ID:');terminal.line(TUNNEL)
         terminal.until(r'background TV controller.*\[y/N\]');terminal.line('y')
-        terminal.until('Runtime key .*hidden.*:');terminal.line(SECRET)
+        self.enter_key(terminal)
         terminal.until('Press Enter when the plugin is selected')
         health.write_text('failed');terminal.line('')
         self.assertNotEqual(terminal.wait(),0,terminal.text)
@@ -406,20 +422,16 @@ class CompleteJourney(unittest.TestCase):
         old=self.runtime_state();configuration=self.config.read_bytes()
         generation=(self.connection_parent/'connection/bridge-generation.json').read_bytes()
         health.write_text('failed')
-        second=self.terminal();second.until(r'private ADB identity.*\[y/N\]');second.line('y')
-        second.until('Stop this owned controller and retry');self.assertIn('tunnel_mcp_discovery_failed',second.text)
+        second=self.terminal();second.until('Resume this saved controller')
         self.assertEqual(self.runtime_state()['bridge_pid'],old['bridge_pid'])
-        second.line('y');second.until(r'background TV controller.*\[y/N\]');second.line('y')
-        second.until('Runtime key .*hidden.*:');second.line(SECRET)
-        second.until('Press Enter when the plugin is selected');second.line('')
-        challenge=second.until(r'challenge ([0-9a-f]{32})').group(1).decode()
-        second.until('Verification code returned')
+        second.line('y');self.enter_key(second)
+        self.decline_verification(second)
+        self.assertEqual(second.wait(),0,second.text)
         current=self.runtime_state();self.assertNotEqual(current['bridge_pid'],old['bridge_pid'])
         self.assertEqual(current['alias'],old['alias']);self.assertEqual(current['tunnel_id'],old['tunnel_id'])
         self.assertEqual(self.config.read_bytes(),configuration)
         self.assertNotEqual((self.connection_parent/'connection/bridge-generation.json').read_bytes(),generation)
-        second.line(self.channel().verify(challenge));self.assertEqual(second.wait(),0,second.text)
-        self.assertIn('Ready.',second.text);self.assert_private_records()
+        self.assertIn('Controller updated and locally ready',second.text);self.assertNotIn('Verification code returned',second.text);self.assert_private_records()
         homes={event['home'] for event in map(json.loads,(self.root/'adb-events.jsonl').read_text().splitlines()) if '-L' in event['args']}
         self.assertEqual(len(homes),1)
 
@@ -428,8 +440,7 @@ class CompleteJourney(unittest.TestCase):
         first=self.terminal();self.approve(first);first.line('q');self.assertNotEqual(first.wait(),0)
         old=self.runtime_state();health.write_text('failed')
         before=(self.root/'adb-events.jsonl').read_bytes()
-        second=self.terminal();second.until(r'private ADB identity.*\[y/N\]');second.line('y')
-        second.until('Stop this owned controller and retry');second.line('n')
+        second=self.terminal();second.until('Resume this saved controller');second.line('n')
         self.assertNotEqual(second.wait(),0,second.text)
         self.assertEqual(self.runtime_state()['bridge_pid'],old['bridge_pid'])
         self.assertEqual((self.root/'adb-events.jsonl').read_bytes(),before)
@@ -437,7 +448,7 @@ class CompleteJourney(unittest.TestCase):
         events=[json.loads(line)['args'] for line in (self.root/'tunnel-events.jsonl').read_text().splitlines()]
         self.assertFalse(any(args[:2]==['runtimes','stop'] for args in events))
 
-    def assert_private_records(self):
+    def assert_private_records(self, allow_saved=False):
         for name in ['progress.json','events.jsonl']:
             path=self.connection_parent/'connection'/name
             if path.exists():
@@ -445,6 +456,8 @@ class CompleteJourney(unittest.TestCase):
                 self.assertNotIn(SECRET.encode(),path.read_bytes())
         for path in (self.connection_parent/'connection').rglob('*'):
             if path.is_file() and path.name not in ['session.lock','.lock']:
+                if allow_saved and path.name=='runtime-credential.json':
+                    self.assertEqual(path.stat().st_mode&0o777,0o600);continue
                 self.assertNotIn(SECRET.encode(),path.read_bytes(),str(path))
         adb=self.root/'adb-events.jsonl'
         if adb.exists():
@@ -477,7 +490,7 @@ class CompleteJourney(unittest.TestCase):
         self.assertIn('Restricted runtime key with Tunnels Read + Use',terminal.text)
         self.assertIn('do not use All or an admin key',terminal.text)
         self.assertIn('never into chat',terminal.text)
-        terminal.line(SECRET);terminal.until('Press Enter when the plugin is selected')
+        terminal.line(SECRET);terminal.until('Save this runtime key');terminal.line('n');terminal.until('Press Enter when the plugin is selected')
         self.assertIn('https://chatgpt.com/plugins',terminal.text)
         self.assertIn('No authentication',terminal.text);self.assertIn('Do not paste the runtime key into ChatGPT',terminal.text)
         self.assertIn('type @ and select tv-control',terminal.text)
@@ -498,10 +511,119 @@ class CompleteJourney(unittest.TestCase):
         first=self.terminal();self.approve(first);first.line('q')
         self.assertNotEqual(first.wait(),0,first.text);self.assertNotIn('Ready.',first.text)
         before=self.runtime_state()['bridge_pid']
-        second=self.terminal();challenge=self.approve(second,saved=True)
+        second=self.terminal();self.preserve_runtime(second)
         self.assertEqual(self.runtime_state()['bridge_pid'],before)
-        second.line(self.channel().verify(challenge));self.assertEqual(second.wait(),0,second.text)
-        self.assertIn('Ready.',second.text);self.assertNotIn('Runtime key',second.text);self.assert_private_records()
+        self.assertNotIn('Ready.',second.text);self.assert_private_records()
+    def verify_existing(self):
+        terminal=self.terminal(command='verify-connection')
+        terminal.until('Press Enter when the plugin is selected');terminal.line('')
+        challenge=terminal.until(r'challenge ([0-9a-f]{32})').group(1).decode()
+        terminal.until('Verification code returned');terminal.line(self.channel().verify(challenge))
+        self.assertEqual(terminal.wait(),0,terminal.text)
+        for prompt in ['private ADB identity','background TV controller','Tunnel ID:', 'Runtime key (hidden']:
+            self.assertNotIn(prompt,terminal.text)
+        return terminal
+    def test_explicit_verification_resumes_pending_conversation_without_reinstall(self):
+        first=self.terminal();self.approve(first);first.line('q');self.assertNotEqual(first.wait(),0)
+        before=self.runtime_state();terminal=self.verify_existing()
+        self.assertEqual(self.runtime_state()['bridge_pid'],before['bridge_pid'])
+        events=[json.loads(line)['args'] for line in (self.root/'tunnel-events.jsonl').read_text().splitlines()]
+        self.assertEqual(sum(args[:2]==['runtimes','connect'] for args in events),1)
+        self.assertFalse(any(args[:2]==['runtimes','stop'] for args in events))
+        self.assertEqual(json.loads((self.connection_parent/'connection/progress.json').read_text())['outcome'],'verified')
+        self.assert_private_records()
+    def assert_maintenance_no_wizard(self, terminal):
+        for prompt in ['private ADB identity','background TV controller','Tunnel ID:', 'Runtime key (hidden','Verification code returned']:
+            self.assertNotIn(prompt,terminal.text)
+        self.assertNotIn(SECRET,terminal.text)
+    def test_saved_key_restart_preserves_config_identity_and_tunnel_without_wizard(self):
+        first=self.terminal();challenge=self.approve(first,persist=True)
+        first.line(self.channel().verify(challenge));self.assertEqual(first.wait(),0,first.text)
+        state=self.connection_parent/'connection';credential=state/'runtime-credential.json'
+        self.assertEqual(credential.stat().st_mode&0o777,0o600)
+        saved=credential.read_bytes();configuration=self.config.read_bytes();intent=(state/'runtime-intent.json').read_bytes()
+        identity=state/'adb/adb-home/identity-sentinel';identity.write_text('fixture-stable-adb-identity');identity.chmod(0o600)
+        old=self.runtime_state();generation=(state/'bridge-generation.json').read_bytes()
+        second=self.terminal();second.until('Restart this owned controller');second.line('y')
+        self.assertEqual(second.wait(),0,second.text);self.assert_maintenance_no_wizard(second)
+        current=self.runtime_state();self.assertNotEqual(current['bridge_pid'],old['bridge_pid'])
+        self.assertEqual(current['alias'],old['alias']);self.assertEqual(current['tunnel_id'],old['tunnel_id'])
+        self.assertEqual(credential.read_bytes(),saved);self.assertEqual(self.config.read_bytes(),configuration)
+        self.assertEqual((state/'runtime-intent.json').read_bytes(),intent)
+        self.assertEqual(identity.read_text(),'fixture-stable-adb-identity')
+        self.assertNotEqual((state/'bridge-generation.json').read_bytes(),generation)
+        self.assertFalse((state/'verification/request.json').exists())
+        self.assertFalse((state/'verification/response.json').exists())
+        self.assertEqual(json.loads((state/'progress.json').read_text())['outcome'],'pending')
+        self.assertIn('previous proof was invalidated',second.text)
+        self.assert_private_records(allow_saved=True)
+        self.verify_existing()
+        self.assertEqual(json.loads((state/'progress.json').read_text())['outcome'],'verified')
+    def test_environment_key_restarts_without_hidden_prompt_and_is_not_silently_saved(self):
+        first=self.terminal();self.approve(first);first.line('q');self.assertNotEqual(first.wait(),0)
+        old=self.runtime_state();self.env['TV_CONTROL_TUNNEL_KEY']=SECRET
+        second=self.terminal();second.until('Restart this owned controller');second.line('y')
+        second.until('Save this runtime key');second.line('n')
+        self.decline_verification(second)
+        self.assertEqual(second.wait(),0,second.text);self.assert_maintenance_no_wizard(second)
+        self.assertNotEqual(self.runtime_state()['bridge_pid'],old['bridge_pid'])
+        self.assertFalse((self.connection_parent/'connection/runtime-credential.json').exists())
+        self.assert_private_records()
+    def test_stopped_saved_controller_resumes_without_reentering_saved_key(self):
+        first=self.terminal();self.approve(first,persist=True);first.line('q');self.assertNotEqual(first.wait(),0)
+        old=self.runtime_state();configuration=self.config.read_bytes()
+        result=subprocess.run([str(BINARY),'disconnect',str(self.config),'--json'],env=self.env,capture_output=True,text=True,timeout=10)
+        self.assertEqual(result.returncode,0,result.stdout+result.stderr);self.assertTrue(self.port_free())
+        second=self.terminal();second.until('Resume this saved controller');second.line('y')
+        self.decline_verification(second)
+        self.assertEqual(second.wait(),0,second.text);self.assert_maintenance_no_wizard(second)
+        self.assertEqual(self.config.read_bytes(),configuration);self.assertEqual(self.runtime_state()['alias'],old['alias'])
+        self.assertFalse(self.port_free());self.assert_private_records(allow_saved=True)
+    def test_missing_migration_key_declined_preserves_controller_and_all_state(self):
+        first=self.terminal();self.approve(first);first.line('q');self.assertNotEqual(first.wait(),0)
+        self.change_configuration();configuration=self.config.read_bytes()
+        state=self.connection_parent/'connection';before={str(p.relative_to(state)):p.read_bytes() for p in state.rglob('*') if p.is_file()}
+        old=self.runtime_state();second=self.terminal();second.until('Prepare a runtime key for this migration');second.line('n')
+        self.assertEqual(second.wait(),0,second.text);self.assertNotIn('Runtime key (hidden',second.text)
+        self.assertNotIn('Resume that verification now',second.text)
+        self.assertEqual(self.config.read_bytes(),configuration);self.assertEqual(self.runtime_state()['bridge_pid'],old['bridge_pid'])
+        after={str(p.relative_to(state)):p.read_bytes() for p in state.rglob('*') if p.is_file()}
+        self.assertEqual(before,after);self.assertFalse(self.port_free())
+        events=[json.loads(line)['args'] for line in (self.root/'tunnel-events.jsonl').read_text().splitlines()]
+        self.assertFalse(any(args[:2]==['runtimes','stop'] for args in events))
+    def test_cancel_missing_key_before_unhealthy_restart_keeps_existing_process(self):
+        health=self.mcp_health_fixture();first=self.terminal();self.approve(first);first.line('q');self.assertNotEqual(first.wait(),0)
+        old=self.runtime_state();health.write_text('failed')
+        second=self.terminal();second.until('Resume this saved controller');second.line('y')
+        second.until('Runtime key .*hidden.*:');second.line('q')
+        self.assertNotEqual(second.wait(),0,second.text);self.assertEqual(self.runtime_state()['bridge_pid'],old['bridge_pid'])
+        self.assertFalse(self.port_free());self.assertFalse((self.connection_parent/'connection/runtime-credential.json').exists())
+        events=[json.loads(line)['args'] for line in (self.root/'tunnel-events.jsonl').read_text().splitlines()]
+        self.assertFalse(any(args[:2]==['runtimes','stop'] for args in events))
+    def test_cancel_at_key_persistence_choice_does_not_stop_controller_or_save_key(self):
+        health=self.mcp_health_fixture();first=self.terminal();self.approve(first);first.line('q');self.assertNotEqual(first.wait(),0)
+        old=self.runtime_state();health.write_text('failed')
+        second=self.terminal();second.until('Resume this saved controller');second.line('y')
+        second.until('Runtime key .*hidden.*:');second.line(SECRET)
+        second.until('Save this runtime key');second.line('q')
+        self.assertNotEqual(second.wait(),0,second.text);self.assertEqual(self.runtime_state()['bridge_pid'],old['bridge_pid'])
+        self.assertFalse(self.port_free());self.assertFalse((self.connection_parent/'connection/runtime-credential.json').exists())
+        self.assert_private_records()
+        events=[json.loads(line)['args'] for line in (self.root/'tunnel-events.jsonl').read_text().splitlines()]
+        self.assertFalse(any(args[:2]==['runtimes','stop'] for args in events))
+    def test_same_onboard_command_offers_pending_first_conversation_verification(self):
+        first=self.terminal();self.approve(first);first.line('q');self.assertNotEqual(first.wait(),0)
+        old=self.runtime_state();second=self.terminal()
+        second.until('Configure a runtime key for future updates');second.line('n')
+        second.until('Resume that verification now');second.line('y')
+        second.until('Press Enter when the plugin is selected');second.line('')
+        challenge=second.until(r'challenge ([0-9a-f]{32})').group(1).decode()
+        second.until('Verification code returned');second.line(self.channel().verify(challenge))
+        self.assertEqual(second.wait(),0,second.text)
+        self.assertIn('Ready.',second.text);self.assertEqual(self.runtime_state()['bridge_pid'],old['bridge_pid'])
+        for prompt in ['private ADB identity','background TV controller','Tunnel ID:', 'Runtime key (hidden']:
+            self.assertNotIn(prompt,second.text)
+        self.assert_private_records()
     def test_typed_code_without_an_mcp_call_is_not_evidence(self):
         terminal=self.terminal();self.approve(terminal)
         terminal.line('0'*32);self.assertNotEqual(terminal.wait(),0,terminal.text)
@@ -515,8 +637,8 @@ class CompleteJourney(unittest.TestCase):
         before=self.runtime_state()['bridge_pid']
         intent=self.connection_parent/'connection/runtime-intent.json';old=intent.read_bytes()
         self.change_configuration()
-        second=self.terminal();second.until('Stop the old controller and use the changed configuration');second.line('y')
-        challenge=self.approve(second,saved=True,restart=True)
+        second=self.terminal();self.prepare_migration(second);second.until('Stop the old controller and use the changed configuration');second.line('y')
+        challenge=self.approve(second,saved=True)
         self.assertNotEqual(self.runtime_state()['bridge_pid'],before)
         new=json.loads(intent.read_bytes());self.assertNotEqual(new['revision'],json.loads(old)['revision'])
         self.assertEqual(new['configuration'],self.config.read_text())
@@ -529,7 +651,7 @@ class CompleteJourney(unittest.TestCase):
         before=self.runtime_state()['bridge_pid']
         intent=self.connection_parent/'connection/runtime-intent.json';old=intent.read_bytes()
         self.change_configuration()
-        second=self.terminal();second.until('Stop the old controller and use the changed configuration');second.line('n')
+        second=self.terminal();self.prepare_migration(second);second.until('Stop the old controller and use the changed configuration');second.line('n')
         self.assertNotEqual(second.wait(),0,second.text)
         self.assertEqual(intent.read_bytes(),old);self.assertEqual(self.runtime_state()['bridge_pid'],before)
         self.assertFalse(self.port_free());self.assertFalse(list(intent.parent.glob('runtime-intent.previous-*.json')))
@@ -541,7 +663,7 @@ class CompleteJourney(unittest.TestCase):
         runtime=json.loads(runtime_path.read_text());runtime['command']+=' foreign'
         runtime_path.write_text(json.dumps(runtime))
         self.change_configuration()
-        second=self.terminal();second.until('Stop the old controller and use the changed configuration');second.line('y')
+        second=self.terminal();self.prepare_migration(second);second.until('Stop the old controller and use the changed configuration');second.line('y')
         self.assertNotEqual(second.wait(),0,second.text)
         self.assertIn('tunnel_runtime_identity_mismatch',second.text)
         self.assertEqual(intent.read_bytes(),old);self.assertFalse(self.port_free())
@@ -553,21 +675,24 @@ class CompleteJourney(unittest.TestCase):
         state=self.connection_parent/'connection';checkpoint=state/'progress.json'
         old_checkpoint=checkpoint.read_bytes()
         self.change_configuration()
-        second=self.terminal();second.until('Stop the old controller and use the changed configuration');second.line('y')
+        second=self.terminal();self.prepare_migration(second);second.until('Stop the old controller and use the changed configuration');second.line('y')
         second.until(r'private ADB identity.*\[y/N\]');second.line('q');self.assertNotEqual(second.wait(),0,second.text)
         revision=json.loads((state/'runtime-intent.json').read_text())['revision']
         # Emulate loss of the checkpoint write after atomic intent replacement.
         checkpoint.write_bytes(old_checkpoint)
-        third=self.terminal();challenge=self.approve(third,saved=True,restart=True)
+        third=self.terminal();third.until('Resume this saved controller');third.line('y');self.enter_key(third)
+        self.decline_verification(third)
+        self.assertEqual(third.wait(),0,third.text)
         self.assertNotIn('Stop the old controller',third.text)
+        self.assertEqual(json.loads((state/'bridge-generation.json').read_text())['revision'],revision)
         self.assertEqual(json.loads(checkpoint.read_text())['configuration_revision'],revision)
-        third.line(self.channel().verify(challenge));self.assertEqual(third.wait(),0,third.text)
+        self.assertEqual(json.loads(checkpoint.read_text())['outcome'],'pending')
     def test_configuration_change_requires_fresh_confirmation_that_runtime_stopped(self):
         first=self.terminal();self.approve(first);first.line('q');self.assertNotEqual(first.wait(),0,first.text)
         intent=self.connection_parent/'connection/runtime-intent.json';old=intent.read_bytes()
         (self.root/'lie-about-stop').write_text('fixture status must catch the still-running bridge')
         self.change_configuration()
-        second=self.terminal();second.until('Stop the old controller and use the changed configuration');second.line('y')
+        second=self.terminal();self.prepare_migration(second);second.until('Stop the old controller and use the changed configuration');second.line('y')
         self.assertNotEqual(second.wait(),0,second.text)
         self.assertIn('controller_stop_unverified',second.text)
         self.assertEqual(intent.read_bytes(),old);self.assertFalse(self.port_free())
@@ -714,8 +839,8 @@ class CompleteJourney(unittest.TestCase):
         terminal.line(code);self.assertNotEqual(terminal.wait(),0,terminal.text)
         self.assertIn('controller_restarted_repeat_verification',terminal.text)
         self.assertNotIn('Ready.',terminal.text)
-        resumed=self.terminal();challenge=self.approve(resumed,saved=True)
-        resumed.line(self.channel().verify(challenge));self.assertEqual(resumed.wait(),0,resumed.text)
+        resumed=self.terminal();self.preserve_runtime(resumed)
+        self.assertNotIn('Ready.',resumed.text)
     def test_bridge_restart_before_tool_rejects_old_generation_challenge(self):
         terminal=self.terminal();challenge=self.approve(terminal)
         self.restart_fixture_runtime()
@@ -728,12 +853,14 @@ class CompleteJourney(unittest.TestCase):
         for binary in [first_binary,second_binary]:shutil.copyfile(BINARY,binary);binary.chmod(0o700)
         pointer=self.root/'selected-binary';pointer.write_text(str(first_binary))
         launcher=self.root/'controller';launcher.write_text('#!/bin/sh\nexecutable=$(cat '+shlex.quote(str(pointer))+')\nexec "$executable" "$@"\n');launcher.chmod(0o700)
-        first=self.terminal(binary=first_binary,launcher=launcher);self.approve(first);first.line('q')
+        first=self.terminal(binary=first_binary,launcher=launcher);self.approve(first,persist=True);first.line('q')
         self.assertNotEqual(first.wait(),0,first.text);bridge_pid=self.runtime_state()['bridge_pid']
         pointer.write_text(str(second_binary))
-        second=self.terminal(binary=second_binary,launcher=launcher);challenge=self.approve(second,saved=True)
-        self.assertEqual(self.runtime_state()['bridge_pid'],bridge_pid)
-        second.line(self.channel().verify(challenge));self.assertEqual(second.wait(),0,second.text)
+        second=self.terminal(binary=second_binary,launcher=launcher)
+        second.until('Restart this owned controller');second.line('y')
+        self.decline_verification(second)
+        self.assertEqual(second.wait(),0,second.text);self.assert_maintenance_no_wizard(second)
+        self.assertNotEqual(self.runtime_state()['bridge_pid'],bridge_pid)
         process=subprocess.run([str(second_binary),'disconnect',str(self.config),'--json'],env=self.env,capture_output=True,text=True,timeout=8,start_new_session=True)
         self.assertEqual(process.returncode,0,process.stdout+process.stderr)
         self.assertFalse(json.loads(process.stdout)['runtime_running']);self.assertTrue(self.port_free())
@@ -754,16 +881,27 @@ class CompleteJourney(unittest.TestCase):
         self.terminals.append(terminal)
         terminal.until('Continue\\? Type yes:');terminal.line('yes')
         challenge=self.approve(terminal)
-        terminal.line(self.channel().verify(challenge));self.assertEqual(terminal.wait(15),0,terminal.text)
+        terminal.line(self.channel().verify(challenge));terminal.until('Search for other devices');terminal.line('n');self.assertEqual(terminal.wait(15),0,terminal.text)
         self.assertIn('Ready.',terminal.text);self.assertNotIn('Choose the display',terminal.text)
         self.assertEqual(len(downloads.read_text().splitlines()),2)
         self.assertTrue((installer.prefix/'tv-control').is_file());self.assert_private_records()
         saved_configuration=self.config.read_bytes()
+        old=self.runtime_state()
+        rerun=Terminal(['-s'],env,binary=pathlib.Path('/bin/sh'),script=(ROOT/'install.sh').read_bytes())
+        self.terminals.append(rerun)
+        rerun.until('Continue\\? Type yes:');rerun.line('yes')
+        rerun.until('Configure a runtime key for future updates');rerun.line('n')
+        rerun.until('Search for other devices');rerun.line('n')
+        self.assertEqual(rerun.wait(15),0,rerun.text);self.assert_maintenance_no_wizard(rerun)
+        self.assertNotIn('Choose the display',rerun.text);self.assertNotIn('Ready.',rerun.text)
+        self.assertEqual(self.runtime_state()['bridge_pid'],old['bridge_pid'])
+        self.assertEqual(self.config.read_bytes(),saved_configuration)
+        self.assertEqual(len(downloads.read_text().splitlines()),2)
         # A second installation shares HOME and the configuration but has never
         # owned this controller. Its uninstall must not even query the tunnel.
         other_prefix=installer.root/'another installation'
         archive=installer.asset()
-        result=installer.run_script(['--prefix',str(other_prefix),'--version','v0.4.0','--archive',str(archive),'--json'],env=env)
+        result=installer.run_script(['--prefix',str(other_prefix),'--version','v0.4.1','--archive',str(archive),'--json'],env=env)
         self.assertEqual(result.returncode,0,result.stdout+result.stderr)
         events=(self.root/'tunnel-events.jsonl').read_bytes()
         result=installer.run_script(['--prefix',str(other_prefix),'--uninstall','--json'],env=env)

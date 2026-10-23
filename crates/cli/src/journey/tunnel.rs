@@ -87,18 +87,8 @@ impl TunnelSetupPort for Journey<'_> {
                 if self.ask("Allow a background TV controller through this tunnel until you stop it? [y/N] ",false,ctx)? != "y" {return Err("approval_rejected");}
                 self.tunnel_approved.set(true);
             }
-            if !self.existing_runtime.get() {
-                let key = match std::env::var("TV_CONTROL_TUNNEL_KEY") {
-                    Ok(v) if !v.is_empty() => v,
-                    _ => {
-                        guidance::runtime_key();
-                        self.ask("Runtime key (hidden; not saved): ", true, ctx)?
-                    }
-                };
-                if key.is_empty() || key.chars().any(char::is_control) {
-                    return Err("runtime_key_invalid");
-                }
-                *self.key.borrow_mut() = Some(key);
+            if !self.existing_runtime.get() && self.key.borrow().is_none() {
+                *self.key.borrow_mut() = Some(self.acquire_key(&id, ctx)?);
             }
             let alias = format!("tv-{}", self.installation);
             let spec = self.tunnel_spec(binary, id.clone())?;

@@ -129,3 +129,72 @@ impl ExternalConversationPort for Journey<'_> {
         })())
     }
 }
+
+impl Journey<'_> {
+    pub(super) fn verify_existing(
+        &self,
+        ctx: &Context<'_>,
+    ) -> tv_domain::pipeline::PipelineOutcome {
+        use tv_domain::pipeline::{DeviceBinding, PipelineOutcome};
+        let result = (|| {
+            let id = self
+                .checkpoint
+                .borrow()
+                .tunnel_id
+                .clone()
+                .ok_or("tunnel_configuration_missing")?;
+            let binary =
+                super::runtime::resolve_tunnel(&self.state, ctx)?.ok_or("tunnel_client_missing")?;
+            let spec = self.tunnel_spec(binary, id)?;
+            let process = BoundedProcess {
+                max_output: 65_536,
+                poll_ms: 10,
+            };
+            if !(OfficialTunnel { process: &process })
+                .status(&spec, &bounded(ctx, 5_000))
+                .map_err(|e| e.code)?
+                .locally_ready()
+            {
+                return Err("tunnel_not_ready");
+            }
+            let generation = self.bridge_generation()?;
+            let binding = ConnectionBinding {
+                device: DeviceBinding {
+                    configuration: self.configuration.clone(),
+                    runtime_generation: generation.clone(),
+                },
+                tunnel_generation: generation,
+            };
+            *self.tunnel.borrow_mut() = Some(spec);
+            Ok(binding)
+        })();
+        let binding = match result {
+            Ok(binding) => binding,
+            Err(code) => {
+                return PipelineOutcome::Stopped {
+                    stage: Stage::ExternalConversation,
+                    reason: super::stopped(code),
+                }
+            }
+        };
+        let challenge = match self.challenge(&binding, ctx) {
+            Gate::Observed(challenge) => challenge,
+            Gate::Stopped(reason) => {
+                return PipelineOutcome::Stopped {
+                    stage: Stage::ExternalConversation,
+                    reason,
+                }
+            }
+        };
+        match self.verify(&challenge.value, ctx) {
+            Gate::Observed(verified) => PipelineOutcome::Ready {
+                binding,
+                verified_at_unix_ms: verified.observed_at_unix_ms,
+            },
+            Gate::Stopped(reason) => PipelineOutcome::Stopped {
+                stage: Stage::ExternalConversation,
+                reason,
+            },
+        }
+    }
+}
