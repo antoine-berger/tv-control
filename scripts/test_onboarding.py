@@ -21,7 +21,7 @@ class Onboarding(unittest.TestCase):
   args=['--fixture',str(ROOT/'examples/discovery.json'),'--interface','lan-fixture','--json']
   p=self.run_cli('discover',*args,'--timeout-ms','10000');self.assertEqual(p.returncode,0,p.stdout);self.assertEqual(p.value['status'],'discovered')
   p=self.run_cli('setup',*self.base,'--json','--timeout-ms','10000');self.assertEqual(p.returncode,0,p.stdout);self.assertEqual(p.value['status'],'confirmation_required');self.assertFalse(self.output.exists())
-  for timeout,code in [('10001','discovery_timeout_out_of_range'),('1999','discovery_timeout_out_of_range'),('invalid','invalid_discovery_timeout')]:
+  for timeout,code in [('10001','discovery_timeout_out_of_range'),('2000','discovery_timeout_out_of_range'),('1999','discovery_timeout_out_of_range'),('invalid','invalid_discovery_timeout')]:
    p=self.run_cli('discover',*args,'--timeout-ms',timeout);self.assertEqual(p.returncode,1,p.stdout);self.assertEqual(p.value['code'],code)
  def test_readable_names_match_text_json_and_selection_with_raw_diagnostics(self):
   data=json.loads((ROOT/'examples/discovery.json').read_text())

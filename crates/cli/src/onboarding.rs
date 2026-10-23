@@ -63,7 +63,7 @@ impl DiscoveryTiming {
                 "discovery_duration_out_of_range",
             ));
         }
-        if timeout_ms < window_ms || timeout_ms > MAX_DISCOVERY_TIMEOUT_MS {
+        if timeout_ms <= window_ms || timeout_ms > MAX_DISCOVERY_TIMEOUT_MS {
             return Err(tv_domain::Failure::before("discovery_timeout_out_of_range"));
         }
         Ok(Self {
@@ -924,14 +924,14 @@ mod tests {
         let defaults = DiscoveryTiming::from_options(&Options::default()).unwrap();
         assert_eq!(defaults.window_ms, 2_000);
         assert_eq!(defaults.timeout_ms, 10_000);
-        for timeout in [2_000, 5_000, 10_000] {
+        for timeout in [2_001, 5_000, 10_000] {
             let options = Options::parse(&["--timeout-ms".into(), timeout.to_string()]).unwrap();
             assert_eq!(
                 DiscoveryTiming::from_options(&options).unwrap().timeout_ms,
                 timeout
             );
         }
-        for timeout in ["0", "1999", "10001", "18446744073709551615"] {
+        for timeout in ["0", "1999", "2000", "10001", "18446744073709551615"] {
             let options = Options::parse(&["--timeout-ms".into(), timeout.into()]).unwrap();
             assert_eq!(
                 DiscoveryTiming::from_options(&options).err().unwrap().code,

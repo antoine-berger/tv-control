@@ -85,7 +85,7 @@ Replies are restricted to the chosen subnet and capped at 256 packets, 8192 byte
 per packet and 64 candidate addresses. Duplicate DIAL replies share one slot.
 The receive window defaults to 2 seconds; `--duration-ms` accepts 100–5000.
 The separate overall search timeout defaults to 10 seconds. Advanced callers can
-set `--timeout-ms` between the receive-window duration and 10000 milliseconds.
+set `--timeout-ms` strictly above the receive-window duration and at most 10000 milliseconds.
 Both bounds start after human input. Search returns when its short window ends;
 it does not wait for the full timeout. The budget includes interface validation,
 socket setup, sends, reception and result collection. OS scheduling or an OS call
