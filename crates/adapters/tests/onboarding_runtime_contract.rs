@@ -62,7 +62,7 @@ if '-L' in sys.argv:
     fd=int(address.split(':')[1]);assert fd>2
     assert fcntl.fcntl(fd,fcntl.F_GETFD)&fcntl.FD_CLOEXEC==0
     s=socket.socket(fileno=fd)
-    assert s.getsockopt(socket.SOL_SOCKET,socket.SO_ACCEPTCONN)==1
+    # The accept/version handshake below proves listening; Darwin rejects SO_ACCEPTCONN.
     assert s.getsockname()[0]=='127.0.0.1'
     with socket.socket() as competitor:
         try:competitor.bind(s.getsockname())
@@ -90,6 +90,30 @@ fn spec(t: &Temp) -> AdbRuntimeSpec {
         poll_ms: 2,
     }
 }
+#[test]
+fn inherited_listener_fixture_does_not_require_linux_only_socket_options() {
+    let temp = Temp::new();
+    let mut runtime_spec = spec(&temp);
+    // Darwin defines SO_ACCEPTCONN but sogetoptlock returns ENOPROTOOPT for it:
+    // https://github.com/apple-oss-distributions/xnu/blob/main/bsd/kern/uipc_socket.c
+    // Exercise that platform behavior even when this regression runs on Linux.
+    let reject_acceptconn = r#"
+import errno,socket
+class PortableSocket(socket.socket):
+    def getsockopt(self,level,option,*args):
+        if level==socket.SOL_SOCKET and option==socket.SO_ACCEPTCONN:
+            raise OSError(errno.ENOPROTOOPT,'fixture: Darwin does not expose SO_ACCEPTCONN')
+        return super().getsockopt(level,option,*args)
+socket.socket=PortableSocket
+"#;
+    runtime_spec.executable = temp.script("adb", &format!("{reject_acceptconn}{FAKE_ADB}"));
+    let clock = SystemClock::default();
+    let cancel = CancelFlag::default();
+    let runtime = OwnedAdbRuntime::start(runtime_spec, true, &context(&clock, &cancel, 5000))
+        .expect("an actual accepted version request must prove the inherited socket is listening");
+    drop(runtime);
+}
+
 #[test]
 fn approval_is_required_before_any_identity_directory_or_child_exists() {
     let temp = Temp::new();
