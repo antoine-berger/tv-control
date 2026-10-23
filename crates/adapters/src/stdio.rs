@@ -111,6 +111,29 @@ impl FrameReader {
 /// Separate allowance only for explicit native PNG image responses (8 MiB binary).
 pub const MAX_IMAGE_FRAME_BYTES: usize = 12 * 1024 * 1024;
 
+fn wait_writable(fd: libc::c_int, timeout: Duration) -> io::Result<()> {
+    let mut descriptor = libc::pollfd {
+        fd,
+        events: libc::POLLOUT,
+        revents: 0,
+    };
+    let millis = timeout.as_millis().min(i32::MAX as u128) as i32;
+    // SAFETY: descriptor is live for this call; poll only observes readiness.
+    let result = unsafe { libc::poll(&mut descriptor, 1, millis) };
+    if result < 0 {
+        let error = io::Error::last_os_error();
+        if error.kind() != io::ErrorKind::Interrupted {
+            return Err(error);
+        }
+    } else if descriptor.revents & (libc::POLLERR | libc::POLLHUP | libc::POLLNVAL) != 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::BrokenPipe,
+            "output pipe closed",
+        ));
+    }
+    Ok(())
+}
+
 struct Frame {
     bytes: Vec<u8>,
     deadline: Instant,
@@ -151,10 +174,17 @@ impl Output {
                             break;
                         }
                         Ok(n) => sent += n,
-                        Err(e) if e.kind() == io::ErrorKind::WouldBlock => thread::sleep(
-                            Duration::from_millis(poll_ms.max(1))
-                                .min(frame.deadline.saturating_duration_since(Instant::now())),
-                        ),
+                        Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
+                            // Wait for actual pipe readiness rather than imposing a full poll
+                            // interval per small pipe buffer (notably 16 KiB on macOS).
+                            // The deadline and shutdown checks still bound every wait.
+                            let timeout = Duration::from_millis(poll_ms.max(1))
+                                .min(frame.deadline.saturating_duration_since(Instant::now()));
+                            if wait_writable(file.file.as_raw_fd(), timeout).is_err() {
+                                worker_stop.store(true, Ordering::Release);
+                                break;
+                            }
+                        }
                         Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
                         Err(_) => {
                             worker_stop.store(true, Ordering::Release);
@@ -259,6 +289,40 @@ mod tests {
             },
             receiver,
         )
+    }
+    #[test]
+    fn writable_wait_rejects_closed_descriptor() {
+        assert!(wait_writable(i32::MAX, Duration::from_millis(10)).is_err());
+    }
+    #[test]
+    fn writable_wait_wakes_when_reader_drains_and_bounds_stalls() {
+        use std::os::unix::net::UnixStream;
+        let (mut writer, mut reader) = UnixStream::pair().unwrap();
+        writer.set_nonblocking(true).unwrap();
+        let bytes = [0u8; 8192];
+        loop {
+            match writer.write(&bytes) {
+                Ok(_) => (),
+                Err(e) if e.kind() == io::ErrorKind::WouldBlock => break,
+                Err(e) => panic!("{e}"),
+            }
+        }
+        let start = Instant::now();
+        wait_writable(writer.as_raw_fd(), Duration::from_millis(20)).unwrap();
+        assert!(start.elapsed() >= Duration::from_millis(10));
+        let (tx, rx) = mpsc::channel();
+        let draining = thread::spawn(move || {
+            thread::sleep(Duration::from_millis(20));
+            reader.set_nonblocking(true).unwrap();
+            let mut bytes = [0u8; 8192];
+            while reader.read(&mut bytes).is_ok_and(|n| n > 0) {}
+            let _ = rx.recv_timeout(Duration::from_secs(2));
+        });
+        let start = Instant::now();
+        wait_writable(writer.as_raw_fd(), Duration::from_millis(1000)).unwrap();
+        assert!(start.elapsed() < Duration::from_millis(900));
+        tx.send(()).unwrap();
+        draining.join().unwrap();
     }
     fn image(size: usize) -> Value {
         json!({"result":{"content":[{"type":"image","mimeType":"image/png","data":"A".repeat(size.div_ceil(3)*4)}]}})
