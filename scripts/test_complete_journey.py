@@ -11,12 +11,15 @@ import pathlib
 import pty
 import re
 import select
+import shlex
 import signal
 import socket
+import shutil
 import subprocess
 import sys
 import tempfile
 import time
+import threading
 import unittest
 
 BINARY = pathlib.Path(sys.argv.pop(1)).resolve() if len(sys.argv) > 1 else pathlib.Path('target/debug/tv-control').resolve()
@@ -61,7 +64,9 @@ TUNNEL_CLIENT = r'''
 import json,os,pathlib,select,shlex,signal,socket,subprocess,sys,time
 root=pathlib.Path(__file__).parent.parent
 def load(path):return json.loads(path.read_text())
-def write(path,value):path.write_text(json.dumps(value));path.chmod(0o600)
+def write(path,value):
+    temporary=path.with_name(path.name+'.tmp-'+str(os.getpid()))
+    temporary.write_text(json.dumps(value));temporary.chmod(0o600);temporary.replace(path)
 def alive(pid):
     try:os.kill(pid,0);return True
     except ProcessLookupError:return False
@@ -144,12 +149,26 @@ else:raise RuntimeError('unexpected fixture command')
 
 
 class Terminal:
-    def __init__(self, args, env):
+    def __init__(self, args, env, binary=BINARY, script=None):
+        input_pipe = os.pipe() if script is not None else None
         self.pid, self.fd = pty.fork()
         if self.pid == 0:
-            try: os.execve(str(BINARY), [str(BINARY), *map(str, args)], env)
+            try:
+                if input_pipe:
+                    os.close(input_pipe[1]); os.dup2(input_pipe[0], 0); os.close(input_pipe[0])
+                os.execve(str(binary), [str(binary), *map(str, args)], env)
             except BaseException: os._exit(90)
         self.output = bytearray(); self.cursor = 0; self.status = None
+        self.feeder = None; self.feed_errors = []
+        if input_pipe:
+            os.close(input_pipe[0])
+            def feed():
+                try:
+                    for offset in range(0, len(script), 97): os.write(input_pipe[1], script[offset:offset+97])
+                except BrokenPipeError: pass
+                except BaseException as exc: self.feed_errors.append(exc)
+                finally: os.close(input_pipe[1])
+            self.feeder = threading.Thread(target=feed, daemon=True); self.feeder.start()
     def read(self, duration=.1):
         ready, _, _ = select.select([self.fd], [], [], duration)
         if ready:
@@ -190,12 +209,15 @@ class Terminal:
         return self.status
     def close(self):
         if self.status is None:
-            try: os.kill(self.pid, signal.SIGTERM)
+            try: os.killpg(self.pid, signal.SIGTERM)
             except ProcessLookupError: pass
             try: self.wait(3)
             except AssertionError:
-                os.kill(self.pid, signal.SIGKILL); os.waitpid(self.pid, 0)
+                os.killpg(self.pid, signal.SIGKILL); os.waitpid(self.pid, 0)
         os.close(self.fd)
+        if self.feeder:
+            self.feeder.join(timeout=2)
+            if self.feeder.is_alive() or self.feed_errors: raise AssertionError('installer input feeder did not close cleanly')
 
 
 class Rpc:
@@ -242,8 +264,9 @@ class CompleteJourney(unittest.TestCase):
         config['devices']={'screen':{'adapter':'adb','coordination_group':'screen','endpoint':'192.0.2.10:5555','server_host':'127.0.0.1','server_port':self.port,'media_app':None,'volume_max_index':None}}
         for key in ['apps','servers','media','workflows']: config[key]={}
         self.config=self.root/'tv.json'; self.config.write_text(json.dumps(config)); self.config.chmod(0o600)
+        self.connection_parent=self.config.parent
         self.env={'HOME':str(self.root),'PATH':str(self.bin)+':/usr/bin:/bin','TV_JOURNEY_CANARY':'fixture_ambient_not_for_children'}
-        self.terminals=[]; self.channels=[]
+        self.terminals=[]; self.channels=[]; self.installers=[]
     def tearDown(self):
         for channel in self.channels: channel.close()
         for terminal in self.terminals: terminal.close()
@@ -262,18 +285,31 @@ class CompleteJourney(unittest.TestCase):
                     try: os.killpg(pid, signal.SIGKILL)
                     except ProcessLookupError: pass
         free=self.port_free()
+        # Preserve the failure while cleaning up only daemons recorded by this
+        # fixture. A failing/forcibly killed terminal must not leak its fake ADB.
+        if not free:
+            events=self.root/'adb-events.jsonl'
+            if events.exists():
+                for line in events.read_text().splitlines():
+                    event=json.loads(line)
+                    if '-L' in event['args']:
+                        try:os.killpg(event['pid'],signal.SIGKILL)
+                        except ProcessLookupError:pass
+        for installer in self.installers: installer.tearDown()
         self.temp.cleanup()
         self.assertTrue(free, 'owned ADB listener leaked after fixture teardown')
     def runtime_state(self):
-        path=self.root/'connection/tunnel/fixture-runtime.json'
+        path=self.connection_parent/'connection/tunnel/fixture-runtime.json'
         try:return json.loads(path.read_text())
         except (FileNotFoundError,json.JSONDecodeError):return None
     def port_free(self):
         with socket.socket() as listener:
             listener.settimeout(.1)
             return listener.connect_ex(('127.0.0.1',self.port)) != 0
-    def terminal(self):
-        terminal=Terminal(['onboard',self.config],self.env);self.terminals.append(terminal);return terminal
+    def terminal(self, binary=BINARY, launcher=None):
+        args=['onboard',self.config]
+        if launcher: args+=['--launcher',launcher]
+        terminal=Terminal(args,self.env,binary=binary);self.terminals.append(terminal);return terminal
     def approve(self, terminal, saved=False):
         terminal.until(r'private ADB identity.*\[y/N\]');terminal.line('y')
         if not saved:terminal.until('Tunnel ID:');terminal.line(TUNNEL)
@@ -294,11 +330,11 @@ class CompleteJourney(unittest.TestCase):
         channel=Rpc(state['proxy_port']);self.channels.append(channel);channel.initialize();return channel
     def assert_private_records(self):
         for name in ['progress.json','events.jsonl']:
-            path=self.root/'connection'/name
+            path=self.connection_parent/'connection'/name
             if path.exists():
                 self.assertEqual(path.stat().st_mode&0o777,0o600)
                 self.assertNotIn(SECRET.encode(),path.read_bytes())
-        for path in (self.root/'connection').rglob('*'):
+        for path in (self.connection_parent/'connection').rglob('*'):
             if path.is_file() and path.name not in ['session.lock','.lock']:
                 self.assertNotIn(SECRET.encode(),path.read_bytes(),str(path))
         adb=self.root/'adb-events.jsonl'
@@ -335,10 +371,66 @@ class CompleteJourney(unittest.TestCase):
     def test_unauthorized_tv_remains_pending_and_does_not_start_tunnel(self):
         (self.root/'adb-authorization').write_text('unauthorized')
         terminal=self.terminal();terminal.until(r'private ADB identity.*\[y/N\]');terminal.line('y')
+        terminal.until('Press Enter after TV approval');terminal.line('q')
         self.assertNotEqual(terminal.wait(),0,terminal.text)
         self.assertNotIn('Ready.',terminal.text)
         self.assertIn('Approve this computer on the TV',terminal.text)
         self.assertFalse((self.root/'tunnel-events.jsonl').exists());self.assertTrue(self.port_free())
+    def test_tv_approval_keeps_owned_identity_alive_until_confirmed(self):
+        (self.root/'adb-authorization').write_text('unauthorized')
+        terminal=self.terminal();terminal.until(r'private ADB identity.*\[y/N\]');terminal.line('y')
+        terminal.until('Press Enter after TV approval')
+        self.assertFalse(self.port_free(), 'the pending authorization runtime was stopped too early')
+        before=[json.loads(line)['pid'] for line in (self.root/'adb-events.jsonl').read_text().splitlines() if '-L' in json.loads(line)['args']]
+        (self.root/'adb-authorization').write_text('device');terminal.line('')
+        terminal.until(r'\[2/4\]');terminal.until('Tunnel ID:');terminal.line('q')
+        self.assertNotEqual(terminal.wait(),0,terminal.text)
+        after=[json.loads(line)['pid'] for line in (self.root/'adb-events.jsonl').read_text().splitlines() if '-L' in json.loads(line)['args']]
+        self.assertEqual(before,after);self.assertTrue(self.port_free());self.assertNotIn('Ready.',terminal.text)
+    def test_bridge_loss_after_proof_cannot_produce_final_ready(self):
+        terminal=self.terminal();challenge=self.approve(terminal)
+        code=self.channel().verify(challenge)
+        os.kill(self.runtime_state()['bridge_pid'],signal.SIGTERM)
+        deadline=time.monotonic()+3
+        while time.monotonic()<deadline and not self.port_free():time.sleep(.02)
+        self.assertTrue(self.port_free())
+        terminal.line(code);self.assertNotEqual(terminal.wait(),0,terminal.text)
+        self.assertNotIn('Ready.',terminal.text)
+    def test_stable_launcher_resumes_across_binary_paths_and_disconnects(self):
+        first_binary=self.root/'binary-a'; second_binary=self.root/'binary-b'
+        for binary in [first_binary,second_binary]:shutil.copyfile(BINARY,binary);binary.chmod(0o700)
+        pointer=self.root/'selected-binary';pointer.write_text(str(first_binary))
+        launcher=self.root/'controller';launcher.write_text('#!/bin/sh\nexecutable=$(cat '+shlex.quote(str(pointer))+')\nexec "$executable" "$@"\n');launcher.chmod(0o700)
+        first=self.terminal(binary=first_binary,launcher=launcher);self.approve(first);first.line('q')
+        self.assertNotEqual(first.wait(),0,first.text);bridge_pid=self.runtime_state()['bridge_pid']
+        pointer.write_text(str(second_binary))
+        second=self.terminal(binary=second_binary,launcher=launcher);challenge=self.approve(second,saved=True)
+        self.assertEqual(self.runtime_state()['bridge_pid'],bridge_pid)
+        second.line(self.channel().verify(challenge));self.assertEqual(second.wait(),0,second.text)
+        process=subprocess.run([str(second_binary),'disconnect',str(self.config),'--json'],env=self.env,capture_output=True,text=True,timeout=8,start_new_session=True)
+        self.assertEqual(process.returncode,0,process.stdout+process.stderr)
+        self.assertFalse(json.loads(process.stdout)['runtime_running']);self.assertTrue(self.port_free())
+    def test_zero_argument_piped_installer_reaches_verified_native_journey(self):
+        # Reuse asset/download fixtures, but the installed executable is the real
+        # binary under test. An existing private config avoids any LAN discovery.
+        import test_installer as installer_fixture
+        installer=installer_fixture.Installer();installer.setUp();self.installers.append(installer)
+        installer.native_stub=BINARY.read_bytes()
+        env,downloads,_=installer.zero_argument_environment()
+        env['PATH']=str(self.bin)+os.pathsep+str(installer.bin)+':/usr/bin:/bin'
+        env['TV_JOURNEY_CANARY']=self.env['TV_JOURNEY_CANARY']
+        configuration=pathlib.Path(env['XDG_CONFIG_HOME'])/'tv-control/tv-control.local.json'
+        configuration.parent.mkdir(parents=True,mode=0o700)
+        configuration.write_bytes(self.config.read_bytes());configuration.chmod(0o600)
+        self.config=configuration;self.connection_parent=configuration.parent
+        terminal=Terminal(['-s'],env,binary=pathlib.Path('/bin/sh'),script=(ROOT/'install.sh').read_bytes())
+        self.terminals.append(terminal)
+        terminal.until('Continue\\? Type yes:');terminal.line('yes')
+        challenge=self.approve(terminal)
+        terminal.line(self.channel().verify(challenge));self.assertEqual(terminal.wait(15),0,terminal.text)
+        self.assertIn('Ready.',terminal.text);self.assertNotIn('Choose the display',terminal.text)
+        self.assertEqual(len(downloads.read_text().splitlines()),2)
+        self.assertTrue((installer.prefix/'tv-control').is_file());self.assert_private_records()
     def test_configuration_without_adb_cannot_start_any_runtime(self):
         config=json.loads((ROOT/'examples/config.json').read_text())
         config['devices'].pop('screen');config['workflows']={}
