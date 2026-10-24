@@ -92,9 +92,14 @@ engine entry. All integers are bounded big-endian values; exact magic/version,
 closed opcodes and strict UTF8 round-trip are required. No JSON/free-form errors.
 Outer frames are length-prefixed, at most **16384 bytes total per frame**, with
 at most six logical control/request frames and **32768 bytes total input** per
-connection. Reject unknown fields/opcodes, duplicates, trailing bytes, malformed
-lengths and truncated frames before any action. Do not use EOF as the end of a
-complete request: EOF has cancellation semantics.
+connection. Before consuming a ref, fully validate that COMMIT frame: unknown
+fields/opcodes, duplicate fields, intra-frame trailing bytes, invalid lengths or
+truncation invalidate the instance without engine entry. This does not prove
+that no further frame will arrive later. Do not wait for EOF to complete a valid
+request: EOF has cancellation semantics. A duplicate/invalid late frame or other
+protocol violation received after COMMIT invalidates the consumed operation;
+before engine entry it prevents that entry, while after possible entry it makes
+the outcome sticky UNCERTAIN. No absence-of-future-input guarantee is claimed.
 
 Proposed closed terminal status is REFUSED / UNCERTAIN / VERIFIED. Closed reason
 codes are NONE, PEER_UNKNOWN, PEER_MISMATCH, POLICY_DENIED, IDENTITY_CHANGED,
@@ -109,9 +114,10 @@ cannot downgrade it. Public counters/categories must not include payload hashes.
 | WAIT_PEER | kernel accept / peer check | one peer; no UI ref or payload read before identity |
 | OBSERVE | fixed OBSERVE opcode → private REF reply | capture current focused editor; issue one ref in memory |
 | ISSUED | COMMIT(ref, appendUTF8) or CANCEL | same runtime/connection, monotone deadline and exact binding |
-| CONSUMED | atomically consume ref before cache write/engine entry | no second commit, including malformed/stale/cancelled requests |
+| CONSUMED | atomically consume ref after complete valid COMMIT, before cache write/engine entry | no second commit; later errors never restore the ref |
 | ENGINE_ENTERED | one existing wrapper → TextEngine call | external loss now potentially uncertain; never retry |
-| TERMINAL | fixed status/reason only | erase registry, close connection, remove only owned scratch |
+| CLEANING | stop/join watcher, close owned FDs, remove only owned scratch | no new operation; preserve any sticky uncertainty |
+| TERMINAL | one authoritative fixed wrapper Bundle | registry invalid, socket closed; no further operation or replay |
 
 REF contains only an opaque random run/ref value and bounded lifetime metadata
 over the private binary channel, not UI text. The registry retains exact observed
@@ -131,7 +137,10 @@ No clipboard, keyboard remapping, selection repair or alternate backend.
 
 Reference expiry uses **device SystemClock.uptimeMillis**, measured when the ref
 is issued, with at most4000ms through dispatch. The host does not supply or extend
-absolute expiry. A separate bounded handshake budget precedes issuance. One
+absolute expiry. The cache request serializes an immutable expiry no later than
+min(originalRefExpiry, instanceDeadline); COMMIT must never replace it with
+now+4000ms. Recheck expiry after frame validation and before entry without
+recalculating it. A separate bounded handshake budget precedes issuance. One
 proposed instance budget is15s, with accept≤5s, per-frame reads≤2s and the existing
 engine request≤4s, each capped again by the remaining absolute deadline. Exact
 budgets require implementation review; no reset-on-byte timeout or host/device
@@ -144,8 +153,12 @@ EOF/CANCEL before COMMIT invalidates the ref and reports cancellation without
 engine entry. After consumption but before entry, cancellation prevents the call
 and cleans only its scratch request. After entry, a bounded cancellation watcher
 may create the engine's existing private cancel marker, but cannot make that
-check atomic with performAction. Marker/write/watcher failure or a lost result
-after possible action is **uncertain**, never assumed refused or repaired.
+check atomic with performAction. Observed late invalid input, CANCEL, EOF,
+exception, marker/write/watcher failure or a lost result after possible entry is
+**sticky UNCERTAIN**, never assumed refused or repaired. A later engine verified
+or refused callback cannot clear that transport uncertainty. After terminal the
+socket is closed: extra traffic cannot start another operation, and no promise
+of absence of an earlier effect is made.
 No rollback, automatic clear, new instance replay or second mutation follows.
 The final fixed engine result can state refused/uncertain/verified; transport
 success or an HTTP-like acknowledgement alone is not verified text insertion.
@@ -163,8 +176,9 @@ left. Unknown cleanup fails the proof rather than letting a worker run later.
 
 **Build blocker:** fcntlInt is public from API30; the current lab compiler uses
 Platform28. The design needs a separately reviewed official Platform31 build
-dependency (and matching receipt) or a different reviewed public bounded-I/O
-design. No hidden/reflection call or unbounded accept workaround is selected.
+dependency, verified official archive provenance and the applicable existing
+stable-license check before any download/install, or a different reviewed public
+bounded-I/O design. No hidden/reflection call or unbounded accept workaround is selected.
 No SDK package was downloaded or installed for this document.
 
 ## Wrapper integration and files proposed after review
@@ -176,6 +190,36 @@ retain the one runOnce call, exception policy, result sink and finish lifecycle.
 The lab subclass would override only ingress, never lifecycle or engine dispatch.
 The existing standalone missing-token refusal stays a separate regression.
 This hook is a proposed wrapper change requiring review, not implemented code.
+
+The common wrapper creates/registers the PendingRequest resource owner before
+ingress can create an FD, thread or scratch file, so an ingress exception before
+return cannot strand unowned resources. Ingress owns ref issuance/atomic
+consumption and registers each resource immediately. Only the common onStart
+path marks ENGINE_ENTERED immediately before its one runOnce call. The sink stores
+a fixed engine result in PendingRequest; it does not publish a terminal outcome.
+One bounded watcher observes cancellation/EOF and may create the existing private
+cancel marker; it never calls the engine, admits a peer or restores a consumed ref.
+
+One onStart finally path runs PendingRequest.close exactly once, including when
+connect/ingress/cache construction throws before engine entry. It invalidates
+refs, stops and joins the watcher within the deadline, closes owned FDs, removes
+only owned scratch and records each cleanup failure without hiding the primary
+failure. Close must not suppress a live watcher/FD/cache failure. An exception or
+unverified cleanup after possible entry leaves UNCERTAIN sticky; no stale verified
+sink value can become the published result. The common wrapper then calls finish
+exactly once with the final allowlisted Bundle, even if close recorded a failure.
+The subclass cannot override onStart, terminal publication, close or finish policy.
+
+The **wrapper's final Bundle is the sole authoritative terminal result**, published
+after cleanup checks. Socket replies carry REF/progress only, never a competing
+terminal verified result. Server-side socket closure is not evidence of success:
+the client reports only channel closed and awaits the wrapper Bundle. The watcher
+stop/FD-close cutoff must be explicit and must not mistake self-initiated close
+for peer EOF; it cannot prove that future or unread late bytes were absent.
+If the host cancelled, lost a required channel/result, or cannot correlate the
+final Bundle to its one owned invocation, its own uncertainty remains sticky even
+if a later Bundle says verified. It never treats EOF or an acknowledgement as
+verified, nor invents a refused outcome for a possibly dispatched request.
 
 | Proposed file | Responsibility |
 | --- | --- |
@@ -206,6 +250,10 @@ package/resource/class/window/bounds/text/selection, expired/ref reused/conflict
 commit, cancel at every boundary, EOF before/after entry, lost reply, short writes,
 blocked accept/read/write, watcher/FD/cache cleanup failure. No-op paths still
 check cancellation/deadline. Assert at most one engine entry and no raw output.
+Include delayed second frames after COMMIT, cancel racing final close, engine
+verified followed by cleanup failure, ingress throwing before PendingRequest is
+ready, result loss after entry, and commit near expiry proving the serialized
+deadline never moves beyond the initial ref/instance deadline.
 
 Then, only after independent design/code review and a new root-controlled lab GO:
 
