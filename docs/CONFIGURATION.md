@@ -64,10 +64,16 @@ grant, the controller instead targets the uniquely observed foreground app/sessi
 at most 200 characters; each dot-separated component starts with a letter and
 contains only ASCII letters, digits or underscores.
 
-`volume_max_index` is optional; `null` disables volume control. An enabled value
-must be 1–1000 and match the observed Android music stream maximum on that device.
-It does not define a percentage scale. Read the [ADB daemon requirement and
-remaining race](ADAPTERS.md#adb-daemon-ownership) before using a real target.
+`volume_max_index` is optional. Without the generic ADB grant, `null` disables
+legacy `set_volume`; an enabled value must be 1–1000 and match the observed
+Android music stream maximum on that device. With `generic_adb_control: true`,
+`set_volume` instead probes the native range at runtime and needs no saved
+calibration. A configured maximum must still match the detected maximum.
+Dedicated generic `mute` only sets stream 3 to zero and also needs no saved
+maximum. `tv_read` with `read: {"type":"volume"}` returns the observed index and
+maximum; neither defines a percentage scale or an external receiver's volume.
+Read the [ADB daemon requirement and remaining race](ADAPTERS.md#adb-daemon-ownership)
+before using a real target.
 
 ## Jellyfin device and credentials
 

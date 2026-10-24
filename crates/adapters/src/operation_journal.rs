@@ -72,6 +72,8 @@ enum IntentWire {
     OpenApp { app: String },
     OpenUrl { app: String, url: String },
     Wake,
+    Mute,
+    SetVolume { index: u16 },
     Pause,
     Resume,
     Navigate { keys: Vec<String> },
@@ -90,6 +92,8 @@ impl From<&Intent> for IntentWire {
                 url: url.clone(),
             },
             Intent::Wake => Self::Wake,
+            Intent::Mute => Self::Mute,
+            Intent::SetVolume { index } => Self::SetVolume { index: *index },
             Intent::Pause => Self::Pause,
             Intent::Resume => Self::Resume,
             Intent::Navigate { keys } => Self::Navigate {
@@ -142,6 +146,8 @@ struct StateWire {
     #[serde(default)]
     awake: Option<bool>,
     volume_index: Option<u16>,
+    #[serde(default)]
+    volume_max_index: Option<u16>,
 }
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -191,6 +197,7 @@ impl From<&Reply> for ReplyWire {
                 position_ticks: o.position_ticks,
                 awake: o.awake,
                 volume_index: o.volume_index,
+                volume_max_index: o.volume_max_index,
             }),
             choices: r
                 .choices
@@ -257,6 +264,7 @@ impl ReplyWire {
                     position_ticks: s.position_ticks,
                     awake: s.awake,
                     volume_index: s.volume_index,
+                    volume_max_index: s.volume_max_index,
                 })
             })
             .transpose()?;

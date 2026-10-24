@@ -82,6 +82,8 @@ impl Device for SharedFake {
         let mut s = self.state.lock().unwrap();
         match intent {
             Intent::OpenApp { .. } => s.active_app = Some(app.unwrap().id.clone()),
+            Intent::Mute => s.volume_index = Some(0),
+            Intent::SetVolume { index } => s.volume_index = Some(*index),
             Intent::Pause => s.playback = Playback::Paused,
             Intent::Resume => s.playback = Playback::Playing,
             _ => {}
@@ -419,4 +421,35 @@ fn wake_still_asleep_expires_as_unknown_without_repeating() {
     let mut retry = req(Intent::Wake);
     retry.expires_at_unix_ms = 3000;
     assert!(s.execute(retry, &Never).cached);
+}
+
+#[test]
+fn mute_verifies_zero_and_repeated_request_never_mutates_again() {
+    let (s, d, _) = setup(vec![]);
+    d.state.lock().unwrap().volume_index = Some(8);
+    let r = req(Intent::Mute);
+    let result = s.execute(r.clone(), &Never);
+    assert_eq!(result.status, Status::Verified);
+    assert_eq!(result.observed.unwrap().volume_index, Some(0));
+    assert!(s.execute(r, &Never).cached);
+    let mut another = req(Intent::Mute);
+    another.id = "another".into();
+    assert_eq!(s.execute(another, &Never).status, Status::Verified);
+    assert_eq!(d.effects.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn set_volume_verifies_and_conflicts_with_other_volume_intents() {
+    let (s, d, _) = setup(vec![]);
+    d.state.lock().unwrap().volume_index = Some(8);
+    let r = req(Intent::SetVolume { index: 4 });
+    let result = s.execute(r.clone(), &Never);
+    assert_eq!(result.status, Status::Verified);
+    assert_eq!(result.observed.unwrap().volume_index, Some(4));
+    assert!(s.execute(r, &Never).cached);
+    assert_eq!(
+        s.execute(req(Intent::Mute), &Never).code,
+        "request_id_conflict"
+    );
+    assert_eq!(d.effects.load(Ordering::SeqCst), 1);
 }

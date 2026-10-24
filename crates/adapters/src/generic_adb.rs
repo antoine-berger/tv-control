@@ -484,6 +484,40 @@ impl Device for GenericAdb {
         self.read_apps(alias, query, ctx)
     }
     fn observe_for(&self, alias: &str, intent: &Intent, ctx: &Context<'_>) -> PortResult<Observed> {
+        if matches!(intent, Intent::Mute | Intent::SetVolume { .. }) {
+            // No app/session or configured volume scale is needed to lower to zero.
+            // A valid native zero-based range is required before any mutation.
+            let raw = self.shell(
+                alias,
+                &["cmd", "media_session", "volume", "--stream", "3", "--get"],
+                &[],
+                false,
+                ctx,
+            )?;
+            let (index, max) = parse_volume(&raw)
+                .filter(|(_, max)| *max > 0 && *max <= 1000)
+                .ok_or(Failure::before("volume_state_unavailable"))?;
+            if let Some(ConfigDevice::Adb {
+                volume_max_index: Some(configured),
+                ..
+            }) = self.config.devices.get(alias)
+            {
+                if *configured != max {
+                    return Err(Failure::before("volume_calibration_changed"));
+                }
+            }
+            if let Intent::SetVolume { index: requested } = intent {
+                if *requested > max {
+                    return Err(Failure::before("volume_out_of_range"));
+                }
+            }
+            return Ok(Observed {
+                connected: true,
+                volume_max_index: Some(max),
+                volume_index: Some(index),
+                ..Observed::default()
+            });
+        }
         if *intent == Intent::Wake {
             // No foreground activity or media session is required while asleep.
             let raw = self
@@ -628,6 +662,47 @@ impl Device for GenericAdb {
             Intent::Wake => {
                 // KEYCODE_WAKEUP is idempotent: never toggle an already-awake TV off.
                 self.shell(alias, &["input", "keyevent", "224"], &[], true, ctx)?;
+                Ok(())
+            }
+            Intent::SetVolume { index } => {
+                // Recheck the native range immediately before dispatch, including
+                // direct adapter callers; never guess an Android volume scale.
+                self.observe_for(alias, intent, ctx)?;
+                self.shell(
+                    alias,
+                    &[
+                        "cmd",
+                        "media_session",
+                        "volume",
+                        "--stream",
+                        "3",
+                        "--set",
+                        &index.to_string(),
+                    ],
+                    &[],
+                    true,
+                    ctx,
+                )?;
+                Ok(())
+            }
+            Intent::Mute => {
+                // Absolute zero is idempotent. Never use KEYCODE_VOLUME_MUTE (toggle),
+                // ADJUST_TOGGLE_MUTE, an unmute command, or a volume-up fallback.
+                self.shell(
+                    alias,
+                    &[
+                        "cmd",
+                        "media_session",
+                        "volume",
+                        "--stream",
+                        "3",
+                        "--set",
+                        "0",
+                    ],
+                    &[],
+                    true,
+                    ctx,
+                )?;
                 Ok(())
             }
             Intent::Pause => self.playback(alias, false, ctx),

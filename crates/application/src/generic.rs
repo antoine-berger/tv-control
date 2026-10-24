@@ -278,6 +278,9 @@ impl<D: Device, C: Clock> Control for Service<D, C> {
         self.device.resource(&req.device)?;
         let ctx = self.context(req.expires_at_unix_ms, cancel)?;
         let result = match req.read {
+            Read::Volume => {
+                Data::State(self.device.observe_for(&req.device, &Intent::Mute, &ctx)?)
+            }
             Read::State => Data::State(self.device.observe(&req.device, &ctx)?),
             Read::Ui => Data::Ui(self.device.ui(&req.device, &ctx)?),
             Read::Screenshot => Data::Screenshot(self.device.screenshot(&req.device, &ctx)?),
@@ -435,7 +438,8 @@ fn valid_intent(intent: &Intent) -> bool {
         Intent::Search { app, query } => valid_text(app, 512) && valid_text(query, 500),
         Intent::Navigate { keys } => !keys.is_empty() && keys.len() <= 16,
         Intent::Activate { reference } => valid_text(reference, 200),
-        Intent::Wake | Intent::Pause | Intent::Resume => true,
+        Intent::SetVolume { index } => *index <= 1000,
+        Intent::Wake | Intent::Mute | Intent::Pause | Intent::Resume => true,
     }
 }
 fn valid_url(url: &str) -> bool {
@@ -479,6 +483,8 @@ fn desired(intent: &Intent, app: Option<&App>, state: &Observed) -> bool {
     match intent {
         Intent::OpenApp { .. } => app.is_some_and(|a| state.active_app.as_ref() == Some(&a.id)),
         Intent::Wake => state.awake == Some(true),
+        Intent::Mute => state.volume_index == Some(0),
+        Intent::SetVolume { index } => state.volume_index == Some(*index),
         Intent::Pause => state.playback == Playback::Paused,
         Intent::Resume => {
             state.playback == Playback::Playing

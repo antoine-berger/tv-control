@@ -362,9 +362,20 @@ pub fn parse_foreground(raw: &str) -> PortResult<Option<String>> {
     Ok(packages.into_iter().next())
 }
 pub fn parse_volume(raw: &str) -> Option<(u16, u16)> {
-    let (_, rest) = raw.split_once("volume is ")?;
+    let mut lines = raw.lines().filter_map(|line| {
+        let line = line.trim();
+        let line = line
+            .strip_prefix("[V] ")
+            .or_else(|| line.strip_prefix("[v] "))
+            .unwrap_or(line);
+        line.strip_prefix("volume is ")
+    });
+    let rest = lines.next()?;
+    if lines.next().is_some() {
+        return None;
+    }
     let (index, range) = rest.split_once(" in range [0..")?;
-    let max = range.split(']').next()?.parse::<u16>().ok()?;
+    let max = range.strip_suffix(']')?.parse::<u16>().ok()?;
     let index = index.parse::<u16>().ok()?;
     (index <= max).then_some((index, max))
 }

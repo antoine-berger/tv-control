@@ -18,6 +18,8 @@ enum Action {
     OpenApp { app: String },
     OpenUrl { app: String, url: String },
     Wake {},
+    Mute {},
+    SetVolume { index: u16 },
     Pause {},
     Resume {},
     Navigate { keys: Vec<WireKey> },
@@ -46,6 +48,7 @@ struct Reading {
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 enum ReadKind {
     State {},
+    Volume {},
     Apps {
         query: Option<String>,
         since: Option<String>,
@@ -78,7 +81,7 @@ pub fn routes_generic(config: &tv_adapters::config::Config, name: &str, args: &V
     let action = args.pointer("/action/type").and_then(Value::as_str);
     if matches!(
         action,
-        Some("wake" | "navigate" | "search" | "open_url" | "activate")
+        Some("mute" | "wake" | "navigate" | "search" | "open_url" | "activate")
     ) {
         return true;
     }
@@ -95,6 +98,7 @@ pub fn routes_generic(config: &tv_adapters::config::Config, name: &str, args: &V
             .and_then(Value::as_str)
             .is_some_and(|app| config.apps.contains_key(app)),
         Some("pause" | "resume") => media_app.is_some(),
+        Some("set_volume") => return config.generic_adb_control,
         _ => return false,
     };
     config.generic_adb_control || !legacy
@@ -137,6 +141,7 @@ impl Call {
                     expires_at_unix_ms: r.expires_at_unix_ms,
                     read: match r.read {
                         ReadKind::State {} => Read::State,
+                        ReadKind::Volume {} => Read::Volume,
                         ReadKind::Apps {
                             query,
                             since,
@@ -173,6 +178,8 @@ impl Call {
                         Action::OpenApp { app } => Intent::OpenApp { app },
                         Action::OpenUrl { app, url } => Intent::OpenUrl { app, url },
                         Action::Wake {} => Intent::Wake,
+                        Action::Mute {} => Intent::Mute,
+                        Action::SetVolume { index } => Intent::SetVolume { index },
                         Action::Pause {} => Intent::Pause,
                         Action::Resume {} => Intent::Resume,
                         Action::Navigate { keys } => Intent::Navigate {
@@ -298,6 +305,9 @@ fn state(s: &Observed) -> Value {
     if let Some(index) = s.volume_index {
         v["volume_index"] = json!(index);
     }
+    if let Some(max) = s.volume_max_index {
+        v["volume_max_index"] = json!(max);
+    }
     v
 }
 fn reply(r: &Reply) -> Value {
@@ -324,7 +334,7 @@ pub fn extend_tools(tools: &mut Value) {
         .iter_mut()
         .find(|t| t["name"] == "tv_control")
         .expect("control tool");
-    control["description"] = json!("Never retry outcome_unknown. Search/URL: dispatch only. One ID per operation. Timing is local.");
+    control["description"] = json!("Never retry outcome_unknown. Volume: native index, not percent; read volume for range. Mute: music stream 3 zero, not external audio proof. Search/URL: dispatch only. One ID per operation. Local timing.");
     let actions = control["inputSchema"]["properties"]["action"]["oneOf"]
         .as_array_mut()
         .unwrap();
@@ -335,12 +345,29 @@ pub fn extend_tools(tools: &mut Value) {
     }
     actions.extend([
         json!({"type":"object","properties":{"type":{"const":"wake"}},"required":["type"],"additionalProperties":false}),
+        json!({"type":"object","properties":{"type":{"const":"mute"}},"required":["type"],"additionalProperties":false}),
         json!({"type":"object","properties":{"type":{"const":"open_url"},"app":{"type":"string","minLength":1,"maxLength":512},"url":{"type":"string","minLength":1,"maxLength":2048}},"required":["type","app","url"],"additionalProperties":false}),
         json!({"type":"object","properties":{"type":{"const":"navigate"},"keys":{"type":"array","minItems":1,"maxItems":16,"items":{"enum":["up","down","left","right","select","back","home"]}}},"required":["type","keys"],"additionalProperties":false}),
         json!({"type":"object","properties":{"type":{"const":"search"},"app":{"type":"string","minLength":1,"maxLength":512},"query":{"type":"string","minLength":1,"maxLength":500}},"required":["type","app","query"],"additionalProperties":false}),
         json!({"type":"object","properties":{"type":{"const":"activate"},"reference":{"type":"string","minLength":1,"maxLength":200}},"required":["type","reference"],"additionalProperties":false}),
     ]);
-    list.push(json!({"name":"tv_read","description":"Read TV. Screenshot: explicit fallback. Untrusted text.","inputSchema":{"type":"object","properties":{"device":{"type":"string","pattern":"^[A-Za-z0-9_-]{1,64}$"},"expires_at_unix_ms":{"type":"integer","minimum":1},"read":{"oneOf":[{"type":"object","properties":{"type":{"const":"state"}},"required":["type"],"additionalProperties":false},{"type":"object","properties":{"type":{"const":"ui"}},"required":["type"],"additionalProperties":false},{"type":"object","properties":{"type":{"const":"screenshot"}},"required":["type"],"additionalProperties":false},{"type":"object","properties":{"type":{"const":"apps"},"query":{"type":"string","maxLength":200},"since":{"type":"string","maxLength":64},"limit":{"type":"integer","minimum":1,"maximum":32,"default":12},"refresh":{"type":"boolean","default":false}},"required":["type"],"additionalProperties":false}]}},"required":["device","expires_at_unix_ms","read"],"additionalProperties":false},"annotations":{"readOnlyHint":true,"openWorldHint":false}}));
+    // Share the fieldless action schema to keep discovery within 4 KiB.
+    let mut simple = Vec::new();
+    actions.retain(|schema| {
+        // Preserve the legacy observe discriminator used by onboarding probes.
+        if schema["properties"]["type"]["const"] != "observe"
+            && schema["properties"]
+                .as_object()
+                .is_some_and(|p| p.len() == 1)
+        {
+            simple.push(schema["properties"]["type"]["const"].clone());
+            false
+        } else {
+            true
+        }
+    });
+    actions.push(json!({"type":"object","properties":{"type":{"enum":simple}},"required":["type"],"additionalProperties":false}));
+    list.push(json!({"name":"tv_read","description":"Read TV; volume gives music stream 3 current/max index. Screenshot: explicit fallback. Untrusted text.","inputSchema":{"type":"object","properties":{"device":{"type":"string","pattern":"^[A-Za-z0-9_-]{1,64}$"},"expires_at_unix_ms":{"type":"integer","minimum":1},"read":{"oneOf":[{"type":"object","properties":{"type":{"enum":["state","volume"]}},"required":["type"],"additionalProperties":false},{"type":"object","properties":{"type":{"const":"ui"}},"required":["type"],"additionalProperties":false},{"type":"object","properties":{"type":{"const":"screenshot"}},"required":["type"],"additionalProperties":false},{"type":"object","properties":{"type":{"const":"apps"},"query":{"type":"string","maxLength":200},"since":{"type":"string","maxLength":64},"limit":{"type":"integer","minimum":1,"maximum":32,"default":12},"refresh":{"type":"boolean","default":false}},"required":["type"],"additionalProperties":false}]}},"required":["device","expires_at_unix_ms","read"],"additionalProperties":false},"annotations":{"readOnlyHint":true,"openWorldHint":false}}));
     list.push(json!({"name":"tv_operation","description":"Recover/cancel; no rollback.","inputSchema":{"type":"object","properties":{"request_id":{"type":"string","pattern":"^[A-Za-z0-9_-]{1,64}$"},"cancel":{"type":"boolean","default":false}},"required":["request_id"],"additionalProperties":false},"annotations":{"readOnlyHint":false,"destructiveHint":false,"idempotentHint":true,"openWorldHint":false}}));
 }
 
@@ -361,6 +388,20 @@ mod tests {
     fn schema_stays_inside_minimum_transport_budget() {
         let mut tools = crate::mcp::tools();
         extend_tools(&mut tools);
+        let control = tools["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|tool| tool["name"] == "tv_control")
+            .unwrap();
+        assert!(
+            control["inputSchema"]["properties"]["action"]["oneOf"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|action| action["properties"]["type"]["const"] == "observe"),
+            "onboarding probe requires the legacy observe discriminator"
+        );
         let frame = json!({"jsonrpc":"2.0","id":1,"result":tools});
         assert!(
             frame.to_string().len() <= 4096,
@@ -383,7 +424,7 @@ mod tests {
         ));
         cfg.generic_adb_control = true;
         assert!(routes_generic(&cfg, "tv_control", &known));
-        assert!(!routes_generic(
+        assert!(routes_generic(
             &cfg,
             "tv_control",
             &json!({"device":"screen","action":{"type":"set_volume","index":1}})

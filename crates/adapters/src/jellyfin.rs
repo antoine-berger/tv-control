@@ -129,6 +129,7 @@ impl<'a> Jellyfin<'a> {
             media_id: session.now_playing_item.map(|i| i.id),
             position_ticks: session.play_state.and_then(|p| p.position_ticks),
             volume_index: None,
+            volume_max_index: None,
         })
     }
     pub fn resolve(&self, device: &str, alias: &str, ctx: &Context<'_>) -> PortResult<MediaPlan> {

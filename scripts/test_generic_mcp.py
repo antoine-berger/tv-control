@@ -34,6 +34,15 @@ if command[:3]==['cmd','package','query-activities']:
         print('2 activities found:')
         for i,(package,label) in enumerate([('com.fixture.video','YouTube'),('com.fixture.music','YouTube Music')]):
             print(f'  Activity #{i}:\n    ActivityInfo:\n      name={package}.Main\n      packageName={package}\n      labelRes=0x0 nonLocalizedLabel={label} icon=0x0\n      ApplicationInfo:\n        packageName={package}')
+elif command==['cmd','media_session','volume','--stream','3','--get']:
+    if state.get('volume_unreadable'): print('unsupported');sys.exit()
+    print('[V] volume is '+str(state.get('volume',8))+' in range [0..'+str(state.get('volume_max',15))+']')
+elif command[:6]==['cmd','media_session','volume','--stream','3','--set']:
+    state['volume_sets']=state.get('volume_sets',[])+[int(command[6])]
+    if not state.get('fixed_volume'): state['volume']=int(command[6])
+    if state.get('volume_read_lost_after'): state['volume_unreadable']=True
+    state_path.write_text(json.dumps(state))
+    if state.get('volume_command_fail'): sys.exit(1)
 elif command==['dumpsys','power']:
     if state.get('offline'): sys.exit(1)
     dump='POWER MANAGER (dumpsys power)\n  mWakefulness='+state.get('power','Asleep')+'\n  mIsPowered=false\n'
@@ -142,7 +151,10 @@ class GenericMcp(unittest.TestCase):
     def test_wake_verifies_power_and_replays_after_restart(self):
         schema=self.rpc('tools/list',{})
         control=next(t for t in schema['tools'] if t['name']=='tv_control')
-        self.assertIn('wake',[a['properties']['type']['const'] for a in control['inputSchema']['properties']['action']['oneOf']])
+        types=[kind for a in control['inputSchema']['properties']['action']['oneOf'] for kind in a['properties']['type'].get('enum',[a['properties']['type'].get('const')])]
+        self.assertIn('wake',types)
+        self.assertIn('mute',types)
+        self.assertIn('set_volume',types)
         result=self.control('wake',{'type':'wake'})['structuredContent']
         self.assertEqual(result['status'],'verified')
         self.assertTrue(result['state']['awake'])
@@ -158,6 +170,56 @@ class GenericMcp(unittest.TestCase):
         self.assertEqual(result['status'],'failed')
         self.assertEqual(result['code'],'wake_transport_unavailable')
         self.assertNotIn('wakes',json.loads(path.read_text()))
+    def test_volume_discovery_mute_and_restart_deduplication(self):
+        data=self.tool('tv_read',{'device':'screen','expires_at_unix_ms':int(time.time()*1000)+9000,'read':{'type':'volume'}})['structuredContent']
+        self.assertEqual(data['state']['volume_index'],8)
+        self.assertEqual(data['state']['volume_max_index'],15)
+        caps=self.tool('tv_capabilities',{})['structuredContent']
+        self.assertEqual(caps['devices'][0]['actions']['mute'],'device_dependent')
+        self.assertEqual(caps['devices'][0]['actions']['set_volume'],'device_dependent')
+        result=self.control('mute_once',{'type':'mute'})['structuredContent']
+        self.assertEqual(result['status'],'verified',result)
+        self.assertEqual(result['state']['volume_index'],0)
+        self.close_process();self.start()
+        self.assertTrue(self.control('mute_once',{'type':'mute'})['structuredContent']['cached'])
+        self.assertEqual(self.control('mute_twice',{'type':'mute'})['structuredContent']['status'],'verified')
+        self.assertEqual(json.loads((self.root/'state.json').read_text())['volume_sets'],[0])
+    def test_set_volume_detects_native_scale_without_calibration(self):
+        result=self.control('volume',{'type':'set_volume','index':4})['structuredContent']
+        self.assertEqual(result['status'],'verified',result)
+        self.assertEqual(result['state']['volume_index'],4)
+        self.assertEqual(result['state']['volume_max_index'],15)
+        self.close_process();self.start()
+        self.assertTrue(self.control('volume',{'type':'set_volume','index':4})['structuredContent']['cached'])
+        self.assertEqual(self.control('volume',{'type':'set_volume','index':0})['structuredContent']['code'],'request_id_conflict')
+        result=self.control('too_high',{'type':'set_volume','index':16})['structuredContent']
+        self.assertEqual(result['code'],'volume_out_of_range')
+        self.assertEqual(json.loads((self.root/'state.json').read_text())['volume_sets'],[4])
+    def test_volume_unavailable_never_dispatches(self):
+        path=self.root/'state.json';state=json.loads(path.read_text());state['volume_unreadable']=True;path.write_text(json.dumps(state))
+        for action in ({'type':'mute'},{'type':'set_volume','index':0}):
+            result=self.control(action['type'],action)['structuredContent']
+            self.assertEqual(result['status'],'failed',result)
+            self.assertEqual(result['code'],'volume_state_unavailable')
+        self.assertNotIn('volume_sets',json.loads(path.read_text()))
+    def test_mute_lost_readback_never_claims_silence_or_replays(self):
+        path=self.root/'state.json';state=json.loads(path.read_text());state['volume_read_lost_after']=True;path.write_text(json.dumps(state))
+        result=self.control('mute_lost',{'type':'mute'})['structuredContent']
+        self.assertEqual(result['status'],'outcome_unknown',result)
+        self.close_process();self.start()
+        self.assertTrue(self.control('mute_lost',{'type':'mute'})['structuredContent']['cached'])
+        self.assertEqual(json.loads(path.read_text())['volume_sets'],[0])
+    def test_mute_failed_dispatch_is_unknown_and_not_retried(self):
+        path=self.root/'state.json';state=json.loads(path.read_text());state['volume_command_fail']=True;path.write_text(json.dumps(state))
+        result=self.control('mute_failed',{'type':'mute'})['structuredContent']
+        self.assertEqual(result['status'],'outcome_unknown',result)
+        self.assertTrue(self.control('mute_failed',{'type':'mute'})['structuredContent']['cached'])
+        self.assertEqual(json.loads(path.read_text())['volume_sets'],[0])
+    def test_fixed_volume_does_not_verify_or_retry(self):
+        path=self.root/'state.json';state=json.loads(path.read_text());state['fixed_volume']=True;path.write_text(json.dumps(state))
+        result=self.tool('tv_control',{'request_id':'fixed','device':'screen','expires_at_unix_ms':int(time.time()*1000)+1500,'action':{'type':'mute'}})['structuredContent']
+        self.assertEqual(result['status'],'outcome_unknown',result)
+        self.assertEqual(json.loads(path.read_text())['volume_sets'],[0])
     def test_wake_large_power_dumps_ignore_text_budget(self):
         for budget in (4096,65536):
             with self.subTest(text_budget=budget):

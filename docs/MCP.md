@@ -127,6 +127,7 @@ original client expiry. Do not issue them against a real TV without authorizatio
 {"device":"screen","expires_at_unix_ms":1,"read":{"type":"apps","query":"YouTube","limit":12}}
 {"device":"screen","expires_at_unix_ms":1,"read":{"type":"apps","since":"previous_revision"}}
 {"device":"screen","expires_at_unix_ms":1,"read":{"type":"state"}}
+{"device":"screen","expires_at_unix_ms":1,"read":{"type":"volume"}}
 {"device":"screen","expires_at_unix_ms":1,"read":{"type":"ui"}}
 ```
 
@@ -188,3 +189,42 @@ The controller reads native power state, not a foreground activity. `verified` r
 The internal power-state dump has a separate 1 MiB limit, so verbose vendor diagnostics do not consume the ordinary text-response budget. Dumps exceeding that limit fail without accepting a truncated state: before dispatch no wake key is sent; after dispatch the outcome remains unknown. Ordinary MCP text limits are unchanged.
 
 ADB must remain reachable during standby. Deep sleep, powered-off devices, or a sleeping network interface may require the physical remote. This action does not add Wake-on-LAN, change power/network settings, or establish new device access. Hardware support must be tested separately.
+
+
+### Idempotent music-stream mute
+
+Use `tv_control` with `action: {"type":"mute"}` and the normal device, expiry and
+request ID. This requires `generic_adb_control: true`. It works without configured
+`volume_max_index`: the controller reads the
+Android music stream (stream 3), sets its index to zero, then reads it back. An
+already-zero index is a verified no-op. No mute-toggle key is sent, volume is
+never increased, and there is no automatic unmute or restore action.
+
+Support is device-dependent. `verified` means that the Android music-stream index
+was observed at zero, not that every physical speaker or an external HDMI/CEC
+receiver is silent. Do not describe the result as verified system-wide mute.
+Unreadable or unsupported pre-dispatch state prevents the write. After a write,
+a failed read or a state that cannot be verified is not success; preserve an
+uncertain outcome and recover the same operation rather than retrying under a
+fresh ID. Hardware/audio-route qualification is separate from fixture tests.
+
+
+### Native-range music-stream volume
+
+Use `tv_read` with `read: {"type":"volume"}` to obtain `state.volume_index` and
+`state.volume_max_index`: the current Android music-stream (stream 3) index and
+the actual device maximum. An index is not a percentage or the volume of an
+external HDMI/CEC receiver. Do not silently translate a percentage request into
+an index without knowing the native range.
+
+With `generic_adb_control: true`, `tv_control` accepts
+`action: {"type":"set_volume","index":N}` without saved calibration. It probes
+the native range before dispatch, rejects out-of-range indices, and verifies the
+requested index afterward. A configured `volume_max_index` must still match the
+detected maximum. `tv_capabilities` reports generic `set_volume` as
+`device_dependent`, not universally supported. Unreadable native state prevents
+dispatch; a command acknowledgement alone is never verification.
+
+Without the generic grant, the existing calibrated legacy path remains unchanged:
+`volume_max_index` is required. Use dedicated `mute` for an explicit mute request;
+it only targets zero and never toggles or restores a previous volume.

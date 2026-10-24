@@ -33,6 +33,11 @@ pub enum Intent {
         url: String,
     },
     Wake,
+    /// Set Android music stream to zero; never toggle mute or restore volume.
+    Mute,
+    SetVolume {
+        index: u16,
+    },
     Pause,
     Resume,
     Navigate {
@@ -77,6 +82,7 @@ pub struct Screenshot {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Read {
     State,
+    Volume,
     Screenshot,
     Apps {
         query: Option<String>,

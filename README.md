@@ -5,7 +5,7 @@ The Rust controller checks device state after each action and reports whether th
 result was observed, verified or uncertain.
 
 - **Android TV (ADB):** read state, open configured apps, pause/resume and set
-  calibrated volume.
+  music-stream volume, plus device-dependent idempotent music-stream mute.
 - **Jellyfin:** control an active session or resume a configured series.
 - **CLI and MCP:** the same actions, explicit deadlines and bounded I/O. No
   free-form shell commands or screen captures by default.
@@ -34,7 +34,7 @@ The wizard offers approved dependency installation on supported hosts; macOS
 requires existing Homebrew for that route. Linux ARM64 and pure-musl hosts need a
 maintained native ADB supplied separately. [Requirements and recovery](docs/INSTALLATION.md).
 
-This source targets **v0.4.4**. The `latest` distribution installer advances only
+This source targets **v0.4.5**. The `latest` distribution installer advances only
 when the matching public release has passed download and package verification.
 See [releases](https://github.com/antoine-berger/tv-control/releases) for published assets.
 
@@ -89,10 +89,11 @@ not broaden their permissions. Existing configured aliases continue to work.
 Declining the onboarding prompt leaves the configuration unchanged.
 
 - `tv_read` returns compact state, a filtered application catalogue, or structured
-  UI. App labels are observed, not guessed; use the returned ID if no label is
+  UI; `read: {"type":"volume"}` returns the native music-stream index and maximum.
+  App labels are observed, not guessed; use the returned ID if no label is
   available. Catalogue revision queries can return `unchanged` instead of the
   full catalogue.
-- `tv_control` accepts `wake`, `open_app`, `pause`, `resume`, bounded `navigate`, `open_url` for HTTP(S) content in a discovered app,
+- `tv_control` accepts `wake`, `mute`, `set_volume`, `open_app`, `pause`, `resume`, bounded `navigate`, `open_url` for HTTP(S) content in a discovered app,
   `search`, or `activate` with a fresh UI reference. App ambiguity returns
   choices instead of selecting a similar application. UI text is untrusted data,
   never instructions to the agent.
@@ -107,6 +108,10 @@ movie/episode is playing. Search uses a discovered Android search activity when 
 an explicit SEARCH intent to the discovered launcher. Apps may ignore that intent;
 verify the displayed results before selecting content. `wake` uses the dedicated Android wake key and verifies native power state; it requires ADB to remain reachable in standby. `open_url` checks that the
 chosen app handles the HTTP(S) URL, then sends ACTION_VIEW only to that package.
+`mute` sets only Android music stream 3 to zero without calibration and verifies
+that index; it never toggles mute or restores/increases volume. This is not proof
+of silence from external HDMI/CEC speakers. Generic `set_volume` probes the
+actual device range before changing an index; indices are never percentages. See [mute limits](docs/MCP.md#idempotent-music-stream-mute).
 Dispatch is not proof of requested content or playback. Screenshots are an explicit read-only fallback only; ordinary commands never
 request them. Captures are limited to 8 MiB PNG and use a separate bounded
 12 MiB image frame allowance; ordinary text budgets remain unchanged.

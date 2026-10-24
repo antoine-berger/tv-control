@@ -5,7 +5,7 @@
 main() {
 set -eu
 umask 077
-DEFAULT_VERSION=v0.4.4
+DEFAULT_VERSION=v0.4.5
 RELEASE_ROOT=https://github.com/antoine-berger/tv-control/releases/download
 guided=no
 if [ "$#" -eq 0 ]; then guided=yes; fi
@@ -32,7 +32,7 @@ uid=
 usage() {
     cat <<'EOF'
 Usage: sh install.sh [options]
-  --version vX.Y.Z       Pin a release (default v0.4.4; never resolves latest)
+  --version vX.Y.Z       Pin a release (default v0.4.5; never resolves latest)
   --prefix ABSOLUTE_DIR  Dedicated install root (default ~/.local/share/tv-control)
   --non-interactive     Install without prompts; never runs setup or device access
   --interactive         Ask before installation; optionally offer guided setup

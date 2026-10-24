@@ -39,6 +39,7 @@ pub struct Observed {
     pub media_id: Option<String>,
     pub position_ticks: Option<u64>,
     pub volume_index: Option<u16>,
+    pub volume_max_index: Option<u16>,
 }
 impl Default for Observed {
     fn default() -> Self {
@@ -51,6 +52,7 @@ impl Default for Observed {
             media_id: None,
             position_ticks: None,
             volume_index: None,
+            volume_max_index: None,
         }
     }
 }

@@ -314,3 +314,20 @@ fn configuration_output_floor_reserves_room_for_mcp_schema() {
     cfg.preferences.max_frame_bytes = 1024;
     assert_eq!(cfg.validate(), Ok(()));
 }
+
+#[test]
+fn volume_parser_accepts_native_aosp_logging_and_rejects_ambiguous_evidence() {
+    assert_eq!(parse_volume("[V] will control stream=3 (STREAM_MUSIC)\n[V] will get volume\n[V] volume is 4 in range [0..15]\n"), Some((4,15)));
+    assert_eq!(
+        parse_volume("[V] volume is 4 in range [0..15]\n[V] volume is 0 in range [0..15]"),
+        None
+    );
+    assert_eq!(
+        parse_volume("untrusted prefix volume is 0 in range [0..15]"),
+        None
+    );
+    assert_eq!(
+        parse_volume("[V] volume is 0 in range [0..15] trailing data"),
+        None
+    );
+}

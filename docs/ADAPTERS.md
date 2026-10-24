@@ -6,7 +6,7 @@ and curl executables; neither executable, an ADB daemon nor a tunnel is bundled.
 
 | Backend | Implemented | Unavailable |
 | --- | --- | --- |
-| ADB | State reads, TV app launch, targeted media pause/play, optional calibrated music stream volume | Discovery, pairing, connection setup, media catalogue or title selection |
+| ADB | State reads, TV app launch, targeted media pause/play, calibrated or generic native-range music stream volume, generic music-stream mute | Discovery, pairing, connection setup, media catalogue or title selection |
 | Jellyfin HTTP via curl | Exact session selection, pause/unpause, configured series resume at saved position, postcondition reads | App launch, volume, library mutation or credential creation |
 | YouTube / YouTube Music | Generic ADB app launch and native media controls where supported | Search, lyrics, song/video mode, account navigation or a service-specific Cast adapter |
 | Cast / Android TV Remote v2 / UIAutomator | No implemented backend | These are extension possibilities, not working adapters |
@@ -23,10 +23,22 @@ foreground app afterward. Pause/resume requires a configured `media_app` and one
 unambiguous media-session tag. Tags duplicated across any package are rejected
 because Android's monitor command selects by tag alone.
 
-Volume control is disabled unless `volume_max_index` is configured and matches
-the observed maximum. Its unit is the Android music stream index. It is neither
+Legacy `set_volume` is disabled unless `volume_max_index` is configured and matches
+the observed maximum. With the explicit generic ADB grant, `set_volume` probes
+the native range instead and does not require calibration; a configured maximum
+must still match. `tv_read` with `read: {"type":"volume"}` exposes both
+`volume_index` and `volume_max_index` from that device. The unit is the Android
+music stream index. It is neither
 TV percent nor an external receiver's level, and need not match the number shown
 by a television.
+
+Generic `mute` is separately available under the explicit generic ADB grant. It
+requires readable Android music stream 3 volume, sets that stream to zero, and
+verifies zero afterward. An already-zero stream needs no write. It does not
+require `volume_max_index`, send a mute-toggle key, increase volume, or implement
+unmute/restore. Device commands and audio routing vary: a zero music-stream
+index does not prove external HDMI/CEC speakers are silent. Unsupported or
+unreadable state must not become a verified result. See [MCP mute semantics](MCP.md#idempotent-music-stream-mute).
 
 ### ADB daemon ownership
 

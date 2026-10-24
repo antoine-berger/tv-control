@@ -127,7 +127,7 @@ pub fn tools() -> Value {
     };
     json!({"tools":[
         {"name":"tv_capabilities","description":"List configured aliases and qualified adapter capabilities. No device access.","inputSchema":{"type":"object","properties":{},"additionalProperties":false},"annotations":{"readOnlyHint":true,"openWorldHint":false}},
-        {"name":"tv_control","description":"Execute one configured TV intent with an absolute expiry. Only status verified proves a postcondition. Volume uses a calibrated Android music stream index, not TV percent.",
+        {"name":"tv_control","description":"Execute one configured TV intent with an absolute expiry. Only status verified proves a postcondition. Volume uses a calibrated Android music stream index, not TV percent. Mute sets music stream 3 to zero without calibration; verified proves that index only, not external HDMI/CEC silence.",
         "inputSchema":{"type":"object","properties":{"request_id":{"type":"string","pattern":"^[A-Za-z0-9_-]{1,64}$"},"device":{"type":"string","pattern":"^[A-Za-z0-9_-]{1,64}$"},
             "expires_at_unix_ms":{"type":"integer","minimum":1},"action":{"oneOf":[simple("observe"),simple("pause"),simple("resume"),named("open_app","app"),named("resume_media","media"),
                 {"type":"object","properties":{"type":{"const":"set_volume"},"index":{"type":"integer","minimum":0,"maximum":1000}},"required":["type","index"],"additionalProperties":false}]}},
