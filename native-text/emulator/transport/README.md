@@ -1,7 +1,8 @@
-# Lab transport implementation: pure core only
+# Lab transport implementation: host-tested components
 
-The implementation is incomplete: there are no sockets, Java client, lab entrypoint,
-manifest/build wiring, APKs, ADB transport or runtime capability. It is not usable
+The implementation is incomplete: the Java client, manifest/build wiring and full
+host integration are still being assembled. There are no transport APKs or runtime
+qualification. It is not usable
 as a typing transport and is not part of a release. The independently reviewed
 [design](../LAB_TRANSPORT_DESIGN.md) remains the integration contract.
 
@@ -23,7 +24,11 @@ as a typing transport and is not part of a release. The independently reviewed
   hook and a NativePendingRequest owner created before context/connection/ingress.
   It calls the engine at most once, closes its registered lifecycle in finally,
   and emits only fixed Bundle metadata after explicit remote cleanup attestation.
-  The lab socket subclass does not exist yet. The default legacy research ingress
+  The final lab socket subclass inherits the actual common onStart and finish;
+  host tests inspect its compiled method declarations and exercise that entrypoint.
+  The base remains overridable for the historical engine-only RuntimeProof; this
+  is a tested lab-class invariant, not a Java prohibition for every subclass.
+  The default legacy research ingress
   still yields NOT_APPLICABLE cleanup and can never qualify as lab transport.
 * LabEditorIssuer observes a native editor from that same UiAutomation connection,
   checks intended package/resource before text access, rejects hint/secret metadata,
@@ -49,6 +54,9 @@ python3.14 native-text/emulator/transport/test_wrapper.py --java "$JAVA_HOME/bin
 python3.14 -W error::ResourceWarning native-text/emulator/transport/test_owner.py
 python3.14 native-text/emulator/transport/test_issuer.py --java "$JAVA_HOME/bin/java"
 python3.14 native-text/emulator/transport/test_private_request.py --java "$JAVA_HOME/bin/java"
+python3.14 native-text/emulator/transport/test_socket_io.py --java "$JAVA_HOME/bin/java"
+python3.14 native-text/emulator/transport/test_session.py --java "$JAVA_HOME/bin/java"
+python3.14 native-text/emulator/transport/test_lab_entry.py --java "$JAVA_HOME/bin/java"
 ```
 
 The checks cover malformed/truncated/noncanonical frames and bounds, nonce copies,
@@ -74,3 +82,19 @@ Private-cache tests use real host files and the exact extracted TextEngine.Reque
 decoder. They exercise exclusive creation/modes, original expiry, engine unlink,
 symlink/inode replacement preservation, unknown-allocation checkpoints and close
 failures. They do not qualify the Android NIO provider or a device cache.
+
+The socket layer now uses public LocalServerSocket/LocalSocket and borrowed Os
+nonblocking I/O. A failed server constructor keeps allocation/cleanup unverified.
+The client binds a public abstract address before setting NONBLOCK and making
+exactly one connect call; any denial or pending-connect error stops. Host fakes
+cover deadlines, peer admission before private I/O, partial frames, close failures
+and descriptor reuse. They do not qualify JNI, SELinux or Android FD closure.
+
+LabSocketSession registers before opening resources, permits a first CANCEL with
+zero editor observation, and otherwise issues a ref only for the owned synthetic
+fixture package/resource. Its watcher uses the same synchronized core cancellation/
+entry boundary; every codec failure aborts, and late failures stay uncertain.
+The final Bundle is emitted only after bounded watcher join and attempted socket/
+cache closure with explicit proofs. The Bundle attests those owned resources;
+the host must separately require the remote shell's client wait/reap witness.
+Tests use fake ports/cache/editor/engine and do not qualify a remote lifecycle.
