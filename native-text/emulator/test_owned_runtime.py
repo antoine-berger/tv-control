@@ -79,7 +79,7 @@ class BoundedHostTests(unittest.TestCase):
                      valid.replace("f5", "f5u"), valid.replace("f5", "f-1"),
                      valid.replace("f5", "f5\n\n"), valid.replace("f5", "cprocess"),
                      valid.replace("127.0.0.1", "0.0.0.0"),
-                     valid.replace("127.0.0.1", "10.0.0.1"),
+                     valid.replace("127.0.0.1", "192.0.2.1"),
                      valid.replace("127.0.0.1", "localhost"),
                      valid.replace("49152", "5037"), valid.replace("49152", "15037"),
                      "p123\nf5\nn127.0.0.1:49152\nf6\nn*:49152\n"]
