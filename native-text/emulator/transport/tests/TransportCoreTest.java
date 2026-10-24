@@ -186,6 +186,10 @@ public final class TransportCoreTest {
         fault(LabProtocol.Reason.LIMIT_EXCEEDED, () -> full.append("x"));
         fault(LabProtocol.Reason.EDITOR_UNSUPPORTED, () -> new EditorBinding("bad\npackage","id","role",1,0,0,1,1,"seed",4,4));
         fault(LabProtocol.Reason.EDITOR_UNSUPPORTED, () -> new EditorBinding("pkg","id","role",1,0,0,1,1,"seed",1,1));
+        for (int window:new int[]{-1,Integer.MIN_VALUE})
+            fault(LabProtocol.Reason.EDITOR_UNSUPPORTED, () -> new EditorBinding("pkg","id","role",window,0,0,1,1,"seed",4,4));
+        for (int window:new int[]{0,Integer.MAX_VALUE})
+            check(new EditorBinding("pkg","id","role",window,0,0,1,1,"seed",4,4).window==window);
         Clock clock=new Clock(); IssuedEditor operation=operation(clock,1,15100);
         IssuedEditor.Lease lease=operation.issue(binding("seed"),100);
         LabProtocol.Command command=commit(lease,"x"); AtomicInteger won=new AtomicInteger(), refused=new AtomicInteger();

@@ -12,7 +12,7 @@ final class EditorBinding {
             int x1, int y1, int x2, int y2, String text, int start, int end)
             throws LabProtocol.Fault {
         if (!field(pkg) || !field(id) || !field(cls) || text == null
-                || text.length() > 256 || !utf8(text) || x2 <= x1 || y2 <= y1
+                || text.length() > 256 || !utf8(text) || windowId < 0 || x2 <= x1 || y2 <= y1
                 || start != text.length() || end != text.length())
             throw new LabProtocol.Fault(LabProtocol.Reason.EDITOR_UNSUPPORTED);
         packageName = pkg; resource = id; role = cls; window = windowId;
