@@ -61,7 +61,7 @@ elif command==['dumpsys','activity','activities']:
     print('mResumedActivity: ActivityRecord{123 u0 '+state['package']+'/.Main t1}')
 elif command[:2]==['am','start']:
     component=command[command.index('-n')+1] if '-n' in command else command[command.index('-p')+1]
-    state['package']=component.split('/')[0];state['launches']+=1
+    state['package']=state.get('launch_foreground',component.split('/')[0]);state['launches']+=1
     state_path.write_text(json.dumps(state));print('Status: ok')
 elif command==['cmd','media_session','list-sessions']:
     print('Sessions:')
@@ -370,6 +370,26 @@ class GenericMcp(unittest.TestCase):
         self.assertEqual(result['status'],'observed')
         self.assertEqual(result['code'],'wake_dispatched_unverified')
         self.assertNotIn('awake',result['state'])
+    def test_cross_package_launch_keeps_execution_evidence_with_minimum_output_budget(self):
+        self.close_process()
+        cfg=json.loads(self.config.read_text());cfg['preferences']['max_output_bytes']=4096;self.config.write_text(json.dumps(cfg))
+        path=self.root/'state.json';state=json.loads(path.read_text());state['launch_foreground']='org.fixture.player';path.write_text(json.dumps(state))
+        self.start()
+        action={'type':'open_app','app':'com.fixture.music/com.fixture.music.Main'}
+        result=self.tool('tv_control',{'request_id':'cross_package','device':'screen','expires_at_unix_ms':int(time.time()*1000)+1800,'action':action})['structuredContent']
+        self.assertEqual(result['status'],'outcome_unknown',result)
+        self.assertEqual(result['state']['app'],'org.fixture.player')
+        self.assertTrue(result['state']['connected'])
+        self.assertEqual(result['state_scope'],'execution_observation')
+        self.assertEqual(result['timing_scope'],'application_execution')
+        self.assertLess(len(json.dumps(result)),1000)
+        self.close_process();self.start()
+        recovered=self.tool('tv_operation',{'request_id':'cross_package'})['structuredContent']
+        self.assertEqual(recovered,result)
+        replay=self.control('cross_package',action)['structuredContent']
+        self.assertTrue(replay.pop('cached'))
+        self.assertEqual(replay,result)
+        self.assertEqual(json.loads(path.read_text())['launches'],1)
     def test_name_resolution_and_restart_replay(self):
         result=self.control('open_video',{'type':'open_app','app':'YouTube'})
         self.assertEqual(result['structuredContent']['status'],'verified')

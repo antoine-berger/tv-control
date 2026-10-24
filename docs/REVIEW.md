@@ -56,3 +56,34 @@ ADB process may then occupy the dedicated port. The adapter refuses that occupie
 port rather than adopting or killing an unknown process. Recovery after such a
 failure still needs explicit diagnosis. The free-port check and foreground start
 also have an OS scheduling gap; no daemon-manager operation is used to repair it.
+
+## Extended generic controls (v0.4.7 source candidate)
+
+The extended batch combines remote navigation, Jellyfin catalogue/exact playback,
+last-observation diagnostics and the source-size gate with the existing strict
+session parser and focused-text implementation. These are integration contracts,
+not live device qualification:
+
+- Long-select follows the same UI-reference invalidation as navigation, including
+  a rejected syntax probe. Old activation/text references cannot be revived by an
+  identical-looking screen; remote capability reads never inject a test key.
+- A completed catalogue read must still pass expiry/cancellation checks before
+  an already-satisfied paused seek can return a verified no-op.
+- Native media commands retain exact session identity and advertised action-mask
+  checks. Jellyfin item/source controls remain separate, capability-gated adapter
+  operations; no app names or model-specific fallback enter the generic core.
+- Bounded uncertain diagnostics discard media item/source identities and position.
+  Durable complete receipts can contain source identity: follow the coordinated
+  [journal upgrade boundary](MCP.md#shared-journal-upgrade-boundary). Never delete a
+  journal or replay an uncertain operation to recover from an upgrade problem.
+- Every individual tool fits the minimum 4,096-byte output frame. The aggregate
+  catalogue is paginated; the isolated installer proof journey checks all six
+  tools, including `tv_media_read` and `tv_verify_connection`, across those pages.
+- The maintained-source size policy covers the integration tests as well as
+  production code. Remote adapter regressions stay in their cohesive test module,
+  alongside the existing UI, media, power and volume modules.
+
+Offline tests use injected executables, clocks and loopback services. They do not
+qualify a real Jellyfin API, client, TV, macOS installation, physical playback,
+remote-key acceptance or speaker silence. Publishing, cross-platform CI and
+hardware acceptance are separate gates from local source integration.

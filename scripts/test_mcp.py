@@ -26,6 +26,8 @@ class Fixture(BaseHTTPRequestHandler):
     slow = False
     position_mode = "progressing"
     ignore_seek = False
+    source = "source"
+    item = "episode"
     def log_message(self, *_):
         pass
     def do_GET(self):
@@ -34,14 +36,20 @@ class Fixture(BaseHTTPRequestHandler):
         if self.path == "/System/Info/Public":
             value = {"Version": "12.0.0"}
         elif self.path.startswith("/Sessions?"):
-            if Fixture.position_mode == "progressing":
+            if Fixture.position_mode == "progressing" and not Fixture.paused:
                 Fixture.position += 10
-            state = {"IsPaused":Fixture.paused}
+            state = {"IsPaused":Fixture.paused,"MediaSourceId":Fixture.source,"CanSeek":True}
             if Fixture.position_mode != "missing":
                 state["PositionTicks"] = None if Fixture.position_mode == "null" else Fixture.position
             value = [{"Id":"session", "DeviceId":"example_device", "UserId":"example_user",
-                      "SupportsRemoteControl":True,"NowPlayingItem":{"Id":"episode"},
+                      "SupportsRemoteControl":True,"SupportsMediaControl":True,"PlayableMediaTypes":["Video"],"NowPlayingItem":{"Id":Fixture.item},
                       "PlayState":state}]
+        elif self.path.startswith("/Items?"):
+            query = parse_qs(urlsplit(self.path).query).get("searchTerm", [""])[0]
+            count = 20 if query == "large" else 1
+            value = {"Items":[{"Id":f"item{i}","Name":"x"*2000,"Type":"Movie"} for i in range(count)]}
+            if "ids=" in self.path:
+                value = {"Items":[{"Id":"episode","Name":"Pilot","Type":"Episode","MediaSources":[{"Id":"source","RunTimeTicks":100_000_000}]}]}
         elif self.path.startswith("/UserItems/Resume?"):
             value = {"Items":[{"Id":"episode","SeriesId":"example_series","UserData":{"PlaybackPositionTicks":100}}]}
         else:
@@ -61,9 +69,15 @@ class Fixture(BaseHTTPRequestHandler):
             Fixture.paused = True
         elif self.path.endswith("/Unpause"):
             Fixture.paused = False
+        elif self.path.startswith("/Sessions/session/Playing/Seek?"):
+            query = parse_qs(urlsplit(self.path).query)
+            if not Fixture.ignore_seek:
+                Fixture.position = int(query["seekPositionTicks"][0])
         elif self.path.startswith("/Sessions/session/Playing?"):
             Fixture.paused = False
             query = parse_qs(urlsplit(self.path).query)
+            Fixture.source = query.get("mediaSourceId", ["source"])[0]
+            Fixture.item = query["itemIds"][0]
             Fixture.position = 1_000_000_000 if Fixture.ignore_seek else int(query["startPositionTicks"][0])
         else:
             self.send_error(404)
@@ -79,6 +93,8 @@ class MCP(unittest.TestCase):
         Fixture.slow = False
         Fixture.position_mode = "progressing"
         Fixture.ignore_seek = False
+        Fixture.source = "source"
+        Fixture.item = "episode"
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), Fixture)
         threading.Thread(target=self.server.serve_forever, daemon=True).start()
         self.tmp = tempfile.TemporaryDirectory()
@@ -123,7 +139,7 @@ class MCP(unittest.TestCase):
     def test_tools_schema_and_unknown_arguments(self):
         self.send({"jsonrpc":"2.0","id":2,"method":"tools/list"})
         tools = self.receive()["result"]["tools"]
-        self.assertEqual({t["name"] for t in tools}, {"tv_control", "tv_capabilities", "tv_read", "tv_operation"})
+        self.assertEqual({t["name"] for t in tools}, {"tv_control", "tv_capabilities", "tv_read", "tv_operation", "tv_media_read"})
         self.send({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"tv_control","arguments":{"shell":"anything"}}})
         self.assertEqual(self.receive()["error"]["code"], -32602)
     def reinitialize(self, rpc_id):
@@ -142,7 +158,7 @@ class MCP(unittest.TestCase):
             self.assertEqual(self.receive()["error"]["message"], "initialize_first")
             self.send({"jsonrpc":"2.0","method":"notifications/initialized"})
             self.send({"jsonrpc":"2.0","id":rpc_id+2,"method":"tools/list"})
-            self.assertEqual(len(self.receive()["result"]["tools"]), 4)
+            self.assertEqual(len(self.receive()["result"]["tools"]), 5)
         self.assertEqual(Fixture.post_count, 0)
 
     def test_malformed_reinitialize_preserves_validated_session(self):
@@ -151,13 +167,13 @@ class MCP(unittest.TestCase):
             self.send({"jsonrpc":"2.0","id":10,"method":"initialize","params":params})
             self.assertEqual(self.receive()["error"]["code"], -32602)
             self.send({"jsonrpc":"2.0","id":11,"method":"tools/list"})
-            self.assertEqual(len(self.receive()["result"]["tools"]), 4)
+            self.assertEqual(len(self.receive()["result"]["tools"]), 5)
         self.reinitialize(12)
         # Even an interrupted handshake can be replaced by another valid one.
         self.reinitialize(13)
         self.send({"jsonrpc":"2.0","method":"notifications/initialized"})
         self.send({"jsonrpc":"2.0","id":14,"method":"tools/list"})
-        self.assertEqual(len(self.receive()["result"]["tools"]), 4)
+        self.assertEqual(len(self.receive()["result"]["tools"]), 5)
 
     def test_reinitialize_preserves_action_deduplication(self):
         self.call(2, {"type":"pause"})
@@ -231,14 +247,65 @@ class MCP(unittest.TestCase):
         self.assertEqual(result["result"]["structuredContent"]["status"], "busy")
         self.assertEqual(self.receive()["id"], 2)
 
+    def test_exact_play_item_is_verified_and_duplicate_does_not_replay(self):
+        action = {"type":"play_item","item_id":"episode","source_id":"source","position_ms":1000}
+        self.call(61, action, "exact-play", ttl=3000)
+        result = self.receive()["result"]["structuredContent"]
+        self.assertEqual(result["status"], "verified")
+        self.assertEqual(result["observed"]["media_source_id"], "source")
+        self.send({"jsonrpc":"2.0","id":64,"method":"tools/call","params":{"name":"tv_operation","arguments":{"request_id":"exact-play"}}})
+        recovered = self.receive()["result"]["structuredContent"]
+        self.assertEqual(recovered["state"]["media_source_id"], "source")
+        self.assertEqual(recovered["state"]["media_id"], "episode")
+        self.call(62, action, "exact-play", ttl=3000)
+        result = self.receive()["result"]["structuredContent"]
+        self.assertTrue(result["cached"])
+        self.assertEqual(Fixture.post_count, 1)
+        self.call(63, dict(action, source_id="other"), "exact-play", ttl=3000)
+        self.assertEqual(self.receive()["result"]["structuredContent"]["code"], "request_id_conflict")
+        self.assertEqual(Fixture.post_count, 1)
+
+    def test_paused_seek_keeps_pause_and_rejects_wrong_source(self):
+        Fixture.paused = True
+        action = {"type":"seek_media","item_id":"episode","source_id":"source","position_ms":1000}
+        self.call(71, action, "seek-paused", ttl=3000)
+        result = self.receive()["result"]["structuredContent"]
+        self.assertEqual(result["status"], "verified")
+        self.assertEqual(result["observed"]["playback"], "paused")
+        self.assertEqual(result["observed"]["position_ticks"], 10_000_000)
+        self.assertTrue(Fixture.paused)
+        self.assertEqual(Fixture.post_count, 1)
+        self.call(72, dict(action, source_id="other"), "seek-other", ttl=3000)
+        self.assertTrue(self.receive()["result"]["isError"])
+        self.assertEqual(Fixture.post_count, 1)
+
+    def test_ignored_seek_remains_unknown_without_retry(self):
+        Fixture.paused = True
+        Fixture.position = 0
+        Fixture.ignore_seek = True
+        self.call(81, {"type":"seek_media","item_id":"episode","source_id":"source","position_ms":5000}, "ignored-seek", ttl=250)
+        result = self.receive()["result"]["structuredContent"]
+        self.assertEqual(result["status"], "outcome_unknown")
+        self.assertEqual(Fixture.post_count, 1)
+
+    def test_large_media_read_reports_size_error_without_disconnect(self):
+        self.send({"jsonrpc":"2.0","id":50,"method":"tools/call","params":{"name":"tv_media_read","arguments":{"device":"media_screen","expires_at_unix_ms":int(time.time()*1000)+2000,"read":{"type":"search","query":"large","limit":20}}}})
+        result = self.receive()["result"]
+        self.assertTrue(result["isError"])
+        self.assertEqual(result["structuredContent"]["code"], "response_too_large")
+        self.send({"jsonrpc":"2.0","id":51,"method":"ping"})
+        self.assertEqual(self.receive()["result"], {})
+        self.assertEqual(Fixture.post_count, 0)
+
     def test_minimum_output_config_handshake_tools_list_and_ping(self):
         cfg = json.loads(self.config_path.read_text())
         cfg["preferences"]["max_output_bytes"] = 4096
         cfg["preferences"]["max_frame_bytes"] = 1024
         path = pathlib.Path(self.tmp.name) / "minimum-output.json"
         path.write_text(json.dumps(cfg))
+        env = dict(os.environ, TV_LIBRARY_TOKEN="fixture_only_not_a_credential")
         proc = subprocess.Popen([BINARY, "mcp", str(path)], stdin=subprocess.PIPE,
-                                stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env)
         responses = queue.Queue()
         def consume():
             for line in proc.stdout:
@@ -267,8 +334,11 @@ class MCP(unittest.TestCase):
                 names.extend(t["name"] for t in result["result"]["tools"])
                 cursor=result["result"].get("nextCursor")
             self.assertEqual(len(names),len(set(names)))
-            self.assertEqual(set(names), {"tv_control", "tv_capabilities", "tv_read", "tv_operation"})
+            self.assertEqual(set(names), {"tv_control", "tv_capabilities", "tv_read", "tv_operation", "tv_media_read"})
             self.assertEqual(exchange({"jsonrpc":"2.0","id":rpc_id,"method":"ping"})["result"], {})
+            result = exchange({"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"tv_media_read","arguments":{"device":"media_screen","expires_at_unix_ms":int(time.time()*1000)+2000,"read":{"type":"search","query":"large_one","limit":1}}}})
+            self.assertTrue(result["result"]["isError"])
+            self.assertEqual(result["result"]["structuredContent"]["code"], "response_too_large")
             self.assertIsNone(proc.poll())
         finally:
             proc.stdin.close()

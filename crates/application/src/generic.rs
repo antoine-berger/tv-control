@@ -28,6 +28,13 @@ pub trait Device: Send + Sync {
         Err(tv_domain::Failure::before("unsupported"))
     }
     fn ui(&self, device: &str, ctx: &Context<'_>) -> PortResult<UiSnapshot>;
+    fn remote_capabilities(
+        &self,
+        _device: &str,
+        _ctx: &Context<'_>,
+    ) -> PortResult<RemoteCapabilities> {
+        Err(tv_domain::Failure::before("unsupported"))
+    }
     fn screenshot(&self, _device: &str, _ctx: &Context<'_>) -> PortResult<Screenshot> {
         Err(tv_domain::Failure::before("screenshot_unsupported"))
     }
@@ -215,6 +222,9 @@ impl<D: Device, C: Clock> Service<D, C> {
             .device
             .observe_for(&request.device, &request.intent, ctx)?;
         ctx.check()?;
+        // Keep only samples completed while the operation was live. This is
+        // execution evidence, not a promise that the state still holds later.
+        reply.observed = Some(diagnostic_state(&before));
         if !before.connected {
             return Err(Failure::before("device_not_ready"));
         }
@@ -226,6 +236,8 @@ impl<D: Device, C: Clock> Service<D, C> {
             reply.observed = Some(before);
             return Ok(());
         }
+        // A pre-dispatch sample cannot describe an uncertain mutation.
+        reply.observed = None;
         self.device
             .apply(&request.device, &request.intent, resolved.as_ref(), ctx)?;
         loop {
@@ -235,6 +247,7 @@ impl<D: Device, C: Clock> Service<D, C> {
                 .observe_for(&request.device, &request.intent, ctx)
                 .map_err(|e| Failure::uncertain(e.code))?;
             ctx.check().map_err(|e| Failure::uncertain(e.code))?;
+            reply.observed = Some(diagnostic_state(&observed));
             if request.intent == Intent::Wake && observed.awake.is_none() {
                 reply.status = Status::Observed;
                 reply.code = "wake_dispatched_unverified".into();
@@ -244,6 +257,7 @@ impl<D: Device, C: Clock> Service<D, C> {
             if matches!(
                 request.intent,
                 Intent::Navigate { .. }
+                    | Intent::LongSelect
                     | Intent::Search { .. }
                     | Intent::OpenUrl { .. }
                     | Intent::Activate { .. }
@@ -294,6 +308,9 @@ impl<D: Device, C: Clock> Control for Service<D, C> {
                     sessions,
                     truncated,
                 }
+            }
+            Read::RemoteCapabilities => {
+                Data::RemoteCapabilities(self.device.remote_capabilities(&req.device, &ctx)?)
             }
             Read::Volume => {
                 Data::State(self.device.observe_for(&req.device, &Intent::Mute, &ctx)?)
@@ -418,6 +435,7 @@ impl<D: Device, C: Clock> Control for Service<D, C> {
             .finish(&req, &reply, self.clock.unix_ms())
             .is_err()
         {
+            reply.observed = reply.observed.as_ref().map(diagnostic_state);
             reply.status = Status::OutcomeUnknown;
             reply.code = "operation_persistence_failed".into();
         }
@@ -458,7 +476,7 @@ fn valid_intent(intent: &Intent) -> bool {
         Intent::Activate { reference } => valid_text(reference, 200),
         Intent::TypeText { reference, text } => valid_text(reference, 200) && valid_text(text, 500),
         Intent::SetVolume { index } => *index <= 1000,
-        Intent::Wake | Intent::Mute | Intent::Pause | Intent::Resume => true,
+        Intent::Wake | Intent::Mute | Intent::Pause | Intent::Resume | Intent::LongSelect => true,
     }
 }
 fn valid_url(url: &str) -> bool {
@@ -521,6 +539,30 @@ fn desired(intent: &Intent, app: Option<&App>, state: &Observed) -> bool {
                 && state.playback_evidence == tv_domain::PlaybackEvidence::NativeState
         }
         _ => false,
+    }
+}
+/// Bounded operational evidence only: never persist media identity/position
+/// merely because verification failed. Adapter text is not trusted metadata.
+fn diagnostic_state(state: &Observed) -> Observed {
+    Observed {
+        connected: state.connected,
+        active_app: state
+            .active_app
+            .as_ref()
+            .filter(|app| {
+                !app.is_empty()
+                    && app.len() <= 255
+                    && app
+                        .bytes()
+                        .all(|b| b.is_ascii_alphanumeric() || b"_.".contains(&b))
+            })
+            .cloned(),
+        playback: state.playback,
+        playback_evidence: state.playback_evidence,
+        awake: state.awake,
+        volume_index: state.volume_index,
+        volume_max_index: state.volume_max_index,
+        ..Observed::default()
     }
 }
 fn fail(reply: &mut Reply, e: Failure) {
@@ -620,6 +662,24 @@ impl crate::Control for LegacyGuard {
             tv_domain::Action::Resume => "resume".into(),
             tv_domain::Action::OpenApp { app } => format!("open_app:{}:{app}", app.len()),
             tv_domain::Action::SetVolume { index } => format!("set_volume:{index}"),
+            tv_domain::Action::PlayItem {
+                item_id,
+                source_id,
+                position_ms,
+            } => format!(
+                "play_item:{}:{item_id}:{}:{source_id}:{position_ms}",
+                item_id.len(),
+                source_id.len()
+            ),
+            tv_domain::Action::SeekMedia {
+                item_id,
+                source_id,
+                position_ms,
+            } => format!(
+                "seek_media:{}:{item_id}:{}:{source_id}:{position_ms}",
+                item_id.len(),
+                source_id.len()
+            ),
             tv_domain::Action::ResumeMedia { media } => {
                 format!("resume_media:{}:{media}", media.len())
             }

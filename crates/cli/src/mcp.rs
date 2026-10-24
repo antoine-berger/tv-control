@@ -144,6 +144,7 @@ pub fn tools() -> Value {
         {"name":"tv_control","description":"Execute one configured TV intent with an absolute expiry. Only status verified proves a postcondition. Volume uses a calibrated Android music stream index, not TV percent. Mute sets music stream 3 to zero without calibration; verified proves that index only, not external HDMI/CEC silence.",
         "inputSchema":{"type":"object","properties":{"request_id":{"type":"string","pattern":"^[A-Za-z0-9_-]{1,64}$"},"device":{"type":"string","pattern":"^[A-Za-z0-9_-]{1,64}$"},
             "expires_at_unix_ms":{"type":"integer","minimum":1},"action":{"oneOf":[simple("observe"),simple("pause"),simple("resume"),named("open_app","app"),named("resume_media","media"),
+                {"type":"object","properties":{"type":{"enum":["play_item","seek_media"]},"item_id":{"type":"string","pattern":"^[A-Za-z0-9_-]{1,128}$"},"source_id":{"type":"string","pattern":"^[A-Za-z0-9_-]{1,128}$"},"position_ms":{"type":"integer","minimum":0,"maximum":922337203685477u64}},"required":["type","item_id","source_id","position_ms"],"additionalProperties":false},
                 {"type":"object","properties":{"type":{"const":"set_volume"},"index":{"type":"integer","minimum":0,"maximum":1000}},"required":["type","index"],"additionalProperties":false}]}},
             "required":["request_id","device","action","expires_at_unix_ms"],"additionalProperties":false},
         "annotations":{"readOnlyHint":false,"destructiveHint":false,"idempotentHint":false,"openWorldHint":false}}
@@ -326,6 +327,7 @@ fn serve_inner(
             "tools/list" => {
                 let mut tools = tools();
                 crate::generic_mcp::extend_tools(&mut tools);
+                crate::media_mcp::extend_tools(&mut tools);
                 if proof.is_some() {
                     tools["tools"].as_array_mut().unwrap().push(json!({"name":"tv_verify_connection","description":"Make one harmless read-only TV observation for a fresh installer challenge and return its cooperative verification code. Does not attest conversation identity.","inputSchema":{"type":"object","properties":{"challenge":{"type":"string","pattern":"^[a-f0-9]{32}$"}},"required":["challenge"],"additionalProperties":false},"annotations":{"readOnlyHint":true,"openWorldHint":false}}));
                 }
@@ -354,6 +356,57 @@ fn serve_inner(
                     } else {
                         send(&out, tool_result(id, super::capabilities(&config), false));
                     }
+                    continue;
+                }
+                if name == "tv_media_read" {
+                    let call = match crate::media_mcp::Call::parse(arguments) {
+                        Ok(call) => call,
+                        Err(code) => {
+                            error(&out, id, -32602, code);
+                            continue;
+                        }
+                    };
+                    let key = id.to_string();
+                    let flag = Arc::new(CancelFlag::default());
+                    {
+                        let mut map = match active.lock() {
+                            Ok(map) => map,
+                            Err(_) => {
+                                out.shutdown();
+                                break;
+                            }
+                        };
+                        if map.contains_key(&key) {
+                            error(&out, id, -32600, "duplicate_rpc_id");
+                            continue;
+                        }
+                        if map.len() >= config.preferences.max_inflight {
+                            error(&out, id, -32000, "server_busy");
+                            continue;
+                        }
+                        map.insert(key.clone(), flag.clone());
+                    }
+                    let output_budget = config.preferences.max_output_bytes;
+                    let config = config.clone();
+                    let out = out.clone();
+                    let active = active.clone();
+                    handles.push(thread::spawn(move || {
+                        let expires = call.expires_at_unix_ms;
+                        let (value, failed) = call.execute(config, &*flag);
+                        let frame = bounded_tool_result(id, value, failed, output_budget);
+                        let failed = frame
+                            .pointer("/result/isError")
+                            .and_then(Value::as_bool)
+                            .unwrap_or(true);
+                        if failed {
+                            out.send(frame);
+                        } else {
+                            out.send_before(frame, expires);
+                        }
+                        if let Ok(mut map) = active.lock() {
+                            map.remove(&key);
+                        }
+                    }));
                     continue;
                 }
                 if crate::generic_mcp::routes_generic(&config, name, &arguments) {

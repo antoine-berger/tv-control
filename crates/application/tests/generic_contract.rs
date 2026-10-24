@@ -542,3 +542,42 @@ fn text_dispatch_is_observed_not_verified_and_deduplicated() {
     assert!(s.execute(request, &Never).cached);
     assert_eq!(fake.effects.load(Ordering::SeqCst), 1);
 }
+
+#[test]
+fn remote_mutations_are_observed_not_verified_and_deduplicated() {
+    for intent in [
+        Intent::LongSelect,
+        Intent::Navigate {
+            keys: vec![Key::Menu, Key::Settings],
+        },
+        Intent::Navigate {
+            keys: vec![Key::Right; 16],
+        },
+    ] {
+        let (s, d, _) = setup(vec![]);
+        let r = req(intent);
+        let reply = s.execute(r.clone(), &Never);
+        assert_eq!(reply.status, Status::Observed);
+        assert_eq!(reply.code, "command_dispatched_state_observed");
+        assert!(s.execute(r, &Never).cached);
+        assert_eq!(
+            s.execute(
+                req(Intent::Navigate {
+                    keys: vec![Key::Select]
+                }),
+                &Never
+            )
+            .code,
+            "request_id_conflict"
+        );
+        assert_eq!(d.effects.load(Ordering::SeqCst), 1);
+    }
+}
+#[test]
+fn expired_long_select_never_dispatches() {
+    let (s, d, _) = setup(vec![]);
+    let mut r = req(Intent::LongSelect);
+    r.expires_at_unix_ms = 1000;
+    assert_eq!(s.execute(r, &Never).status, Status::Expired);
+    assert_eq!(d.effects.load(Ordering::SeqCst), 0);
+}

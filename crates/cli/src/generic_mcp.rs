@@ -33,6 +33,11 @@ enum Action {
         session: String,
         command: WireMediaCommand,
     },
+    Repeat {
+        direction: WireDirection,
+        count: u8,
+    },
+    LongSelect {},
     Navigate {
         keys: Vec<WireKey>,
     },
@@ -66,6 +71,16 @@ enum WireKey {
     Select,
     Back,
     Home,
+    Menu,
+    Settings,
+}
+#[derive(Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum WireDirection {
+    Up,
+    Down,
+    Left,
+    Right,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -79,6 +94,7 @@ struct Reading {
 enum ReadKind {
     Media {},
     State {},
+    RemoteCapabilities {},
     Volume {},
     Apps {
         query: Option<String>,
@@ -121,6 +137,8 @@ pub fn routes_generic(config: &tv_adapters::config::Config, name: &str, args: &V
                 | "activate"
                 | "media"
                 | "type_text"
+                | "repeat"
+                | "long_select"
         )
     ) {
         return true;
@@ -182,6 +200,7 @@ impl Call {
                     read: match r.read {
                         ReadKind::Media {} => Read::Media,
                         ReadKind::State {} => Read::State,
+                        ReadKind::RemoteCapabilities {} => Read::RemoteCapabilities,
                         ReadKind::Volume {} => Read::Volume,
                         ReadKind::Apps {
                             query,
@@ -232,6 +251,21 @@ impl Call {
                                 WireMediaCommand::Previous => MediaCommand::Previous,
                             },
                         },
+                        Action::LongSelect {} => Intent::LongSelect,
+                        Action::Repeat { direction, count } => {
+                            if !(1..=16).contains(&count) {
+                                return Err("invalid_arguments");
+                            }
+                            let key = match direction {
+                                WireDirection::Up => Key::Up,
+                                WireDirection::Down => Key::Down,
+                                WireDirection::Left => Key::Left,
+                                WireDirection::Right => Key::Right,
+                            };
+                            Intent::Navigate {
+                                keys: vec![key; usize::from(count)],
+                            }
+                        }
                         Action::Navigate { keys } => Intent::Navigate {
                             keys: keys
                                 .into_iter()
@@ -243,6 +277,8 @@ impl Call {
                                     WireKey::Select => Key::Select,
                                     WireKey::Back => Key::Back,
                                     WireKey::Home => Key::Home,
+                                    WireKey::Menu => Key::Menu,
+                                    WireKey::Settings => Key::Settings,
                                 })
                                 .collect(),
                         },
@@ -274,6 +310,9 @@ impl Call {
             Self::Read(r) => match control.read(r, cancel) {
                 Ok(data) => (
                     match data {
+                        Data::RemoteCapabilities(c) => {
+                            json!({"android_sdk":c.android_sdk,"app":c.active_app,"keyevent_help":c.keyevent_help,"longpress_help":c.longpress_help,"app_key_acceptance":"unknown","evidence":"device_input_help"})
+                        }
                         Data::State(s) => json!({"state": state(&s)}),
                         Data::Media {
                             sessions,
@@ -393,6 +432,15 @@ fn state(s: &Observed) -> Value {
             Playback::Unknown => "unknown",
         });
     }
+    if let Some(item) = &s.media_id {
+        v["media_id"] = json!(item);
+    }
+    if let Some(source) = &s.media_source_id {
+        v["media_source_id"] = json!(source);
+    }
+    if let Some(position) = s.position_ticks {
+        v["position_ticks"] = json!(position);
+    }
     if let Some(awake) = s.awake {
         v["awake"] = json!(awake);
     }
@@ -405,12 +453,13 @@ fn state(s: &Observed) -> Value {
     v
 }
 fn reply(r: &Reply) -> Value {
-    let mut v = json!({"request_id":r.request_id,"status":match r.status { Status::Observed=>"observed",Status::Verified=>"verified",Status::Invalid=>"invalid",Status::Busy=>"busy",Status::Unsupported=>"unsupported",Status::Expired=>"expired",Status::Cancelled=>"cancelled",Status::Failed=>"failed",Status::OutcomeUnknown=>"outcome_unknown" },"code":r.code,"local_elapsed_ms":r.local_elapsed_ms});
+    let mut v = json!({"request_id":r.request_id,"status":match r.status { Status::Observed=>"observed",Status::Verified=>"verified",Status::Invalid=>"invalid",Status::Busy=>"busy",Status::Unsupported=>"unsupported",Status::Expired=>"expired",Status::Cancelled=>"cancelled",Status::Failed=>"failed",Status::OutcomeUnknown=>"outcome_unknown" },"code":r.code,"local_elapsed_ms":r.local_elapsed_ms,"timing_scope":"application_execution"});
     if r.cached {
         v["cached"] = json!(true);
     }
     if let Some(s) = &r.observed {
         v["state"] = state(s);
+        v["state_scope"] = json!("execution_observation");
     }
     if !r.choices.is_empty() {
         v["choices"] = r.choices.iter().map(app).collect::<Vec<_>>().into();
@@ -440,10 +489,12 @@ pub fn extend_tools(tools: &mut Value) {
     actions.extend([
         json!({"type":"object","properties":{"type":{"const":"media"},"session":{"type":"string","maxLength":384},"command":{"enum":["pause","resume","next","previous"]}},"required":["type","session","command"],"additionalProperties":false}),
         json!({"type":"object","properties":{"type":{"const":"type_text"},"reference":{"type":"string","minLength":1,"maxLength":200},"text":{"type":"string","minLength":1,"maxLength":500}},"required":["type","reference","text"],"additionalProperties":false}),
+        json!({"type":"object","properties":{"type":{"const":"repeat"},"direction":{"enum":["up","down","left","right"]},"count":{"type":"integer","minimum":1,"maximum":16}},"required":["type","direction","count"],"additionalProperties":false}),
+        json!({"type":"object","properties":{"type":{"const":"long_select"}},"required":["type"],"additionalProperties":false}),
         json!({"type":"object","properties":{"type":{"const":"wake"}},"required":["type"],"additionalProperties":false}),
         json!({"type":"object","properties":{"type":{"const":"mute"}},"required":["type"],"additionalProperties":false}),
         json!({"type":"object","properties":{"type":{"const":"open_url"},"app":{"type":"string","minLength":1,"maxLength":512},"url":{"type":"string","minLength":1,"maxLength":2048}},"required":["type","app","url"],"additionalProperties":false}),
-        json!({"type":"object","properties":{"type":{"const":"navigate"},"keys":{"type":"array","minItems":1,"maxItems":16,"items":{"enum":["up","down","left","right","select","back","home"]}}},"required":["type","keys"],"additionalProperties":false}),
+        json!({"type":"object","properties":{"type":{"const":"navigate"},"keys":{"type":"array","minItems":1,"maxItems":16,"items":{"enum":["up","down","left","right","select","back","home","menu","settings"]}}},"required":["type","keys"],"additionalProperties":false}),
         json!({"type":"object","properties":{"type":{"const":"search"},"app":{"type":"string","minLength":1,"maxLength":512},"query":{"type":"string","minLength":1,"maxLength":500}},"required":["type","app","query"],"additionalProperties":false}),
         json!({"type":"object","properties":{"type":{"const":"activate"},"reference":{"type":"string","minLength":1,"maxLength":200}},"required":["type","reference"],"additionalProperties":false}),
     ]);
@@ -463,7 +514,7 @@ pub fn extend_tools(tools: &mut Value) {
         }
     });
     actions.push(json!({"type":"object","properties":{"type":{"enum":simple}},"required":["type"],"additionalProperties":false}));
-    list.push(json!({"name":"tv_read","description":"Read TV. Volume: stream 3 index/max. Untrusted text.","inputSchema":{"type":"object","properties":{"device":{"type":"string","pattern":"^[A-Za-z0-9_-]{1,64}$"},"expires_at_unix_ms":{"type":"integer","minimum":1},"read":{"oneOf":[{"type":"object","properties":{"type":{"enum":["state","volume","media","ui","screenshot"]}},"required":["type"],"additionalProperties":false},{"type":"object","properties":{"type":{"const":"apps"},"query":{"type":"string","maxLength":200},"since":{"type":"string","maxLength":64},"limit":{"type":"integer","minimum":1,"maximum":32,"default":12},"refresh":{"type":"boolean","default":false}},"required":["type"],"additionalProperties":false}]}},"required":["device","expires_at_unix_ms","read"],"additionalProperties":false},"annotations":{"readOnlyHint":true,"openWorldHint":false}}));
+    list.push(json!({"name":"tv_read","description":"Read TV. Volume: stream 3 index/max. Untrusted text.","inputSchema":{"type":"object","properties":{"device":{"type":"string","pattern":"^[A-Za-z0-9_-]{1,64}$"},"expires_at_unix_ms":{"type":"integer","minimum":1},"read":{"oneOf":[{"type":"object","properties":{"type":{"enum":["state","volume","media","remote_capabilities","ui","screenshot"]}},"required":["type"],"additionalProperties":false},{"type":"object","properties":{"type":{"const":"apps"},"query":{"type":"string","maxLength":200},"since":{"type":"string","maxLength":64},"limit":{"type":"integer","minimum":1,"maximum":32,"default":12},"refresh":{"type":"boolean","default":false}},"required":["type"],"additionalProperties":false}]}},"required":["device","expires_at_unix_ms","read"],"additionalProperties":false},"annotations":{"readOnlyHint":true,"openWorldHint":false}}));
     list.push(json!({"name":"tv_operation","description":"Recover/cancel; no rollback.","inputSchema":{"type":"object","properties":{"request_id":{"type":"string","pattern":"^[A-Za-z0-9_-]{1,64}$"},"cancel":{"type":"boolean","default":false}},"required":["request_id"],"additionalProperties":false},"annotations":{"readOnlyHint":false,"destructiveHint":false,"idempotentHint":true,"openWorldHint":false}}));
 }
 
@@ -484,6 +535,24 @@ mod tests {
         )
         .is_ok());
         assert!(Call::parse("tv_control", json!({"request_id":"r","device":"screen","expires_at_unix_ms":1,"action":{"type":"media","session":"org.example.player/player","command":"next","position_ms":10}})).is_err());
+    }
+    #[test]
+    fn remote_wire_is_closed_and_repeat_expands_to_bounded_navigation() {
+        for action in [
+            json!({"type":"repeat","direction":"down","count":0}),
+            json!({"type":"repeat","direction":"down","count":17}),
+            json!({"type":"repeat","direction":"select","count":2}),
+            json!({"type":"repeat","direction":"down","count":256}),
+            json!({"type":"long_select","duration_ms":1}),
+            json!({"type":"navigate","keys":["power"]}),
+            json!({"type":"navigate","keys":["volume_up"]}),
+        ] {
+            assert!(Call::parse("tv_control", json!({"request_id":"r","device":"screen","expires_at_unix_ms":2000,"action":action})).is_err());
+        }
+        let call = Call::parse("tv_control", json!({"request_id":"r","device":"screen","expires_at_unix_ms":2000,"action":{"type":"repeat","direction":"left","count":16}})).unwrap();
+        assert!(
+            matches!(call, Call::Execute(Request { intent: Intent::Navigate { keys }, .. }) if keys == vec![Key::Left;16])
+        );
     }
     #[test]
     fn wire_rejects_unknown_actions_and_fields() {
@@ -513,6 +582,7 @@ mod tests {
                 .any(|action| action["properties"]["type"]["const"] == "observe"),
             "onboarding probe requires the legacy observe discriminator"
         );
+        crate::media_mcp::extend_tools(&mut tools);
         // The catalog may grow across pages; every individual tool must still
         // fit the minimum configured frame, including cursor/newline overhead.
         for tool in tools["tools"].as_array().unwrap() {
@@ -582,6 +652,8 @@ mod tests {
         let v = reply(&r);
         assert!(v.get("choices").is_none());
         assert!(v.get("cached").is_none());
-        assert!(v.to_string().len() < 220);
+        assert_eq!(v["timing_scope"], "application_execution");
+        assert_eq!(v["state_scope"], "execution_observation");
+        assert!(v.to_string().len() < 320);
     }
 }

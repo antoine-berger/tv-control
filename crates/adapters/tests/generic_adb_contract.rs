@@ -110,6 +110,8 @@ mod labels;
 mod media;
 #[path = "generic_adb_contract/power.rs"]
 mod power;
+#[path = "generic_adb_contract/remote.rs"]
+mod remote;
 #[path = "generic_adb_contract/screenshot.rs"]
 mod screenshot;
 #[path = "generic_adb_contract/ui.rs"]

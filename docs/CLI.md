@@ -222,3 +222,12 @@ response's `serverInfo.version` identifies the responding server. Neither an
 installed update nor a historical record proves that the running bridge updated.
 Doctor never restarts a bridge, repairs records or grants access. Use the normal
 explicit maintenance flow to restart with the installed version.
+
+### Read-only media metadata
+
+`tv-control media-read CONFIG REQUEST.json` (or `-` for stdin) accepts the same
+request as MCP `tv_media_read`: configured Jellyfin device, absolute
+`expires_at_unix_ms`, and `read` of `search`, `item`, `episodes` or `playback`.
+See [media metadata](MCP.md#read-only-jellyfin-media-metadata). Exit status is 0
+for an observation, 2 for a failed read, and 1 for invalid CLI/wire input.
+This command creates no operation journal, credentials or playback changes.

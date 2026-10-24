@@ -7,7 +7,7 @@ and curl executables; neither executable, an ADB daemon nor a tunnel is bundled.
 | Backend | Implemented | Unavailable |
 | --- | --- | --- |
 | ADB | State reads, TV app launch, targeted media pause/play, calibrated or generic native-range music stream volume, generic music-stream mute | Discovery, pairing, connection setup, media catalogue or title selection |
-| Jellyfin HTTP via curl | Exact session selection, pause/unpause, configured series resume at saved position, postcondition reads | App launch, volume, library mutation or credential creation |
+| Jellyfin HTTP via curl | Exact session selection, pause/unpause, configured series resume at saved position, postcondition reads, bounded catalog/episode/source/track metadata, explicit item/source playback and source-bound seek | App launch, volume, library mutation or credential creation |
 | YouTube / YouTube Music | Generic ADB app launch and native media controls where supported | Search, lyrics, song/video mode, account navigation or a service-specific Cast adapter |
 | Cast / Android TV Remote v2 / UIAutomator | No implemented backend | These are extension possibilities, not working adapters |
 

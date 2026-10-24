@@ -1,3 +1,4 @@
+mod catalogue;
 use crate::{
     config::{Config, Device},
     http::{encode, Http, HttpRequest},
@@ -22,6 +23,13 @@ struct Session {
     device_id: String,
     user_id: Option<String>,
     supports_remote_control: Option<bool>,
+    supports_media_control: Option<bool>,
+    client: Option<String>,
+    application_version: Option<String>,
+    #[serde(default)]
+    supported_commands: Vec<String>,
+    #[serde(default)]
+    playable_media_types: Vec<String>,
     now_playing_item: Option<Item>,
     play_state: Option<PlayState>,
 }
@@ -39,6 +47,10 @@ struct Item {
 struct PlayState {
     is_paused: bool,
     position_ticks: Option<u64>,
+    can_seek: Option<bool>,
+    media_source_id: Option<String>,
+    audio_stream_index: Option<i32>,
+    subtitle_stream_index: Option<i32>,
 }
 #[derive(Deserialize)]
 #[serde(rename_all = "PascalCase")]
@@ -87,12 +99,16 @@ impl<'a> Jellyfin<'a> {
         serde_json::from_slice(&response.body)
             .map_err(|_| Failure::before("jellyfin_invalid_response"))
     }
-    fn session(&self, alias: &str, ctx: &Context<'_>) -> PortResult<(String, Session)> {
-        let (server, user, device) = self.device(alias)?;
+    fn check_version(&self, server: &str, ctx: &Context<'_>) -> PortResult<()> {
         let version: ServerInfo = self.get(server, "/System/Info/Public".into(), ctx)?;
         if !patched_version(&version.version) {
             return Err(Failure::before("jellyfin_server_requires_security_review"));
         }
+        Ok(())
+    }
+    fn session(&self, alias: &str, ctx: &Context<'_>) -> PortResult<(String, Session)> {
+        let (server, user, device) = self.device(alias)?;
+        self.check_version(server, ctx)?;
         let sessions: Vec<Session> = self.get(
             server,
             format!("/Sessions?deviceId={}", encode(device)),
@@ -127,6 +143,10 @@ impl<'a> Jellyfin<'a> {
             playback,
             playback_evidence: PlaybackEvidence::PositionProgressRequired,
             media_id: session.now_playing_item.map(|i| i.id),
+            media_source_id: session
+                .play_state
+                .as_ref()
+                .and_then(|p| p.media_source_id.clone()),
             position_ticks: session.play_state.and_then(|p| p.position_ticks),
             volume_index: None,
             volume_max_index: None,
@@ -162,6 +182,8 @@ impl<'a> Jellyfin<'a> {
         }
         Ok(MediaPlan {
             item_id: item.id,
+            source_id: None,
+            media_kind: None,
             position_ticks: position,
         })
     }
@@ -174,7 +196,11 @@ impl<'a> Jellyfin<'a> {
     ) -> PortResult<()> {
         if !matches!(
             action,
-            Action::Pause | Action::Resume | Action::ResumeMedia { .. }
+            Action::Pause
+                | Action::Resume
+                | Action::ResumeMedia { .. }
+                | Action::PlayItem { .. }
+                | Action::SeekMedia { .. }
         ) {
             return Err(Failure::before("unsupported"));
         }
@@ -183,6 +209,11 @@ impl<'a> Jellyfin<'a> {
             && (session.now_playing_item.is_none() || session.play_state.is_none())
         {
             return Err(Failure::before("playback_state_unavailable"));
+        }
+        if matches!(action, Action::PlayItem { .. } | Action::SeekMedia { .. })
+            && session.supports_media_control != Some(true)
+        {
+            return Err(Failure::before("media_control_unsupported"));
         }
         // The Android TV legacy handler may toggle for Pause/Unpause. Read immediately before sending,
         // send once, and never retry an ambiguous response. External user races remain possible.
@@ -198,6 +229,54 @@ impl<'a> Jellyfin<'a> {
             }
             Action::Pause => format!("/Sessions/{}/Playing/Pause", encode(&session.id)),
             Action::Resume => format!("/Sessions/{}/Playing/Unpause", encode(&session.id)),
+            Action::PlayItem {
+                item_id,
+                source_id,
+                position_ms,
+            }
+            | Action::SeekMedia {
+                item_id,
+                source_id,
+                position_ms,
+            } => {
+                let plan = plan.ok_or(Failure::before("missing_media_plan"))?;
+                if &plan.item_id != item_id
+                    || plan.source_id.as_ref() != Some(source_id)
+                    || position_ms.checked_mul(MEDIA_TICKS_PER_MILLISECOND)
+                        != Some(plan.position_ticks)
+                {
+                    return Err(Failure::before("media_plan_identity_mismatch"));
+                }
+                if matches!(action, Action::SeekMedia { .. }) {
+                    let p = session
+                        .play_state
+                        .as_ref()
+                        .ok_or(Failure::before("playback_state_unavailable"))?;
+                    if session.now_playing_item.as_ref().map(|i| &i.id) != Some(item_id)
+                        || p.media_source_id.as_ref() != Some(source_id)
+                    {
+                        return Err(Failure::before("seek_media_identity_mismatch"));
+                    }
+                    if p.can_seek != Some(true) {
+                        return Err(Failure::before("seek_unsupported"));
+                    }
+                    format!(
+                        "/Sessions/{}/Playing/Seek?seekPositionTicks={}",
+                        encode(&session.id),
+                        plan.position_ticks
+                    )
+                } else {
+                    let wanted = match plan.media_kind.as_deref() {
+                        Some("audio") => "Audio",
+                        Some("video") => "Video",
+                        _ => return Err(Failure::before("media_kind_unsupported")),
+                    };
+                    if !session.playable_media_types.iter().any(|t| t == wanted) {
+                        return Err(Failure::before("play_item_capability_unavailable"));
+                    }
+                    format!("/Sessions/{}/Playing?playCommand=PlayNow&itemIds={}&mediaSourceId={}&startPositionTicks={}", encode(&session.id), encode(item_id), encode(source_id), plan.position_ticks)
+                }
+            }
             Action::ResumeMedia { .. } => {
                 let plan = plan.ok_or(Failure::before("missing_media_plan"))?;
                 format!(

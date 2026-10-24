@@ -65,6 +65,22 @@ impl DeviceControl for Router {
     }
 }
 impl MediaCatalogue for Router {
+    fn prepare(
+        &self,
+        device: &str,
+        item_id: &str,
+        source_id: &str,
+        position_ms: u64,
+        ctx: &Context<'_>,
+    ) -> PortResult<MediaPlan> {
+        jellyfin::Jellyfin::new(&self.config, &*self.http).prepare_media(
+            device,
+            item_id,
+            source_id,
+            position_ms,
+            ctx,
+        )
+    }
     fn resolve(&self, device: &str, alias: &str, ctx: &Context<'_>) -> PortResult<MediaPlan> {
         jellyfin::Jellyfin::new(&self.config, &*self.http).resolve(device, alias, ctx)
     }
@@ -81,3 +97,14 @@ pub mod operation_journal;
 pub mod generic_adb;
 
 pub mod apk_labels;
+
+impl tv_application::media::Reader for Router {
+    fn read(
+        &self,
+        device: &str,
+        read: &tv_domain::media::Read,
+        ctx: &Context<'_>,
+    ) -> PortResult<tv_domain::media::Data> {
+        jellyfin::Jellyfin::new(&self.config, &*self.http).read_media(device, read, ctx)
+    }
+}

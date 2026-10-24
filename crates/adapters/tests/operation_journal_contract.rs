@@ -382,3 +382,74 @@ fn text_intent_survives_restart_and_conflicts_on_changed_target_or_text() {
         ));
     }
 }
+
+#[test]
+fn remote_navigation_serializes_across_instances_and_survives_restart() {
+    use tv_domain::generic::Key;
+    let t = Temp::new();
+    let a = t.journal(4);
+    let b = t.journal(4);
+    let mut long = request("long");
+    long.intent = Intent::LongSelect;
+    let mut menu = request("menu");
+    menu.intent = Intent::Navigate {
+        keys: vec![Key::Menu, Key::Settings],
+    };
+    assert!(matches!(
+        a.reserve(&long, "tv", 100).unwrap(),
+        Reservation::Acquired
+    ));
+    assert!(matches!(
+        b.reserve(&menu, "tv", 100).unwrap(),
+        Reservation::Busy
+    ));
+    a.finish(&long, &reply("long", Status::OutcomeUnknown), 200)
+        .unwrap();
+    assert!(matches!(
+        b.reserve(&menu, "tv", 200).unwrap(),
+        Reservation::Acquired
+    ));
+    b.finish(&menu, &reply("menu", Status::Observed), 201)
+        .unwrap();
+    drop(a);
+    drop(b);
+    let j = t.journal(4);
+    assert!(
+        matches!(j.reserve(&long, "tv", 300).unwrap(), Reservation::Existing(Operation::Complete(r)) if r.status == Status::OutcomeUnknown)
+    );
+    assert!(
+        matches!(j.reserve(&menu, "tv", 300).unwrap(), Reservation::Existing(Operation::Complete(r)) if r.status == Status::Observed)
+    );
+    menu.intent = Intent::Navigate {
+        keys: vec![Key::Menu],
+    };
+    assert!(matches!(
+        j.reserve(&menu, "tv", 300).unwrap(),
+        Reservation::Conflict
+    ));
+}
+
+#[test]
+fn old_shape_journal_state_upgrades_without_a_source_and_none_is_not_written() {
+    let t = Temp::new();
+    let j = t.journal(4);
+    let r = request("old-state");
+    j.reserve(&r, "tv", 100).unwrap();
+    let mut result = reply("old-state", Status::Verified);
+    result.observed = Some(tv_domain::Observed {
+        connected: true,
+        ..Default::default()
+    });
+    j.finish(&r, &result, 200).unwrap();
+    let raw = fs::read_to_string(t.0.join("journal/operations.json")).unwrap();
+    assert!(
+        !raw.contains("media_source_id"),
+        "None must preserve the old serialized state shape"
+    );
+    drop(j);
+    let j = t.journal(4);
+    let Operation::Complete(result) = j.get("old-state").unwrap() else {
+        panic!()
+    };
+    assert_eq!(result.observed.unwrap().media_source_id, None);
+}

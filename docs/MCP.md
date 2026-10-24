@@ -80,7 +80,24 @@ these identifiers have different roles.
 - Do not automatically repeat `outcome_unknown`, a lost response or an uncertain
   mutation after reconnection. The device may already have acted.
 - Measure physical output and displayed confirmation separately. The receipt's
-  `local_elapsed_ms` does not measure chat latency.
+  `local_elapsed_ms` does not measure chat latency. Generic receipts label this
+  `timing_scope: application_execution`: application entry through result
+  construction for executed operations, excluding final journal persistence and
+  response transport. Early rejections may report zero; recovery retains the
+  original measurement.
+- Generic receipt `state_scope: execution_observation` labels an optional state
+  sample from the original execution, including `tv_operation` recovery. It is
+  never a fresh read at recovery time. On failure/unknown outcomes, this is the
+  last completed in-budget sample, not proof the requested effect occurred.
+  A different foreground package does not establish a redirect or launch success.
+  Connection/playback may be partial; missing values mean unobserved, not false.
+  Media identity/position is excluded from failure diagnostics and package text
+  is bounded. A failed, late or cancelled observation cannot replace an earlier
+  accepted sample. Pre-dispatch state is cleared before mutation; an uncertain
+  dispatch with no post-dispatch sample has no state evidence.
+- Diagnostics add no reads or retries. Only the existing persisted `observed`
+  field is reused; scope labels are wire-only, preserving journal compatibility.
+  Read current state explicitly when needed; do not replay an uncertain action.
 
 Cancellation targets the JSON-RPC ID, for example:
 
@@ -327,3 +344,137 @@ chat-to-TV latency guarantee. The masks follow Android's
 [PlaybackState action constants](https://developer.android.com/reference/android/media/session/PlaybackState),
 not app names. Missing masks remain device-dependent and never make dispatch proof
 of effect. Already-satisfied pause/resume requests can remain verified no-ops.
+
+### Remote navigation and syntax diagnostics
+
+Generic ADB authorization is required for all these mutations. `navigate` now also
+accepts `menu` (Android key 82) and `settings` (176), in addition to the existing
+D-pad/select/back/home allowlist. These keys **may be ignored** by the foreground
+app, OS policy, or vendor firmware; a successful dispatch is not proof that a menu
+or settings screen opened. No arbitrary keycode, shell, power toggle, sleep, or
+new audio action is exposed.
+
+```json
+{"request_id":"nav_repeat_1","device":"screen","expires_at_unix_ms":1,"action":{"type":"repeat","direction":"down","count":3}}
+{"request_id":"nav_hold_1","device":"screen","expires_at_unix_ms":1,"action":{"type":"long_select"}}
+{"device":"screen","expires_at_unix_ms":1,"read":{"type":"remote_capabilities"}}
+```
+
+Replace the illustrative expiry with a fresh client-generated deadline. `repeat`
+accepts only up/down/left/right and an integer count 1–16. It is shorthand for a
+bounded `navigate` sequence, dispatched in a single input command, **not** a held
+key or an unbounded auto-repeat. Its durable request identity is that expanded
+sequence, so equivalent `navigate` and `repeat` requests with the same ID deduplicate.
+No delay or custom hold duration is accepted.
+
+`long_select` injects only DPAD_CENTER with the platform `--longpress` option,
+after a fresh read-only `input` help probe confirms that option on a keyevent
+usage line. Missing/unrecognized help fails closed without injecting a key. This adapter
+reads stdout only: older Android builds (including AOSP Android 8/9) that print
+input usage solely to stderr cannot establish this evidence and will not enable
+long-select, even if their input binary implements it. A false help flag means
+no recognized stdout evidence, not proof that the OS or app lacks support.
+The option's duration is determined by Android, not by this tool. Menu/settings
+and long-select can change UI context; inspect a fresh UI snapshot afterward.
+As for navigation, the receipt reports dispatch plus observation, not app-level
+acceptance. Cancellation or timeout after dispatch can leave an uncertain result:
+recover with `tv_operation`, never blindly replay with a new ID.
+
+`remote_capabilities` is read-only and needs no generic mutation grant. It reads
+`input` help, `getprop ro.build.version.sdk`, and foreground activity. The bounded
+result includes `android_sdk` (null if unparsable), `app` (possibly null),
+`keyevent_help`, `longpress_help`, and `app_key_acceptance:"unknown"`. Help booleans
+mean recognized **syntax evidence**, not successful injection or key handling.
+The foreground app is context only, not a per-app certification. Read failures
+remain failures; OS version alone never enables a command. No key is injected to
+probe acceptance. Capability reads do not reserve the mutation journal, and are
+point-in-time observations that can race with app changes.
+
+Implementation reference: Android's official
+[InputShellCommand](https://android.googlesource.com/platform/frameworks/base/+/81f52b053da6/services/core/java/com/android/server/input/InputShellCommand.java)
+defines keyevent's long-press option. This is not a claim of identical behavior
+across all Android TV versions or apps. Automated fixture tests qualify command
+construction and safety semantics; physical behavior remains device-dependent.
+
+## Read-only Jellyfin media metadata
+
+`tv_media_read` takes a configured Jellyfin `device`, caller-owned
+`expires_at_unix_ms`, and one `read` object:
+
+- `{"type":"search","query":"title","limit":20}` returns candidate IDs and
+  metadata, not an automatically selected result.
+- `{"type":"item","item_id":"observed_id"}` returns one exact item, its media
+  sources and stream indices. Paths and stream URLs are excluded.
+- `{"type":"episodes","series_id":"observed_series_id","season":0,"limit":20}`
+  returns episodes for the exact series and optional season (including specials).
+- `{"type":"playback"}` returns current client-reported item/source, position,
+  selected tracks and capability metadata for the configured session.
+
+Search/episode limits are 1–50 (default 20). `truncated` explicitly indicates
+additional results; this first bounded interface has no pagination. Item reads
+fail on missing or mismatching identity. Metadata is untrusted content, never
+instructions or authorization. Stream indices belong to a particular media
+source; do not reuse an index for another item/source. Missing capability or
+position fields remain null. Advertised commands are not hardware qualification.
+
+Every read uses existing configured Jellyfin access and the same patched-server
+baseline as control. This tool neither logs in nor creates credentials, and does
+not require a generic ADB grant. Search/item/episode reads do not require an
+active playback session; playback reads require exactly one remotely controllable
+session matching the configured user and device. Responses have `observed`, not
+`verified`, status. No playback, subtitle, audio-track or volume change occurs.
+
+If a catalog/detail response exceeds the configured MCP frame budget, the tool
+returns `response_too_large` without disconnecting the transport. Request a lower
+search/episode limit; a single item's oversized nested metadata is not silently
+trimmed into an apparently complete track list.
+
+## Exact item playback and source-bound seeking
+
+Configured Jellyfin devices additionally support these `tv_control` actions:
+
+```json
+{"type":"play_item","item_id":"observed_item","source_id":"observed_source","position_ms":0}
+```
+
+```json
+{"type":"seek_media","item_id":"currently_playing_item","source_id":"currently_playing_source","position_ms":60000}
+```
+
+Use `tv_media_read` item/playback results to select IDs. These are opaque provider
+identifiers, not app names or URLs. Both require explicit source identity, a
+known positive duration for that source, and a position strictly below its end.
+No search result is automatically chosen. Neither action creates credentials,
+selects tracks, changes volume or changes account preferences.
+
+`play_item` validates the source in the configured user's library and requires
+the selected session to advertise media-control support and its audio/video media type. It sends one
+PlayNow command, then requires matching item **and source** plus increasing
+position near the requested start. A 204 response alone never verifies playback.
+
+`seek_media` additionally requires the currently playing item/source to match and
+client-reported `SupportsMediaControl=true` and `CanSeek=true` immediately before dispatch. Verification retains
+the pre-request playing/paused state and checks position within configured
+`resume_position_tolerance_ms` (extended by elapsed time for playback). A paused
+seek does not send play/resume. A playing seek requires progress; unknown source
+or position cannot verify. Client reporting/keyframe precision can limit seeking;
+this is not a claim of exact physical frame position.
+
+Requests share the existing per-device durable journal, expiry and cancellation
+rules. Changed item/source/position under a reused request ID conflicts. After
+possible dispatch, a missing postcondition, expiry or cancellation is
+`outcome_unknown`; never automatically replay or roll back. Unsupported client
+capabilities fail before mutation. These actions are currently implemented only
+by the Jellyfin adapter, not universally across TV apps; no live client/version
+qualification is claimed by fixture tests.
+
+### Shared journal upgrade boundary
+
+Existing journals without source identity remain readable after upgrade; absent
+source fields are not written as new null keys. Journals containing non-null
+`media_source_id` (including Jellyfin observations saved in control receipts)
+require the updated reader. Upgrade/restart **all** CLI/bridge processes sharing
+that journal before using this version with Jellyfin. Concurrent old/new readers
+and downgrade after writing source-aware receipts are not supported. Do not
+remove a journal to work around this: it contains no-replay evidence for uncertain
+commands. This change does not migrate credentials or change account access.

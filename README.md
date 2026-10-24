@@ -34,7 +34,7 @@ The wizard offers approved dependency installation on supported hosts; macOS
 requires existing Homebrew for that route. Linux ARM64 and pure-musl hosts need a
 maintained native ADB supplied separately. [Requirements and recovery](docs/INSTALLATION.md).
 
-This source targets **v0.4.6**. The `latest` distribution installer advances only
+This source targets **v0.4.7**. The `latest` distribution installer advances only
 when the matching public release has passed download and package verification.
 See [releases](https://github.com/antoine-berger/tv-control/releases) for published assets.
 
@@ -102,8 +102,18 @@ Declining the onboarding prompt leaves the configuration unchanged.
   under a fresh ID: the TV may already have changed.
 
 Requests use one absolute client expiry throughout discovery, execution, and
-verification. `local_elapsed_ms` measures controller runtime, not request-to-TV
-latency. A navigation or search dispatch does not establish that a requested
+verification. `local_elapsed_ms` has `timing_scope: application_execution`:
+application entry through result construction for executed operations (early
+rejections may report zero), excluding final journal persistence,
+response transport and client latency—not request-to-TV latency. Recovered receipts
+retain the original timing. Optional `state` has `state_scope: execution_observation`:
+a last completed, in-budget sample from that execution, not a current-state guarantee.
+Failed/unknown receipts can preserve partial observations (including a different
+foreground package), without proving the requested effect or a redirect. No sample
+is invented when readback fails; late or cancelled samples are discarded. Diagnostic
+state omits media identity/position and bounds package text. Recovery does not refresh
+the sample or retry the command; use an explicit read for current state.
+A navigation or search dispatch does not establish that a requested
 movie/episode is playing. Search uses a discovered Android search activity when available, otherwise sends
 an explicit SEARCH intent to the discovered launcher. Apps may ignore that intent;
 verify the displayed results before selecting content. `wake` uses the dedicated Android wake key and verifies native power state; it requires ADB to remain reachable in standby. `open_url` checks that the

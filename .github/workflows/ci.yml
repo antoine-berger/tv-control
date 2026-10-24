@@ -36,9 +36,14 @@ jobs:
         env:
           RUSTFLAGS: --remap-path-prefix=${{ github.workspace }}=.
           MACOSX_DEPLOYMENT_TARGET: "11.0"
-      - run: python3 scripts/check_architecture.py
+      - name: Architecture and source quality
+        run: |
+          python3 scripts/check_architecture.py
+          python3 -W error::ResourceWarning scripts/test_source_size.py
+          python3 scripts/check_source_size.py
       - run: python3 scripts/audit_publication.py
       - run: python3 -W error::ResourceWarning scripts/test_mcp.py target/release/tv-control
+      - run: python3 -W error::ResourceWarning scripts/test_media_read.py target/release/tv-control
       - run: python3 -W error::ResourceWarning scripts/test_generic_mcp.py target/release/tv-control
       - run: python3 -W error::ResourceWarning scripts/test_onboarding.py target/release/tv-control
       - run: python3 -W error::ResourceWarning scripts/test_install_flow.py target/release/tv-control

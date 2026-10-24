@@ -94,6 +94,8 @@ fn jellyfin_204_only_means_dispatch() {
                 media: "series".into(),
             },
             Some(&MediaPlan {
+                source_id: None,
+                media_kind: None,
                 item_id: "episode".into(),
                 position_ticks: 123,
             }),

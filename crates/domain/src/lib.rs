@@ -5,9 +5,25 @@ pub enum Action {
     Observe,
     Pause,
     Resume,
-    OpenApp { app: String },
-    SetVolume { index: u16 },
-    ResumeMedia { media: String },
+    OpenApp {
+        app: String,
+    },
+    SetVolume {
+        index: u16,
+    },
+    ResumeMedia {
+        media: String,
+    },
+    PlayItem {
+        item_id: String,
+        source_id: String,
+        position_ms: u64,
+    },
+    SeekMedia {
+        item_id: String,
+        source_id: String,
+        position_ms: u64,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -37,6 +53,7 @@ pub struct Observed {
     pub playback: Playback,
     pub playback_evidence: PlaybackEvidence,
     pub media_id: Option<String>,
+    pub media_source_id: Option<String>,
     pub position_ticks: Option<u64>,
     pub volume_index: Option<u16>,
     pub volume_max_index: Option<u16>,
@@ -50,6 +67,7 @@ impl Default for Observed {
             playback: Playback::Unknown,
             playback_evidence: PlaybackEvidence::PositionProgressRequired,
             media_id: None,
+            media_source_id: None,
             position_ticks: None,
             volume_index: None,
             volume_max_index: None,
@@ -68,6 +86,8 @@ pub const MEDIA_TICKS_PER_MILLISECOND: u64 = 10_000;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MediaPlan {
     pub item_id: String,
+    pub source_id: Option<String>,
+    pub media_kind: Option<String>,
     pub position_ticks: u64,
 }
 
@@ -141,3 +161,5 @@ pub fn identifier(value: &str) -> bool {
 pub mod onboarding;
 
 pub mod generic;
+
+pub mod media;

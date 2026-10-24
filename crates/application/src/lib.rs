@@ -55,6 +55,16 @@ pub trait DeviceControl: Send + Sync {
     ) -> PortResult<()>;
 }
 pub trait MediaCatalogue: Send + Sync {
+    fn prepare(
+        &self,
+        _device: &str,
+        _item_id: &str,
+        _source_id: &str,
+        _position_ms: u64,
+        _ctx: &Context<'_>,
+    ) -> PortResult<MediaPlan> {
+        Err(Failure::before("unsupported"))
+    }
     fn resolve(&self, device: &str, alias: &str, ctx: &Context<'_>) -> PortResult<MediaPlan>;
 }
 pub enum Reservation {
@@ -97,11 +107,44 @@ impl<D: DeviceControl, M: MediaCatalogue, S: StateStore, C: Clock> Service<D, M,
         if !before.connected {
             return Err(Failure::before("device_not_ready"));
         }
-        let plan = if let Action::ResumeMedia { media } = &req.action {
-            Some(self.catalogue.resolve(&req.device, media, ctx)?)
-        } else {
-            None
+        let plan = match &req.action {
+            Action::ResumeMedia { media } => {
+                Some(self.catalogue.resolve(&req.device, media, ctx)?)
+            }
+            Action::PlayItem {
+                item_id,
+                source_id,
+                position_ms,
+            }
+            | Action::SeekMedia {
+                item_id,
+                source_id,
+                position_ms,
+            } => {
+                let plan =
+                    self.catalogue
+                        .prepare(&req.device, item_id, source_id, *position_ms, ctx)?;
+                if &plan.item_id != item_id
+                    || plan.source_id.as_ref() != Some(source_id)
+                    || plan.position_ticks
+                        != position_ms.saturating_mul(MEDIA_TICKS_PER_MILLISECOND)
+                {
+                    return Err(Failure::before("media_plan_identity_mismatch"));
+                }
+                if matches!(req.action, Action::SeekMedia { .. })
+                    && (before.media_id.as_ref() != Some(item_id)
+                        || before.media_source_id.as_ref() != Some(source_id)
+                        || !matches!(before.playback, Playback::Paused | Playback::Playing))
+                {
+                    return Err(Failure::before("seek_media_identity_mismatch"));
+                }
+                Some(plan)
+            }
+            _ => None,
         };
+        // Catalogue reads can consume the remaining budget or observe cancellation.
+        // Even an already-satisfied no-op needs a live request before verification.
+        ctx.check()?;
         if desired(&req.action, &before, plan.as_ref(), None) {
             return Ok((Status::Verified, before));
         }
@@ -118,8 +161,10 @@ impl<D: DeviceControl, M: MediaCatalogue, S: StateStore, C: Clock> Service<D, M,
                 .map_err(|e| Failure::uncertain(e.code))?;
             // A read that completed after expiry must never become a success.
             ctx.check().map_err(|e| Failure::uncertain(e.code))?;
-            if matches!(req.action, Action::Resume | Action::ResumeMedia { .. })
-                && observed.playback == Playback::Playing
+            if matches!(
+                req.action,
+                Action::Resume | Action::ResumeMedia { .. } | Action::PlayItem { .. }
+            ) && observed.playback == Playback::Playing
                 && observed.playback_evidence == PlaybackEvidence::PositionProgressRequired
                 && observed.position_ticks.is_none()
             {
@@ -128,7 +173,13 @@ impl<D: DeviceControl, M: MediaCatalogue, S: StateStore, C: Clock> Service<D, M,
             if let Some(plan) = plan.as_ref() {
                 if observed.media_id.as_ref() == Some(&plan.item_id) {
                     if let Some(position) = observed.position_ticks {
-                        let elapsed = self.clock.monotonic_ms().saturating_sub(dispatch_started);
+                        let elapsed = if matches!(req.action, Action::SeekMedia { .. })
+                            && before.playback == Playback::Paused
+                        {
+                            0
+                        } else {
+                            self.clock.monotonic_ms().saturating_sub(dispatch_started)
+                        };
                         let tolerance = self
                             .policy
                             .resume_position_tolerance_ms
@@ -139,10 +190,24 @@ impl<D: DeviceControl, M: MediaCatalogue, S: StateStore, C: Clock> Service<D, M,
                             .saturating_add(elapsed.saturating_mul(MEDIA_TICKS_PER_MILLISECOND))
                             .saturating_add(tolerance);
                         if position < lower || position > upper {
-                            return Err(Failure::uncertain("resume_position_not_confirmed"));
+                            if matches!(req.action, Action::ResumeMedia { .. }) {
+                                return Err(Failure::uncertain("resume_position_not_confirmed"));
+                            }
+                            previous = Some(observed);
+                            ctx.wait(self.policy.verification_poll_ms)
+                                .map_err(|e| Failure::uncertain(e.code))?;
+                            continue;
                         }
                     }
                 }
+            }
+            if matches!(req.action, Action::SeekMedia { .. })
+                && observed.playback != before.playback
+            {
+                previous = Some(observed);
+                ctx.wait(self.policy.verification_poll_ms)
+                    .map_err(|e| Failure::uncertain(e.code))?;
+                continue;
             }
             if desired(&req.action, &observed, plan.as_ref(), previous.as_ref()) {
                 return Ok((Status::Verified, observed));
@@ -166,6 +231,24 @@ impl<D: DeviceControl, M: MediaCatalogue, S: StateStore, C: Clock> Control for S
         };
         if !identifier(&req.id) || !identifier(&req.device) {
             return receipt;
+        }
+        if let Action::PlayItem {
+            item_id,
+            source_id,
+            position_ms,
+        }
+        | Action::SeekMedia {
+            item_id,
+            source_id,
+            position_ms,
+        } = &req.action
+        {
+            if !media::media_id(item_id)
+                || !media::media_id(source_id)
+                || *position_ms > i64::MAX as u64 / MEDIA_TICKS_PER_MILLISECOND
+            {
+                return receipt;
+            }
         }
         let now = self.clock.unix_ms();
         if req.expires_at_unix_ms <= now {
@@ -223,7 +306,12 @@ impl<D: DeviceControl, M: MediaCatalogue, S: StateStore, C: Clock> Control for S
                     match e.code {
                         "cancelled" => Status::Cancelled,
                         "expired" => Status::Expired,
-                        "unsupported" | "media_command_unsupported" => Status::Unsupported,
+                        "unsupported"
+                        | "media_command_unsupported"
+                        | "seek_unsupported"
+                        | "media_kind_unsupported"
+                        | "play_item_capability_unavailable"
+                        | "media_control_unsupported" => Status::Unsupported,
                         _ => Status::Failed,
                     }
                 };
@@ -261,7 +349,31 @@ fn desired(
         }
         Action::OpenApp { app } => observed.active_app.as_ref() == Some(app),
         Action::SetVolume { index } => observed.volume_index == Some(*index),
-        Action::ResumeMedia { .. } => {
+        Action::SeekMedia { .. } => {
+            let Some(plan) = plan else {
+                return false;
+            };
+            observed.media_id.as_ref() == Some(&plan.item_id)
+                && observed.media_source_id == plan.source_id
+                && matches!(observed.playback, Playback::Playing | Playback::Paused)
+                && observed.position_ticks.is_some_and(|p| {
+                    if previous.is_none() {
+                        p == plan.position_ticks
+                    } else {
+                        true
+                    }
+                })
+                && (observed.playback == Playback::Paused
+                    || previous.is_some_and(|old| {
+                        old.media_id == observed.media_id
+                            && old.media_source_id == observed.media_source_id
+                            && old
+                                .position_ticks
+                                .zip(observed.position_ticks)
+                                .is_some_and(|(a, b)| b > a)
+                    }))
+        }
+        Action::ResumeMedia { .. } | Action::PlayItem { .. } => {
             let Some(plan) = plan else {
                 return false;
             };
@@ -271,6 +383,9 @@ fn desired(
             observed.playback == Playback::Playing
                 && observed.media_id.as_ref() == Some(&plan.item_id)
                 && previous.media_id == observed.media_id
+                && (plan.source_id.is_none()
+                    || (observed.media_source_id == plan.source_id
+                        && previous.media_source_id == plan.source_id))
                 && observed.position_ticks.is_some_and(|p| {
                     p >= plan.position_ticks && previous.position_ticks.is_some_and(|old| p > old)
                 })
@@ -281,3 +396,5 @@ fn desired(
 pub mod onboarding;
 
 pub mod generic;
+
+pub mod media;

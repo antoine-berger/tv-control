@@ -18,6 +18,8 @@ pub enum Key {
     Select,
     Back,
     Home,
+    Menu,
+    Settings,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Intent {
@@ -44,6 +46,8 @@ pub enum Intent {
         session: String,
         command: MediaCommand,
     },
+    /// Platform long-press of DPAD_CENTER; no arbitrary hold duration.
+    LongSelect,
     Navigate {
         keys: Vec<Key>,
     },
@@ -146,9 +150,18 @@ pub struct Screenshot {
     pub height: u32,
 }
 
+/// Device help is syntax evidence only, never evidence that an app handles a key.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RemoteCapabilities {
+    pub android_sdk: Option<u16>,
+    pub active_app: Option<String>,
+    pub keyevent_help: bool,
+    pub longpress_help: bool,
+}
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Read {
     Media,
+    RemoteCapabilities,
     State,
     Volume,
     Screenshot,
@@ -172,6 +185,7 @@ pub enum Data {
         sessions: Vec<MediaSession>,
         truncated: bool,
     },
+    RemoteCapabilities(RemoteCapabilities),
     State(Observed),
     Screenshot(Screenshot),
     Apps {
@@ -187,9 +201,13 @@ pub struct Reply {
     pub request_id: String,
     pub status: Status,
     pub code: String,
+    /// Last in-budget execution observation, not a current-state guarantee.
+    /// On failure this may be partial diagnostic evidence, never success proof.
     pub observed: Option<Observed>,
     pub choices: Vec<App>,
     pub cached: bool,
+    /// Application execution through result construction; excludes final journal
+    /// persistence, response transport and client latency. Cached results retain it.
     pub local_elapsed_ms: u64,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]

@@ -257,7 +257,9 @@ class Rpc:
             seen.add(cursor);response=self.call('tools/list',{'cursor':cursor});self.discovery_pages+=1
             names.extend(tool['name'] for tool in response['result']['tools'])
             cursor=response['result'].get('nextCursor')
-        if 'tv_verify_connection' not in names: raise AssertionError(response)
+        expected = {'tv_control', 'tv_capabilities', 'tv_read', 'tv_operation', 'tv_media_read', 'tv_verify_connection'}
+        if set(names) != expected: raise AssertionError(f'incomplete tool discovery: {names}')
+        self.discovery_names = set(names)
         if len(names)!=len(set(names)): raise AssertionError('duplicate tools')
     def verify(self, challenge):
         response = self.call('tools/call', {'name':'tv_verify_connection','arguments':{'challenge':challenge}})

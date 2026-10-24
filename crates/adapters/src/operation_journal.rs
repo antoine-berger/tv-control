@@ -78,6 +78,7 @@ enum IntentWire {
     Resume,
     Media { session: String, command: String },
     Navigate { keys: Vec<String> },
+    LongSelect,
     Search { app: String, query: String },
     Activate { reference: String },
     TypeText { reference: String, text: String },
@@ -102,6 +103,7 @@ impl From<&Intent> for IntentWire {
                 session: session.clone(),
                 command: command.name().into(),
             },
+            Intent::LongSelect => Self::LongSelect,
             Intent::Navigate { keys } => Self::Navigate {
                 keys: keys
                     .iter()
@@ -114,6 +116,8 @@ impl From<&Intent> for IntentWire {
                             Key::Select => "select",
                             Key::Back => "back",
                             Key::Home => "home",
+                            Key::Menu => "menu",
+                            Key::Settings => "settings",
                         }
                         .to_string()
                     })
@@ -152,6 +156,8 @@ struct StateWire {
     playback: String,
     playback_evidence: String,
     media_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    media_source_id: Option<String>,
     position_ticks: Option<u64>,
     #[serde(default)]
     awake: Option<bool>,
@@ -204,6 +210,7 @@ impl From<&Reply> for ReplyWire {
                 }
                 .into(),
                 media_id: o.media_id.clone(),
+                media_source_id: o.media_source_id.clone(),
                 position_ticks: o.position_ticks,
                 awake: o.awake,
                 volume_index: o.volume_index,
@@ -251,6 +258,9 @@ impl ReplyWire {
             .map(|s| -> Result<Observed, &'static str> {
                 if s.active_app.as_ref().is_some_and(|v| v.len() > MAX_TEXT)
                     || s.media_id.as_ref().is_some_and(|v| v.len() > MAX_TEXT)
+                    || s.media_source_id
+                        .as_ref()
+                        .is_some_and(|v| v.len() > MAX_TEXT)
                 {
                     return Err(bad);
                 }
@@ -271,6 +281,7 @@ impl ReplyWire {
                         _ => return Err(bad),
                     },
                     media_id: s.media_id.clone(),
+                    media_source_id: s.media_source_id.clone(),
                     position_ticks: s.position_ticks,
                     awake: s.awake,
                     volume_index: s.volume_index,

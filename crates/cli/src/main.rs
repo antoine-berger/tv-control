@@ -2,6 +2,7 @@ mod generic_mcp;
 mod journey;
 mod journey_fixture;
 mod mcp;
+mod media_mcp;
 mod onboarding;
 mod terminal;
 use serde_json::{json, Value};
@@ -124,10 +125,10 @@ fn capabilities(cfg: &Config) -> Value {
         "deduplication":"durable_shared_journal", "generic_adb_control":cfg.generic_adb_control,"captures":cfg.devices.values().any(|d| matches!(d, tv_adapters::config::Device::Adb {..})),"capture_mode":"explicit_read_device_dependent","shell_tool":false,"network_listener":false,
         "devices":cfg.devices.iter().map(|(alias,d)| match d {
             tv_adapters::config::Device::Adb {media_app,volume_max_index,..}=>json!({"alias":alias,"adapter":"adb","actions":{
-                "media":if cfg.generic_adb_control {json!({"commands":["pause","resume","next","previous"],"target":"session","qualification":"device_dependent","stop":false,"seek":false})} else {json!(false)},"wake":cfg.generic_adb_control,"mute":if cfg.generic_adb_control {json!("device_dependent")} else {json!(false)},"observe":true,"open_app":true,"pause":cfg.generic_adb_control || media_app.is_some(),"resume":cfg.generic_adb_control || media_app.is_some(),"navigate":cfg.generic_adb_control,"search":"native_or_explicit_launcher_dispatch","open_url":cfg.generic_adb_control,"ui":"device_dependent","type_text":if cfg.generic_adb_control {json!("focused_editable_ascii")} else {json!(false)},"set_volume":if cfg.generic_adb_control {json!("device_dependent")} else {json!(volume_max_index.is_some())},"resume_media":false},
-                "mute_scope":"android_music_stream_3_zero_not_external_audio","volume_unit":"android_music_stream_index_not_percent"}),
+                "media":if cfg.generic_adb_control {json!({"commands":["pause","resume","next","previous"],"target":"session","qualification":"device_dependent","stop":false,"seek":false})} else {json!(false)},"wake":cfg.generic_adb_control,"mute":if cfg.generic_adb_control {json!("device_dependent")} else {json!(false)},"observe":true,"open_app":true,"pause":cfg.generic_adb_control || media_app.is_some(),"resume":cfg.generic_adb_control || media_app.is_some(),"navigate":cfg.generic_adb_control,"repeat":cfg.generic_adb_control,"long_select":if cfg.generic_adb_control {json!("requires_device_input_help")} else {json!(false)},"search":"native_or_explicit_launcher_dispatch","open_url":cfg.generic_adb_control,"ui":"device_dependent","type_text":if cfg.generic_adb_control {json!("focused_editable_ascii")} else {json!(false)},"set_volume":if cfg.generic_adb_control {json!("device_dependent")} else {json!(volume_max_index.is_some())},"resume_media":false},
+                "remote_key_acceptance":"app_and_device_dependent","remote_capabilities":"read_only_device_input_help","mute_scope":"android_music_stream_3_zero_not_external_audio","volume_unit":"android_music_stream_index_not_percent"}),
             tv_adapters::config::Device::Jellyfin {..}=>json!({"alias":alias,"adapter":"jellyfin","actions":{
-                "observe":true,"open_app":false,"pause":true,"resume":true,"set_volume":false,"mute":false,"resume_media":true},"qualification":"requires_patched_server_and_compatible_client"})
+                "observe":true,"open_app":false,"pause":true,"resume":true,"set_volume":false,"mute":false,"resume_media":true,"media_read":true,"play_item":"client_capability_and_source_dependent","seek_media":"client_can_seek_and_source_dependent"},"qualification":"requires_patched_server_and_compatible_client"})
         }).collect::<Vec<_>>(),"apps":cfg.apps.keys().collect::<Vec<_>>(),"media":cfg.media.keys().collect::<Vec<_>>(),"workflows":cfg.workflows.keys().collect::<Vec<_>>()})
 }
 fn run() -> Result<i32, &'static str> {
@@ -192,7 +193,7 @@ fn run() -> Result<i32, &'static str> {
         if args[1] == "--version" {
             println!("tv-control {}", env!("CARGO_PKG_VERSION"));
         } else {
-            println!("tv-control setup [--json|--dry-run]\ntv-control verify-connection CONFIG [--launcher PATH]\ntv-control onboard|disconnect CONFIG [--json]\ntv-control interfaces|discover [--interface NAME] [--json]\ntv-control doctor|connect-chatgpt CONFIG [--json]\ntv-control validate|capabilities|mcp CONFIG\ntv-control execute CONFIG REQUEST.json|-\ntv-control workflow CONFIG ALIAS REQUEST_ID TTL_MS\nSetup prepares configuration. Onboard guides explicit access approvals and verifies the selected conversation. JSON onboarding never grants access.");
+            println!("tv-control setup [--json|--dry-run]\ntv-control verify-connection CONFIG [--launcher PATH]\ntv-control onboard|disconnect CONFIG [--json]\ntv-control interfaces|discover [--interface NAME] [--json]\ntv-control doctor|connect-chatgpt CONFIG [--json]\ntv-control validate|capabilities|mcp CONFIG\ntv-control execute|media-read CONFIG REQUEST.json|-\ntv-control workflow CONFIG ALIAS REQUEST_ID TTL_MS\nSetup prepares configuration. Onboard guides explicit access approvals and verifies the selected conversation. JSON onboarding never grants access.");
         }
         return Ok(0);
     }
@@ -223,7 +224,7 @@ fn run() -> Result<i32, &'static str> {
             mcp::serve(legacy, generic, cfg)?;
             Ok(0)
         }
-        "execute" if args.len() == 4 => {
+        "execute" | "media-read" if args.len() == 4 => {
             let input: Box<dyn Read> = if args[3] == "-" {
                 Box::new(io::stdin())
             } else {
@@ -239,6 +240,12 @@ fn run() -> Result<i32, &'static str> {
             }
             let mut value: Value =
                 serde_json::from_slice(&bytes).map_err(|_| "invalid_request_json")?;
+            if args[1] == "media-read" {
+                let call = media_mcp::Call::parse(value)?;
+                let (result, failed) = call.execute(cfg, &CancelFlag::default());
+                println!("{result}");
+                return Ok(if failed { 2 } else { 0 });
+            }
             let (legacy, generic) = mcp_services(cfg.clone(), &operation_path(&args[2])?)?;
             if generic_mcp::routes_generic(&cfg, "tv_control", &value) {
                 generic_mcp::translate_alias(&cfg, &mut value);

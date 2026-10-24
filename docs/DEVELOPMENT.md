@@ -55,6 +55,47 @@ Each crate README identifies its entry points and tests. For common changes:
 Keep a change scoped to its owner; avoid adding I/O or serialization to the inner
 crates. Update the user-facing reference when a command or configuration changes.
 
+## Source quality and review policy
+
+Follow the [official Rust Style Guide](https://doc.rust-lang.org/style-guide/)
+with `cargo fmt`; use the existing strict
+[Clippy check](https://doc.rust-lang.org/clippy/usage.html) rather than inventing
+another style engine. Organize related responsibilities into cohesive modules,
+keeping implementation details private as described in the
+[Rust Book's module guidance](https://doc.rust-lang.org/book/ch07-02-defining-modules-to-control-scope-and-privacy.html).
+Splitting files should clarify ownership, not introduce arbitrary indirection or
+unnecessary public APIs.
+
+**Project preference, not an official Rust standard:** every maintained Rust or
+Python source file must have **fewer than 1,000 physical lines** (999 maximum).
+`scripts/check_source_size.py` checks Git-tracked `.rs` and `.py` files, including
+tests and fixtures, against the working-tree contents. Blank lines and comments
+count; LF and CRLF each end one line, and an unterminated final line also counts.
+Stage newly added sources before running the check locally. Missing, non-regular
+or non-UTF-8 tracked source files fail the check rather than disappearing from it.
+
+Generated/build/vendor artifacts are not maintained sources: directories named
+`generated`, `vendor`, `target`, `dist`, `.venv` and `__pycache__` are excluded.
+Lockfiles and non-source artifacts are excluded by extension. A filename such as
+`generated.rs` is not an exemption. Do not move maintained code into an artifact
+directory to bypass the gate; generators and hand-maintained fixture code remain
+subject to the limit. There are currently no per-file size exceptions. Any new
+exclusion needs explicit review of its provenance, regeneration procedure and
+reason; a maintained-source exception would require a reviewed policy and checker
+change, not a suppression comment. Prefer a cohesive refactor before the limit.
+
+The production domain/application core must remain app- and TV-agnostic. Keep
+protocol parsing, app-specific behavior and device discovery in adapters behind
+ports. Documented protocol constants (for example Android action bits) are valid;
+model/package guesses, personal device IDs, screen coordinates or account-specific
+fallbacks are not substitutes for discovered/configured capabilities. Fixture
+constants are legitimate test inputs, not production device support. Review this
+semantically: a grep ban on literals cannot establish agnosticism. Any justified
+adapter-specific exception needs a documented protocol/source or configuration
+contract, bounded unsupported behavior and focused tests; it must not leak into
+the inner crates. The architecture gate checks dependency direction, not all of
+these semantic review requirements.
+
 ## Checks
 
 Run from the repository root:
@@ -65,10 +106,14 @@ cargo clippy --locked --workspace --all-targets -- -D warnings
 cargo test --locked --workspace
 cargo build --locked --release
 python3 scripts/check_architecture.py
+python3 -W error::ResourceWarning scripts/test_source_size.py
+python3 scripts/check_source_size.py
 python3 -W error::ResourceWarning scripts/test_release.py
 python3 -W error::ResourceWarning scripts/test_verify_public_release.py
 python3 -W error::ResourceWarning scripts/test_installer.py
 python3 -W error::ResourceWarning scripts/test_mcp.py target/release/tv-control
+python3 -W error::ResourceWarning scripts/test_generic_mcp.py target/release/tv-control
+python3 -W error::ResourceWarning scripts/test_media_read.py target/release/tv-control
 python3 -W error::ResourceWarning scripts/test_onboarding.py target/release/tv-control
 python3 -W error::ResourceWarning scripts/test_install_flow.py target/release/tv-control
 python3 -W error::ResourceWarning scripts/test_zero_arg_ux.py target/release/tv-control

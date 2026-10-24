@@ -365,6 +365,24 @@ impl Device for GenericAdb {
     fn ui(&self, alias: &str, ctx: &Context<'_>) -> PortResult<UiSnapshot> {
         self.issue_ui(alias, ctx)
     }
+    fn remote_capabilities(
+        &self,
+        alias: &str,
+        ctx: &Context<'_>,
+    ) -> PortResult<RemoteCapabilities> {
+        let help = self.shell(alias, &["input"], &[], false, ctx)?;
+        let (keyevent_help, longpress_help) = input_help_capabilities(&help);
+        let sdk = self.shell(alias, &["getprop", "ro.build.version.sdk"], &[], false, ctx)?;
+        let android_sdk = sdk.trim().parse::<u16>().ok().filter(|n| *n > 0);
+        let active_app = self.foreground(alias, ctx)?;
+        ctx.check()?;
+        Ok(RemoteCapabilities {
+            android_sdk,
+            active_app,
+            keyevent_help,
+            longpress_help,
+        })
+    }
     fn apply(
         &self,
         alias: &str,
@@ -485,6 +503,22 @@ impl Device for GenericAdb {
             }
             Intent::Pause => self.playback(alias, false, ctx),
             Intent::Resume => self.playback(alias, true, ctx),
+            Intent::LongSelect => {
+                // Probe syntax each time: do not infer support from OS version or cache
+                // device help across reconnects. This probe cannot inject a key.
+                let help = self.shell(alias, &["input"], &[], false, ctx)?;
+                if !input_help_capabilities(&help).1 {
+                    return Err(Failure::before("unsupported"));
+                }
+                self.shell(
+                    alias,
+                    &["input", "keyevent", "--longpress", "23"],
+                    &[],
+                    true,
+                    ctx,
+                )?;
+                Ok(())
+            }
             Intent::Navigate { keys } => {
                 if keys.is_empty() || keys.len() > 16 {
                     return Err(Failure::before("invalid_navigation"));
@@ -498,6 +532,8 @@ impl Device for GenericAdb {
                     Key::Select => "23",
                     Key::Back => "4",
                     Key::Home => "3",
+                    Key::Menu => "82",
+                    Key::Settings => "176",
                 }));
                 self.shell(alias, &args, &[], true, ctx)?;
                 Ok(())
@@ -512,4 +548,22 @@ impl Device for GenericAdb {
 fn session_tag(raw: &str, package: &str) -> PortResult<String> {
     let sessions = media::sessions(raw)?;
     media::unique_for_package(&sessions, package).map(str::to_owned)
+}
+
+/// Accept only a keyevent usage line; mentions in errors or other commands are
+/// not evidence. Device output is data, never executable arguments.
+fn input_help_capabilities(help: &str) -> (bool, bool) {
+    let mut keyevent = false;
+    let mut longpress = false;
+    for line in help.lines().map(str::trim) {
+        if let Some(usage) = line.strip_prefix("keyevent ") {
+            if usage.contains("<key code number or name>") {
+                keyevent = true;
+                longpress |= usage
+                    .split(|c: char| !c.is_ascii_alphanumeric() && c != '-')
+                    .any(|token| token == "--longpress");
+            }
+        }
+    }
+    (keyevent, longpress)
 }

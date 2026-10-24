@@ -170,3 +170,88 @@ fn legacy_and_generic_paths_share_physical_device_exclusion() {
     assert_eq!(result.status, Status::Verified, "{}", result.code);
     assert_eq!(applied.load(Ordering::SeqCst), 1);
 }
+
+struct CountingMedia(Arc<AtomicUsize>);
+impl tv_application::Control for CountingMedia {
+    fn execute(
+        &self,
+        request: tv_domain::Request,
+        _: &dyn tv_application::Cancellation,
+    ) -> tv_domain::Receipt {
+        self.0.fetch_add(1, Ordering::SeqCst);
+        tv_domain::Receipt {
+            request_id: request.id,
+            status: Status::Verified,
+            code: "state_verified",
+            observed: Some(Observed {
+                media_id: Some("item".into()),
+                media_source_id: Some("source".into()),
+                connected: true,
+                ..Default::default()
+            }),
+            cached: false,
+            local_elapsed_ms: 1,
+        }
+    }
+}
+#[test]
+fn media_action_fingerprint_and_source_evidence_survive_durable_restart() {
+    use tv_application::Control as _;
+    for seek in [false, true] {
+        let t = Temp::new();
+        let count = Arc::new(AtomicUsize::new(0));
+        let guard = || {
+            LegacyGuard::new(
+                Arc::new(CountingMedia(count.clone())),
+                Arc::new(OperationJournal::open(&t.0.join("journal"), 16, 60000).unwrap()),
+                Arc::new(SystemClock::default()),
+                BTreeMap::from([("living".into(), "physical-tv".into())]),
+                10000,
+            )
+        };
+        let action = |source: &str, position_ms| {
+            if seek {
+                tv_domain::Action::SeekMedia {
+                    item_id: "item".into(),
+                    source_id: source.into(),
+                    position_ms,
+                }
+            } else {
+                tv_domain::Action::PlayItem {
+                    item_id: "item".into(),
+                    source_id: source.into(),
+                    position_ms,
+                }
+            }
+        };
+        let req = tv_domain::Request {
+            id: "media".into(),
+            device: "living".into(),
+            action: action("source", 1000),
+            expires_at_unix_ms: SystemClock::default().unix_ms() + 5000,
+        };
+        let first = guard();
+        assert_eq!(
+            first.execute(req.clone(), &CancelFlag::default()).status,
+            Status::Verified
+        );
+        drop(first);
+        let restarted = guard();
+        let result = restarted.execute(req.clone(), &CancelFlag::default());
+        assert!(result.cached);
+        assert_eq!(
+            result.observed.unwrap().media_source_id.as_deref(),
+            Some("source")
+        );
+        assert_eq!(count.load(Ordering::SeqCst), 1);
+        for changed in [action("other", 1000), action("source", 2000)] {
+            let mut r = req.clone();
+            r.action = changed;
+            assert_eq!(
+                restarted.execute(r, &CancelFlag::default()).code,
+                "request_id_conflict"
+            );
+        }
+        assert_eq!(count.load(Ordering::SeqCst), 1);
+    }
+}

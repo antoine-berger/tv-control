@@ -50,8 +50,25 @@ impl DeviceControl for Device {
 }
 struct Catalogue;
 impl MediaCatalogue for Catalogue {
+    fn prepare(
+        &self,
+        _: &str,
+        item_id: &str,
+        source_id: &str,
+        position_ms: u64,
+        _: &Context<'_>,
+    ) -> PortResult<MediaPlan> {
+        Ok(MediaPlan {
+            item_id: item_id.into(),
+            source_id: Some(source_id.into()),
+            media_kind: Some("video".into()),
+            position_ticks: position_ms * MEDIA_TICKS_PER_MILLISECOND,
+        })
+    }
     fn resolve(&self, _: &str, _: &str, _: &Context<'_>) -> PortResult<MediaPlan> {
         Ok(MediaPlan {
+            source_id: None,
+            media_kind: None,
             item_id: "episode".into(),
             position_ticks: 100,
         })
@@ -517,4 +534,229 @@ fn aliases_sharing_a_physical_group_reserve_once() {
         worker.join().unwrap();
     }
     assert_eq!(acquired.load(Ordering::SeqCst), 1);
+}
+
+fn source_state(playback: Playback, ticks: u64) -> Observed {
+    Observed {
+        media_source_id: Some("source".into()),
+        ..state(playback, ticks)
+    }
+}
+fn exact_action(seek: bool) -> Action {
+    if seek {
+        Action::SeekMedia {
+            item_id: "episode".into(),
+            source_id: "source".into(),
+            position_ms: 1000,
+        }
+    } else {
+        Action::PlayItem {
+            item_id: "episode".into(),
+            source_id: "source".into(),
+            position_ms: 1000,
+        }
+    }
+}
+#[test]
+fn exact_play_requires_source_identity_and_progress_near_target() {
+    let s = service(vec![
+        state(Playback::Stopped, 0),
+        source_state(Playback::Playing, 10_000_000),
+        source_state(Playback::Playing, 10_010_000),
+    ]);
+    assert_eq!(
+        s.execute(request(exact_action(false)), &CancelFlag::default())
+            .status,
+        Status::Verified
+    );
+    assert_eq!(s.devices.calls.load(Ordering::SeqCst), 1);
+    let s = service(vec![
+        state(Playback::Stopped, 0),
+        state(Playback::Playing, 10_000_000),
+        state(Playback::Playing, 10_010_000),
+    ]);
+    assert_eq!(
+        s.execute(request(exact_action(false)), &CancelFlag::default())
+            .status,
+        Status::OutcomeUnknown
+    );
+}
+#[test]
+fn paused_seek_waits_for_position_without_resuming() {
+    let s = service(vec![
+        source_state(Playback::Paused, 1_000_000),
+        source_state(Playback::Paused, 1_000_000),
+        source_state(Playback::Paused, 10_000_000),
+    ]);
+    assert_eq!(
+        s.execute(request(exact_action(true)), &CancelFlag::default())
+            .status,
+        Status::Verified
+    );
+    assert_eq!(s.devices.calls.load(Ordering::SeqCst), 1);
+}
+#[test]
+fn seek_rejects_wrong_source_before_dispatch_and_changed_pause_state_after() {
+    let s = service(vec![state(Playback::Paused, 1_000_000)]);
+    let r = s.execute(request(exact_action(true)), &CancelFlag::default());
+    assert_eq!(r.code, "seek_media_identity_mismatch");
+    assert_eq!(s.devices.calls.load(Ordering::SeqCst), 0);
+    let s = service(vec![
+        source_state(Playback::Paused, 1_000_000),
+        source_state(Playback::Playing, 10_000_000),
+        source_state(Playback::Playing, 10_010_000),
+    ]);
+    assert_eq!(
+        s.execute(request(exact_action(true)), &CancelFlag::default())
+            .status,
+        Status::OutcomeUnknown
+    );
+}
+#[test]
+fn ignored_seek_and_wrong_position_never_verify() {
+    for ticks in [1_000_000, 99_000_000] {
+        let s = service(vec![
+            source_state(Playback::Paused, 1_000_000),
+            source_state(Playback::Paused, ticks),
+        ]);
+        assert_eq!(
+            s.execute(request(exact_action(true)), &CancelFlag::default())
+                .status,
+            Status::OutcomeUnknown
+        );
+    }
+}
+#[test]
+fn new_media_actions_validate_and_deduplicate_complete_identity() {
+    let s = service(vec![
+        source_state(Playback::Paused, 1_000_000),
+        source_state(Playback::Paused, 10_000_000),
+    ]);
+    let r = request(exact_action(true));
+    assert_eq!(
+        s.execute(r.clone(), &CancelFlag::default()).status,
+        Status::Verified
+    );
+    assert!(s.execute(r, &CancelFlag::default()).cached);
+    let mut changed = request(exact_action(true));
+    changed.action = Action::SeekMedia {
+        item_id: "episode".into(),
+        source_id: "other".into(),
+        position_ms: 1000,
+    };
+    assert_eq!(
+        s.execute(changed, &CancelFlag::default()).code,
+        "request_id_conflict"
+    );
+    let s = service(vec![source_state(Playback::Paused, 0)]);
+    let mut invalid = request(exact_action(true));
+    invalid.action = Action::SeekMedia {
+        item_id: "episode".into(),
+        source_id: "source".into(),
+        position_ms: u64::MAX,
+    };
+    assert_eq!(
+        s.execute(invalid, &CancelFlag::default()).status,
+        Status::Invalid
+    );
+    assert_eq!(s.devices.calls.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn new_media_control_cancellation_after_dispatch_is_unknown_and_not_retried() {
+    let flag = Arc::new(CancelFlag::default());
+    let mut s = service(vec![source_state(Playback::Paused, 0)]);
+    s.devices.cancel = Some(flag.clone());
+    let req = request(exact_action(true));
+    let result = s.execute(req.clone(), &*flag);
+    assert_eq!(result.status, Status::OutcomeUnknown);
+    assert_eq!(s.devices.calls.load(Ordering::SeqCst), 1);
+    let result = s.execute(req, &CancelFlag::default());
+    assert!(result.cached);
+    assert_eq!(s.devices.calls.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn paused_seek_cannot_use_elapsed_time_to_accept_far_ahead_position() {
+    let s = service(vec![
+        source_state(Playback::Paused, 0),
+        source_state(Playback::Paused, 10_010_000),
+    ]);
+    assert_eq!(
+        s.execute(request(exact_action(true)), &CancelFlag::default())
+            .status,
+        Status::OutcomeUnknown
+    );
+}
+
+#[test]
+fn changed_source_during_exact_play_does_not_verify_progress() {
+    let mut wrong = source_state(Playback::Playing, 10_010_000);
+    wrong.media_source_id = Some("other".into());
+    let s = service(vec![
+        state(Playback::Stopped, 0),
+        source_state(Playback::Playing, 10_000_000),
+        wrong,
+    ]);
+    assert_eq!(
+        s.execute(request(exact_action(false)), &CancelFlag::default())
+            .status,
+        Status::OutcomeUnknown
+    );
+}
+
+#[test]
+fn late_catalogue_cannot_verify_already_satisfied_paused_seek() {
+    struct DelayedCatalogue {
+        time: Time,
+        cancel: Arc<CancelFlag>,
+        expire: bool,
+    }
+    impl MediaCatalogue for DelayedCatalogue {
+        fn prepare(
+            &self,
+            device: &str,
+            item: &str,
+            source: &str,
+            position: u64,
+            ctx: &Context<'_>,
+        ) -> PortResult<MediaPlan> {
+            if self.expire {
+                self.time.sleep_ms(100);
+            } else {
+                self.cancel.cancel();
+            }
+            Catalogue.prepare(device, item, source, position, ctx)
+        }
+        fn resolve(&self, _: &str, _: &str, _: &Context<'_>) -> PortResult<MediaPlan> {
+            panic!("exact seek must not resolve an alias")
+        }
+    }
+    for expire in [true, false] {
+        let base = service(vec![source_state(Playback::Paused, 10_000_000)]);
+        let cancel = Arc::new(CancelFlag::default());
+        let s = Service {
+            catalogue: DelayedCatalogue {
+                time: base.clock.clone(),
+                cancel: cancel.clone(),
+                expire,
+            },
+            devices: base.devices,
+            state: base.state,
+            clock: base.clock,
+            policy: base.policy,
+        };
+        let r = s.execute(request(exact_action(true)), &*cancel);
+        assert_eq!(
+            r.status,
+            if expire {
+                Status::Expired
+            } else {
+                Status::Cancelled
+            }
+        );
+        assert_eq!(r.code, if expire { "expired" } else { "cancelled" });
+        assert_eq!(s.devices.calls.load(Ordering::SeqCst), 0);
+        assert!(r.observed.is_none());
+    }
 }

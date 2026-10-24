@@ -86,6 +86,7 @@ class CompleteJourney(JourneyFixture):
         config=json.loads(self.config.read_text());config['preferences']['max_output_bytes']=4096;self.config.write_text(json.dumps(config))
         terminal=self.terminal();challenge=self.approve(terminal)
         channel=self.channel();self.assertGreater(channel.discovery_pages,1)
+        self.assertEqual(channel.discovery_names, {'tv_control','tv_capabilities','tv_read','tv_operation','tv_media_read','tv_verify_connection'})
         code=channel.verify(challenge);terminal.line(code)
         self.assertEqual(terminal.wait(),0,terminal.text);self.assertIn('Ready.',terminal.text)
         self.assert_private_records()
@@ -512,7 +513,7 @@ class CompleteJourney(JourneyFixture):
         # owned this controller. Its uninstall must not even query the tunnel.
         other_prefix=installer.root/'another installation'
         archive=installer.asset()
-        result=installer.run_script(['--prefix',str(other_prefix),'--version','v0.4.6','--archive',str(archive),'--json'],env=env)
+        result=installer.run_script(['--prefix',str(other_prefix),'--version','v0.4.7','--archive',str(archive),'--json'],env=env)
         self.assertEqual(result.returncode,0,result.stdout+result.stderr)
         events=(self.root/'tunnel-events.jsonl').read_bytes()
         result=installer.run_script(['--prefix',str(other_prefix),'--uninstall','--json'],env=env)

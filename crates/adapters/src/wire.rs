@@ -15,9 +15,25 @@ pub enum WireAction {
     Observe,
     Pause,
     Resume,
-    OpenApp { app: String },
-    SetVolume { index: u16 },
-    ResumeMedia { media: String },
+    OpenApp {
+        app: String,
+    },
+    SetVolume {
+        index: u16,
+    },
+    ResumeMedia {
+        media: String,
+    },
+    PlayItem {
+        item_id: String,
+        source_id: String,
+        position_ms: u64,
+    },
+    SeekMedia {
+        item_id: String,
+        source_id: String,
+        position_ms: u64,
+    },
 }
 impl From<WireRequest> for Request {
     fn from(r: WireRequest) -> Self {
@@ -32,6 +48,24 @@ impl From<WireRequest> for Request {
                 WireAction::OpenApp { app } => Action::OpenApp { app },
                 WireAction::SetVolume { index } => Action::SetVolume { index },
                 WireAction::ResumeMedia { media } => Action::ResumeMedia { media },
+                WireAction::PlayItem {
+                    item_id,
+                    source_id,
+                    position_ms,
+                } => Action::PlayItem {
+                    item_id,
+                    source_id,
+                    position_ms,
+                },
+                WireAction::SeekMedia {
+                    item_id,
+                    source_id,
+                    position_ms,
+                } => Action::SeekMedia {
+                    item_id,
+                    source_id,
+                    position_ms,
+                },
             },
         }
     }
@@ -45,5 +79,5 @@ pub fn receipt(r: &Receipt) -> serde_json::Value {
         "observed":r.observed.as_ref().map(|s|json!({"connected":s.connected,"active_app":s.active_app,
             "playback_evidence":match s.playback_evidence {PlaybackEvidence::NativeState=>"native_state",PlaybackEvidence::PositionProgressRequired=>"position_progress_required"},"playback": match s.playback {
             Playback::Unknown=>"unknown",Playback::Stopped=>"stopped",Playback::Paused=>"paused",Playback::Playing=>"playing",Playback::Buffering=>"buffering"},
-            "media_id":s.media_id,"position_ticks":s.position_ticks,"volume_index":s.volume_index}))})
+            "media_id":s.media_id,"media_source_id":s.media_source_id,"position_ticks":s.position_ticks,"volume_index":s.volume_index}))})
 }
