@@ -58,6 +58,7 @@ public final class RuntimeProof extends NativeTextInstrumentation {
     }
     private Stage stage = Stage.CONNECT_AUTOMATION;
     private SyntheticReadback syntheticReadback = SyntheticReadback.NOT_CHECKED;
+    private final EngineObservation engineObservation = new EngineObservation();
     private UiAutomation automation;
     private static boolean hasId(AccessibilityNodeInfo root, String id) {
         List<AccessibilityNodeInfo> nodes = root.findAccessibilityNodeInfosByViewId(id);
@@ -126,6 +127,8 @@ public final class RuntimeProof extends NativeTextInstrumentation {
             result.putString("tv_native_runtime_report_ids", reportIds.name());
             result.putString("tv_native_runtime_interactive", interactive.name());
             result.putString("tv_native_runtime_keyguard_locked", keyguardLocked.name());
+            result.putString("tv_native_runtime_engine_status", engineObservation.initial());
+            result.putString("tv_native_runtime_replay_status", engineObservation.replay());
             finish(0, result);
         }
     }
@@ -205,8 +208,10 @@ public final class RuntimeProof extends NativeTextInstrumentation {
                 assertTrue(new File(dir, "cancel").createNewFile());
             }
             final String[] status = new String[1];
+            final boolean[] replaying = new boolean[1];
             TextEngine.ResultSink sink = new TextEngine.ResultSink() {
                 public void status(String result) {
+                    engineObservation.observe(result, replaying[0], status[0] != null);
                     if (status[0] != null) throw new AssertionError("duplicate status");
                     status[0] = result;
                 }
@@ -223,6 +228,7 @@ public final class RuntimeProof extends NativeTextInstrumentation {
             stage = Stage.REQUEST_CONSUMED;
             assertFalse("request consumed", request.exists());
             status[0] = null;
+            replaying[0] = true;
             stage = Stage.REPLAY_INVOKE;
             TextEngine.runOnce(getTargetContext().getCacheDir(), token,
                 new TextEngine.FocusSource() { public AccessibilityNodeInfo focused() { return inputFocus(automation); } }, sink);

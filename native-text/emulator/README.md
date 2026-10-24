@@ -313,6 +313,18 @@ pairs. Wildcards, foreign PIDs, unknown fields, incomplete records and unexpecte
 ports remain rejected. The lsof command and process ownership checks are unchanged.
 Both attempts completed cleanup verification; neither qualifies an Android runtime.
 
+The third attempt passed the owned ARM64/HVF/ADB gates and the key-remap proof,
+then failed the normal fixture's expected engine-status assertion. No Android
+crash/ANR was reported and owned cleanup passed, but text insertion remains
+unqualified. The proof now returns separate allowlisted first-call and replay
+statuses: NOT_REPORTED, VERIFIED, REFUSED, UNCERTAIN, INVALID or MULTIPLE. It does
+not expose arbitrary engine strings, UI text, tokens or exception messages.
+The shared TextEngine has no finer error-code API; this diagnostic does not invent
+an internal cause or claim an observed effect from a failed assertion. The engine,
+assertions, four-second request deadline and UI calls are unchanged. Rebuilding
+the test-only proof APK is required before the strict host parser can consume the
+new fields. No helper distribution or TV qualification follows from host tests.
+
 This candidate adds `--mode ci-linux` and `--mode darwin-local`; mode selection is
 mandatory. Darwin requires a native ARM64 host, the official emulator's successful
 HVF acceleration check, no software/Rosetta fallback, a private SDK/lab, and

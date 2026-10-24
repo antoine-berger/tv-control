@@ -9,6 +9,8 @@ ALLOWED.update(overlay=frozenset("NOT_CHECKED ANR_DIALOG CRASH_DIALOG ERROR_DIAL
                matches=frozenset("NOT_CHECKED ZERO ONE MULTIPLE".split()))
 for key in ("report_ids", "interactive", "keyguard_locked"):
     ALLOWED[key] = frozenset(("UNKNOWN", "YES", "NO"))
+for key in ("engine_status", "replay_status"):
+    ALLOWED[key] = frozenset("NOT_REPORTED VERIFIED REFUSED UNCERTAIN INVALID MULTIPLE".split())
 
 
 def parse_activity_start(raw):

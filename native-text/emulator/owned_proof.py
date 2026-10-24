@@ -45,7 +45,9 @@ def run_cases(args, shell, target):
                 + " launch=" + launch + " root=" + diagnostic["root"]
                 + " matches=" + diagnostic["matches"] + " report_ids=" + diagnostic["report_ids"]
                 + " interactive=" + diagnostic["interactive"]
-                + " keyguard_locked=" + diagnostic["keyguard_locked"])
+                + " keyguard_locked=" + diagnostic["keyguard_locked"]
+                + " engine_status=" + diagnostic["engine_status"]
+                + " replay_status=" + diagnostic["replay_status"])
         if snapshot() != initial:
             raise RuntimeError("runner changed IME/accessibility secure settings: " + mode)
         print("PASS runtime fixture:", mode, "; IME/accessibility secure settings unchanged")
