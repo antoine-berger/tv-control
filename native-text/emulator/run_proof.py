@@ -236,6 +236,7 @@ def main():
             "emulator_pid": emulator.pid if emulator else None,
             "proof_completed": completed, "cleanup_verified": not failures,
             "phase": phase, "primary_error_type": type(primary_error).__name__ if primary_error else None,
+            "adb_startup_diagnostic": getattr(adb, "startup_diagnostic", None),
             "cleanup_failures": failures}, indent=2) + "\n")
         if failures:
             raise RuntimeError("owned runtime cleanup unverified: " + ",".join(failures)) from primary_error

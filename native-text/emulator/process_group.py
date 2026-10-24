@@ -11,7 +11,7 @@ def require_nonreaping_wait():
         raise RuntimeError("non-reaping child observation is unavailable")
 
 
-def leader_exited(process):
+def _exit_observation(process):
     require_nonreaping_wait()
     # Popen.poll()/wait() would reap the leader and release its PID for reuse.
     if process.returncode is not None:
@@ -20,7 +20,23 @@ def leader_exited(process):
         info = os.waitid(os.P_PID, process.pid, os.WEXITED | os.WNOHANG | os.WNOWAIT)
     except ChildProcessError as error:
         raise RuntimeError("owned emulator leader ownership lost; refusing group signals") from error
-    return info is not None
+    return info
+
+
+def leader_exited(process):
+    return _exit_observation(process) is not None
+
+
+def retained_exit_info(process):
+    """Read fixed exit metadata without reaping or exposing child output."""
+    info = _exit_observation(process)
+    if info is None:
+        return {"state": "running"}
+    if info.si_code == os.CLD_EXITED:
+        return {"state": "exited", "exit_code": info.si_status}
+    if info.si_code in (os.CLD_KILLED, os.CLD_DUMPED):
+        return {"state": "signaled", "signal": info.si_status}
+    return {"state": "unknown_exit"}
 
 
 def signal_owned_group(process, sig):

@@ -281,6 +281,15 @@ read-only diagnosis receives this additional independent 10-second bound.
 
 ## Darwin ARM64 candidate: review before runtime
 
+The first local runtime attempt passed the HVF preflight but the foreground ADB
+server aborted before readiness; no AVD was launched. Its cleanup receipt and
+independent process/port checks found no SDK leftovers. The startup cause is still
+under investigation: this is not a successful Android runtime qualification.
+Startup diagnostics now preserve only fixed error categories, bounded allowlisted
+source locations and non-reaping exit metadata in the receipt before closing the
+temporary SDK log. Raw SDK output is never copied into that receipt. This change
+does not alter startup arguments, listener selection, retries or cleanup policy.
+
 This candidate adds `--mode ci-linux` and `--mode darwin-local`; mode selection is
 mandatory. Darwin requires a native ARM64 host, the official emulator's successful
 HVF acceleration check, no software/Rosetta fallback, a private SDK/lab, and
@@ -364,4 +373,5 @@ python3.14 -W error::ResourceWarning native-text/emulator/test_runtime_environme
 python3.14 -W error::ResourceWarning native-text/emulator/test_runtime_backend.py
 python3.14 -W error::ResourceWarning native-text/emulator/test_proof_result.py
 python3.14 -W error::ResourceWarning native-text/emulator/test_owned_errors.py
+python3.14 -W error::ResourceWarning native-text/emulator/test_adb_diagnostic.py
 ```

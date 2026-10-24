@@ -8,7 +8,8 @@ import sys
 import tempfile
 import time
 
-from process_group import leader_exited, stop_unreaped_group
+from adb_diagnostic import capture as capture_adb_diagnostic
+from process_group import leader_exited, retained_exit_info, stop_unreaped_group
 
 OUTPUT_LIMIT = 128 * 1024
 
@@ -207,20 +208,32 @@ class PrivateAdb:
         self.process = None
         self.log = None
         self.deadline = None
+        self.startup_stage = "not_started"
+        self.startup_diagnostic = None
         self.serial = f"emulator-{ports.console_port}"
 
     def start(self):
+        try:
+            self._start()
+        except BaseException:
+            self.collect_startup_diagnostic()
+            raise
+
+    def _start(self):
+        self.startup_stage = "version"
         version = command([self.adb, "version"], self.env, timeout=10)
         match = re.search(r"^Android Debug Bridge version 1\.0\.(\d+)\s*$", version, re.M)
         if not match:
             raise RuntimeError("private ADB protocol version unavailable")
         self.protocol = int(match[1])
         self.log = tempfile.TemporaryFile()
+        self.startup_stage = "launch"
         self.ports.release_server()
         self.process = subprocess.Popen([str(self.adb), "-L", self.env["ADB_SERVER_SOCKET"],
                                          "server", "nodaemon"], env=self.env,
                                         stdin=subprocess.DEVNULL, stdout=self.log,
                                         stderr=subprocess.STDOUT, start_new_session=True)
+        self.startup_stage = "readiness"
         until = time.monotonic() + 10
         while True:
             if leader_exited(self.process):
@@ -234,6 +247,21 @@ class PrivateAdb:
                 time.sleep(0.05)
         if host_query(self.ports.adb_port, "host:devices").strip():
             raise RuntimeError("private ADB unexpectedly contains an existing target")
+        self.startup_stage = "ready"
+
+    def collect_startup_diagnostic(self):
+        if self.startup_diagnostic is not None:
+            return
+        try:
+            diagnostic = capture_adb_diagnostic(self.log)
+        except (OSError, ValueError):
+            diagnostic = {"capture": "unavailable", "categories": ["UNKNOWN"], "source_frames": []}
+        diagnostic["stage"] = self.startup_stage
+        try:
+            diagnostic["process"] = retained_exit_info(self.process) if self.process else {"state": "not_started"}
+        except (OSError, RuntimeError):
+            diagnostic["process"] = {"state": "ownership_unknown"}
+        self.startup_diagnostic = diagnostic
 
     def guard(self):
         if self.process is None or leader_exited(self.process):
@@ -269,6 +297,9 @@ class PrivateAdb:
         return result
 
     def close(self):
+        # Preserve fixed-category evidence before the temporary SDK log closes.
+        # No raw line, arbitrary SDK message, path, key or credential is returned.
+        self.collect_startup_diagnostic()
         try:
             if self.process is not None:
                 stop_unreaped_group(self.process, grace_seconds=1)
