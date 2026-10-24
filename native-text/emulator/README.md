@@ -257,3 +257,24 @@ local runtime result. Image, software/KVM selection, GPU mode, RAM/cores, budget
 readiness predicate, APKs, all assertions, security settings and cleanup remain
 unchanged. The dimensions apply only to the newly created disposable AVD config,
 not through Android display-setting commands and never to a user's device.
+
+### Read-only ANR window attribution
+
+On failure only, one additional `dumpsys window windows` read is bounded to
+10 seconds and the existing 128 KiB output cap. Raw data are transient parser
+input, never printed/uploaded. Only full ANR window-header records are accepted.
+AOSP [AppNotRespondingDialog](https://android.googlesource.com/platform/frameworks/base/+/refs/tags/android-12.1.0_r27/services/core/java/com/android/server/am/AppNotRespondingDialog.java)
+sets the window title to a fixed ANR prefix plus the affected process name;
+[WindowManagerService](https://android.googlesource.com/platform/frameworks/base/+/9697fd4/services/core/java/com/android/server/wm/WindowManagerService.java)
+provides the read-only `windows` dump route. Output is reduced to exact owned
+fixture/helper process enums, a fixed allowlist of known AOSP system processes,
+OTHER, or UNKNOWN. OWNED_PROOF denotes the shared helper/proof package process,
+not proof of which instrumentation entrypoint caused an ANR. Multiple categories
+remain multiple; observed windows are not asserted to be the current foreground
+or necessarily the same overlay from the earlier accessibility sample. Unsupported
+format, absent records, timeout/permission failure, and output-budget overflow
+remain unknown; there is no elevated fallback. Historical `activity lastanr`
+state is deliberately not used to infer ownership from incidental activity names.
+No diagnostics change readiness, mutation policy, settings, or cleanup. Existing
+engine/readiness/host-instrumentation deadlines are unchanged; only failure-time
+read-only diagnosis receives this additional independent 10-second bound.

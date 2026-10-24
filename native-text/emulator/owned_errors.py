@@ -62,3 +62,37 @@ def summarize_owned_errors(crash, system):
             if anr:
                 anrs.add(PACKAGES[anr[1]])
     return {"collection": "READ", "crashes": list(records.values())[-4:], "anrs": sorted(anrs)}
+
+
+def summarize_anr_windows(raw):
+    """AOSP ANR window titles only, not arbitrary activity/window ownership."""
+    if len(raw) > 128 * 1024:
+        return {"collection": "OVER_BUDGET", "owners": ["UNKNOWN"]}
+    # dumpsys can exit zero after a partial dump and append failure diagnostics.
+    # Never treat an earlier matching header as complete evidence in that case.
+    failure = re.compile(r"\s*(?:\*\*\* SERVICE .* DUMP TIMEOUT .*|Error(?:\b.*)|"
+                         r"Permission (?:Denial|denied).*|Can't find service:.*|"
+                         r"Failed to dump.*|Failed to (?:read|write).*|"
+                         r"(?:read|write) failed:.*|(?:\*\*\*|\[|WARNING:|\.\.\.).*truncat.*)", re.IGNORECASE)
+    if any(failure.fullmatch(line) for line in raw.splitlines()):
+        return {"collection": "FAILED", "owners": ["UNKNOWN"]}
+    owners = set()
+    pattern = re.compile(r"\s*Window #[0-9]+ Window\{[0-9a-f]+ u[0-9]+ Application Not Responding: ([A-Za-z0-9_.:]+)\}:")
+    known_system = frozenset(("system", "system_server", "android", "com.android.systemui",
+                              "com.android.launcher3", "com.android.inputmethod.latin",
+                              "com.android.phone", "com.android.settings"))
+    for line in raw.splitlines():
+        match = pattern.fullmatch(line)
+        if not match:
+            continue
+        process = match[1]
+        if process == "org.tvcontrol.fixture":
+            owner = "OWNED_FIXTURE"
+        elif process == "org.tvcontrol.nativehelper":
+            owner = "OWNED_PROOF"
+        elif process in known_system:
+            owner = "SYSTEM"
+        else:
+            owner = "OTHER"
+        owners.add(owner)
+    return {"collection": "READ", "owners": sorted(owners) or ["UNKNOWN"]}

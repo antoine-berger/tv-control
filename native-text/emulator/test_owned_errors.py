@@ -2,7 +2,7 @@
 """Synthetic parser tests only; never obtains real logcat or starts devices."""
 from pathlib import Path
 import unittest
-from owned_errors import summarize_owned_errors
+from owned_errors import summarize_owned_errors, summarize_anr_windows
 
 
 def log(body, pid=41, tag="AndroidRuntime"):
@@ -55,6 +55,39 @@ class OwnedErrorsTests(unittest.TestCase):
     def test_missing_truncated_or_oversized_is_not_invented_evidence(self):
         self.assertEqual(summarize_owned_errors(log("java.lang.RuntimeException: SECRET"), "")["crashes"], [])
         self.assertEqual(summarize_owned_errors("x" * (128 * 1024 + 1), "")["collection"], "OVER_BUDGET")
+
+    def test_exact_anr_window_ownership_categories(self):
+        for process, expected in (("org.tvcontrol.fixture", "OWNED_FIXTURE"),
+                                  ("org.tvcontrol.nativehelper", "OWNED_PROOF"),
+                                  ("com.android.systemui", "SYSTEM"), ("system", "SYSTEM"),
+                                  ("private.example", "OTHER"),
+                                  ("org.tvcontrol.fixture.extra", "OTHER")):
+            raw = "  Window #2 Window{a1b2 u0 Application Not Responding: " + process + "}:"
+            result = summarize_anr_windows(raw)
+            self.assertEqual(result, {"collection": "READ", "owners": [expected]})
+            self.assertNotIn(process, repr(result))
+
+    def test_anr_windows_never_infer_from_arbitrary_text(self):
+        for raw in ("ANR in org.tvcontrol.fixture", "Application Not Responding: org.tvcontrol.fixture",
+                    "  Window #1 Window{abcd u0 org.tvcontrol.fixture/.FixtureActivity}:",
+                    "  Window #1 Window{abcd u0 Application Not Responding: secret text}:"):
+            self.assertEqual(summarize_anr_windows(raw)["owners"], ["UNKNOWN"])
+        self.assertEqual(summarize_anr_windows("x" * (128 * 1024 + 1))["collection"], "OVER_BUDGET")
+
+    def test_partial_zero_exit_dumpsys_failure_overrides_valid_header(self):
+        header = "Window #1 Window{abcd u0 Application Not Responding: org.tvcontrol.fixture}:"
+        for failure in ("*** SERVICE 'window' DUMP TIMEOUT (10000ms) EXPIRED ***",
+                        "Error dumping service info: private", "Error reading: private",
+                        "Error writing: private", "Permission Denial: private",
+                        "Permission denied", "Can't find service: window", "Failed to dump: private",
+                        "[output truncated]", "*** OUTPUT TRUNCATED ***", "WARNING: output truncated"):
+            self.assertEqual(summarize_anr_windows(header + "\n" + failure),
+                             {"collection": "FAILED", "owners": ["UNKNOWN"]})
+
+    def test_multiple_anr_windows_are_not_claimed_as_unique_active_owner(self):
+        raw = "\n".join("Window #1 Window{abcd u0 Application Not Responding: " + value + "}:"
+                        for value in ("org.tvcontrol.fixture", "com.android.systemui", "org.tvcontrol.fixture"))
+        self.assertEqual(summarize_anr_windows(raw)["owners"], ["OWNED_FIXTURE", "SYSTEM"])
 
     def test_collection_and_build_are_diagnostic_only(self):
         root = Path(__file__).parent

@@ -10,7 +10,7 @@ import threading
 import tempfile
 import subprocess
 import time
-from owned_errors import summarize_owned_errors
+from owned_errors import summarize_owned_errors, summarize_anr_windows
 from process_group import leader_exited, stop_unreaped_group
 from proof_result import parse_proof_result, parse_activity_start
 
@@ -182,6 +182,13 @@ def main():
         except (subprocess.SubprocessError, RuntimeError, UnicodeError):
             errors = {"collection": "UNAVAILABLE", "crashes": [], "anrs": []}
         print("Owned error metadata:", json.dumps(errors, sort_keys=True), flush=True)
+        try:
+            windows = shell("dumpsys", "window", "windows", timeout=10)
+            anr_windows = summarize_anr_windows(windows)
+            del windows
+        except (subprocess.SubprocessError, RuntimeError, UnicodeError):
+            anr_windows = {"collection": "UNAVAILABLE", "owners": ["UNKNOWN"]}
+        print("ANR window ownership:", json.dumps(anr_windows, sort_keys=True), flush=True)
         raise
     finally:
         # Uninstall only our owned packages; terminate only our emulator process/target.
