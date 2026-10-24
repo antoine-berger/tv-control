@@ -17,7 +17,7 @@ import test_release
 import verify_public_release as verify
 
 SHA = test_release.SHA
-TAG = "v0.4.2"
+TAG = "v0.4.3"
 
 
 class PublicAPI:
@@ -107,14 +107,14 @@ class Candidate(unittest.TestCase):
         env, event = test_release.environment(), test_release.event()
         env["GITHUB_REF"] = event["ref"] = "refs/heads/" + branch
         env["GITHUB_WORKFLOW_REF"] = f"{release.REPOSITORY}/{release.WORKFLOW}@{event['ref']}"
-        selected = verify.context(env, event, SHA, "0.4.2")
+        selected = verify.context(env, event, SHA, "0.4.3")
         self.assertEqual(selected["release_id"], 456)
         self.assertEqual(selected["manifest_sha256"], digest)
         with self.assertRaises(ValueError):
-            release.context(env, event, SHA, "0.4.2")
+            release.context(env, event, SHA, "0.4.3")
         env["GITHUB_REF"] += "extra"
         with self.assertRaises(ValueError):
-            verify.context(env, event, SHA, "0.4.2")
+            verify.context(env, event, SHA, "0.4.3")
 
     def test_read_only_client_refuses_writes_before_network(self):
         with self.assertRaises(ValueError):
@@ -130,14 +130,14 @@ class ControllerAuthentication(unittest.TestCase):
         env["GITHUB_SHA"] = event["after"] = controller
         env["GITHUB_REF"] = event["ref"] = "refs/heads/" + branch
         env["GITHUB_WORKFLOW_REF"] = f"{release.REPOSITORY}/{release.WORKFLOW}@{event['ref']}"
-        selected = verify.context(env, event, controller, "0.4.2")
+        selected = verify.context(env, event, controller, "0.4.3")
         self.assertEqual(selected["source_sha"], SHA)
         self.assertEqual(selected["controller_sha"], controller)
         with self.assertRaises(ValueError):
-            verify.context(env, event, SHA, "0.4.2")
+            verify.context(env, event, SHA, "0.4.3")
         env["GITHUB_REF"] = env["GITHUB_REF"].replace("-c" + controller, "-c" + SHA)
         with self.assertRaises(ValueError):
-            verify.context(env, event, controller, "0.4.2")
+            verify.context(env, event, controller, "0.4.3")
 
     def test_authenticated_metadata_get_only(self):
         api = verify.MetadataGitHub("test-ephemeral-value")

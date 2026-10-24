@@ -71,6 +71,7 @@ enum IntentWire {
     Legacy { action: String },
     OpenApp { app: String },
     OpenUrl { app: String, url: String },
+    Wake,
     Pause,
     Resume,
     Navigate { keys: Vec<String> },
@@ -88,6 +89,7 @@ impl From<&Intent> for IntentWire {
                 app: app.clone(),
                 url: url.clone(),
             },
+            Intent::Wake => Self::Wake,
             Intent::Pause => Self::Pause,
             Intent::Resume => Self::Resume,
             Intent::Navigate { keys } => Self::Navigate {
@@ -137,6 +139,8 @@ struct StateWire {
     playback_evidence: String,
     media_id: Option<String>,
     position_ticks: Option<u64>,
+    #[serde(default)]
+    awake: Option<bool>,
     volume_index: Option<u16>,
 }
 #[derive(Clone, Serialize, Deserialize)]
@@ -185,6 +189,7 @@ impl From<&Reply> for ReplyWire {
                 .into(),
                 media_id: o.media_id.clone(),
                 position_ticks: o.position_ticks,
+                awake: o.awake,
                 volume_index: o.volume_index,
             }),
             choices: r
@@ -250,6 +255,7 @@ impl ReplyWire {
                     },
                     media_id: s.media_id.clone(),
                     position_ticks: s.position_ticks,
+                    awake: s.awake,
                     volume_index: s.volume_index,
                 })
             })
@@ -692,5 +698,16 @@ impl Journal for OperationJournal {
         };
         let mut marker = [0u8];
         !matches!(lease.read_at(&mut marker, 0), Ok(1)) || marker[0] != 0
+    }
+}
+
+#[cfg(test)]
+mod compatibility_tests {
+    use super::StateWire;
+
+    #[test]
+    fn pre_wake_state_has_unknown_power() {
+        let state: StateWire = serde_json::from_str(r#"{"connected":true,"active_app":null,"playback":"unknown","playback_evidence":"native","media_id":null,"position_ticks":null,"volume_index":null}"#).unwrap();
+        assert_eq!(state.awake, None);
     }
 }

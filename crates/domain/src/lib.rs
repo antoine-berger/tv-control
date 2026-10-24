@@ -30,6 +30,8 @@ pub enum Playback {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Observed {
+    /// Native power observation; None means unavailable, not asleep.
+    pub awake: Option<bool>,
     pub connected: bool,
     pub active_app: Option<String>,
     pub playback: Playback,
@@ -41,6 +43,7 @@ pub struct Observed {
 impl Default for Observed {
     fn default() -> Self {
         Self {
+            awake: None,
             connected: false,
             active_app: None,
             playback: Playback::Unknown,

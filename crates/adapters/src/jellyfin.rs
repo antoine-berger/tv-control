@@ -121,6 +121,7 @@ impl<'a> Jellyfin<'a> {
             _ => Playback::Unknown,
         };
         Ok(Observed {
+            awake: None,
             connected: true,
             active_app: None,
             playback,

@@ -630,3 +630,63 @@ fn unsupported_url_never_dispatches() {
         .iter()
         .all(|call| !call.mutating));
 }
+
+#[test]
+fn wake_uses_dedicated_key_and_native_power_without_foreground() {
+    let (adb, process, _) = adapter(
+        true,
+        &[VERSION, "mWakefulness=Asleep", "", "mWakefulness=Awake"],
+    );
+    let clock = TestClock::default();
+    let flag = CancelFlag::default();
+    let ctx = ctx(&clock, &flag);
+    assert_eq!(
+        adb.observe_for("screen", &Intent::Wake, &ctx)
+            .unwrap()
+            .awake,
+        Some(false)
+    );
+    adb.apply("screen", &Intent::Wake, None, &ctx).unwrap();
+    assert_eq!(
+        adb.observe_for("screen", &Intent::Wake, &ctx)
+            .unwrap()
+            .awake,
+        Some(true)
+    );
+    let calls = process.calls.lock().unwrap();
+    assert_eq!(calls[2].args.last().unwrap(), "'input' 'keyevent' '224'");
+    assert!(calls[2].mutating);
+    assert!(!calls[1].mutating);
+}
+#[test]
+fn wake_unknown_or_ambiguous_power_is_not_awake() {
+    for raw in [
+        "",
+        "mWakefulness=VendorUnknown",
+        "mWakefulness=Awake\nmWakefulness=Asleep",
+        "lastWakefulness=Awake",
+    ] {
+        let (adb, _, _) = adapter(true, &[VERSION, raw]);
+        let clock = TestClock::default();
+        let flag = CancelFlag::default();
+        assert_eq!(
+            adb.observe_for("screen", &Intent::Wake, &ctx(&clock, &flag))
+                .unwrap()
+                .awake,
+            None
+        );
+    }
+}
+#[test]
+fn wake_requires_grant() {
+    let (adb, process, _) = adapter(false, &[]);
+    let clock = TestClock::default();
+    let flag = CancelFlag::default();
+    assert_eq!(
+        adb.apply("screen", &Intent::Wake, None, &ctx(&clock, &flag))
+            .unwrap_err()
+            .code,
+        "generic_control_not_authorized"
+    );
+    assert!(process.calls.lock().unwrap().is_empty());
+}

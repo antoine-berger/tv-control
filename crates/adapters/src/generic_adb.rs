@@ -481,6 +481,23 @@ impl Device for GenericAdb {
         self.read_apps(alias, query, ctx)
     }
     fn observe_for(&self, alias: &str, intent: &Intent, ctx: &Context<'_>) -> PortResult<Observed> {
+        if *intent == Intent::Wake {
+            // No foreground activity or media session is required while asleep.
+            let raw = self
+                .shell(alias, &["dumpsys", "power"], &[], false, ctx)
+                .map_err(|e| {
+                    if e.code == "adb_read_failed" {
+                        Failure::before("wake_transport_unavailable")
+                    } else {
+                        e
+                    }
+                })?;
+            return Ok(Observed {
+                connected: true,
+                awake: parse_awake(&raw),
+                ..Observed::default()
+            });
+        }
         let package = self.foreground(alias, ctx)?;
         let mut observed = Observed {
             connected: true,
@@ -595,6 +612,11 @@ impl Device for GenericAdb {
                 Some(query),
                 ctx,
             ),
+            Intent::Wake => {
+                // KEYCODE_WAKEUP is idempotent: never toggle an already-awake TV off.
+                self.shell(alias, &["input", "keyevent", "224"], &[], true, ctx)?;
+                Ok(())
+            }
             Intent::Pause => self.playback(alias, false, ctx),
             Intent::Resume => self.playback(alias, true, ctx),
             Intent::Navigate { keys } => {
@@ -683,4 +705,21 @@ fn session_tag(raw: &str, package: &str) -> PortResult<String> {
         return Err(Failure::before("media_tag_ambiguous"));
     }
     Ok((*tag).to_owned())
+}
+
+/// Accept only the top-level PowerManager wakefulness field, not per-display or
+/// historical log entries. Ambiguous/unknown vendor formats remain unverified.
+fn parse_awake(raw: &str) -> Option<bool> {
+    let mut values = raw
+        .lines()
+        .filter_map(|line| line.trim().strip_prefix("mWakefulness="));
+    let value = values.next()?;
+    if values.next().is_some() {
+        return None;
+    }
+    match value.trim() {
+        "Awake" => Some(true),
+        "Asleep" | "Dozing" | "Dreaming" => Some(false),
+        _ => None,
+    }
 }

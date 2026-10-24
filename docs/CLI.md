@@ -90,7 +90,7 @@ Action availability depends on the [adapter](ADAPTERS.md). With the explicit gen
 ADB grant, app selectors may be observed names, package IDs or exact discovered
 components. Without it, configured app aliases keep their restricted behavior.
 Media arguments remain configured aliases. There is no free-form shell tool.
-The generic `navigate`, `search` and `activate` shapes in [MCP](MCP.md#generic-adb-reads-and-intents)
+The generic `wake`, `navigate`, `search` and `activate` shapes in [MCP](MCP.md#generic-adb-reads-and-intents)
 are also accepted by `execute`. `execute`, `workflow`, MCP and the managed bridge
 share the same persistent mutation journal beside the configuration.
 

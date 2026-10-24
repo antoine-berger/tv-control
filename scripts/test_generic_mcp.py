@@ -34,6 +34,14 @@ if command[:3]==['cmd','package','query-activities']:
         print('2 activities found:')
         for i,(package,label) in enumerate([('com.fixture.video','YouTube'),('com.fixture.music','YouTube Music')]):
             print(f'  Activity #{i}:\n    ActivityInfo:\n      name={package}.Main\n      packageName={package}\n      labelRes=0x0 nonLocalizedLabel={label} icon=0x0\n      ApplicationInfo:\n        packageName={package}')
+elif command==['dumpsys','power']:
+    if state.get('offline'): sys.exit(1)
+    print('mWakefulness='+state.get('power','Asleep'))
+elif command==['input','keyevent','224']:
+    state['wakes']=state.get('wakes',0)+1
+    if state.get('fail_after_wake'): state['offline']=True
+    if state.get('power')!='VendorUnknown': state['power']='Awake'
+    state_path.write_text(json.dumps(state))
 elif command==['dumpsys','activity','activities']:
     print('mResumedActivity: ActivityRecord{123 u0 '+state['package']+'/.Main t1}')
 elif command[:2]==['am','start']:
@@ -125,6 +133,41 @@ class GenericMcp(unittest.TestCase):
     def tool(self,name,args):return self.rpc('tools/call',{'name':name,'arguments':args})
     def control(self,identity,action):
         return self.tool('tv_control',{'request_id':identity,'device':'screen','expires_at_unix_ms':int(time.time()*1000)+9000,'action':action})
+    def test_wake_verifies_power_and_replays_after_restart(self):
+        schema=self.rpc('tools/list',{})
+        control=next(t for t in schema['tools'] if t['name']=='tv_control')
+        self.assertIn('wake',[a['properties']['type']['const'] for a in control['inputSchema']['properties']['action']['oneOf']])
+        result=self.control('wake',{'type':'wake'})['structuredContent']
+        self.assertEqual(result['status'],'verified')
+        self.assertTrue(result['state']['awake'])
+        self.close_process();self.start()
+        result=self.control('wake',{'type':'wake'})['structuredContent']
+        self.assertTrue(result['cached'])
+        self.assertTrue(result['state']['awake'])
+        self.control('already_awake',{'type':'wake'})
+        self.assertEqual(json.loads((self.root/'state.json').read_text())['wakes'],1)
+    def test_wake_offline_never_dispatches(self):
+        path=self.root/'state.json';state=json.loads(path.read_text());state['offline']=True;path.write_text(json.dumps(state))
+        result=self.control('offline',{'type':'wake'})['structuredContent']
+        self.assertEqual(result['status'],'failed')
+        self.assertEqual(result['code'],'wake_transport_unavailable')
+        self.assertNotIn('wakes',json.loads(path.read_text()))
+    def test_wake_lost_observation_stays_unknown_without_second_key(self):
+        path=self.root/'state.json';state=json.loads(path.read_text());state['fail_after_wake']=True;path.write_text(json.dumps(state))
+        result=self.control('lost',{'type':'wake'})['structuredContent']
+        self.assertEqual(result['status'],'outcome_unknown')
+        self.assertTrue(self.control('lost',{'type':'wake'})['structuredContent']['cached'])
+        self.assertEqual(json.loads(path.read_text())['wakes'],1)
+    def test_expired_wake_does_not_dispatch(self):
+        result=self.tool('tv_control',{'request_id':'expired_wake','device':'screen','expires_at_unix_ms':1,'action':{'type':'wake'}})
+        self.assertTrue(result['isError'])
+        self.assertNotIn('wakes',json.loads((self.root/'state.json').read_text()))
+    def test_wake_unknown_power_does_not_claim_success(self):
+        path=self.root/'state.json';state=json.loads(path.read_text());state['power']='VendorUnknown';path.write_text(json.dumps(state))
+        result=self.control('unknown',{'type':'wake'})['structuredContent']
+        self.assertEqual(result['status'],'observed')
+        self.assertEqual(result['code'],'wake_dispatched_unverified')
+        self.assertNotIn('awake',result['state'])
     def test_name_resolution_and_restart_replay(self):
         result=self.control('open_video',{'type':'open_app','app':'YouTube'})
         self.assertEqual(result['structuredContent']['status'],'verified')

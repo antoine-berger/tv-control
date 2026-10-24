@@ -232,6 +232,12 @@ impl<D: Device, C: Clock> Service<D, C> {
                 .observe_for(&request.device, &request.intent, ctx)
                 .map_err(|e| Failure::uncertain(e.code))?;
             ctx.check().map_err(|e| Failure::uncertain(e.code))?;
+            if request.intent == Intent::Wake && observed.awake.is_none() {
+                reply.status = Status::Observed;
+                reply.code = "wake_dispatched_unverified".into();
+                reply.observed = Some(observed);
+                return Ok(());
+            }
             if matches!(
                 request.intent,
                 Intent::Navigate { .. }
@@ -429,7 +435,7 @@ fn valid_intent(intent: &Intent) -> bool {
         Intent::Search { app, query } => valid_text(app, 512) && valid_text(query, 500),
         Intent::Navigate { keys } => !keys.is_empty() && keys.len() <= 16,
         Intent::Activate { reference } => valid_text(reference, 200),
-        Intent::Pause | Intent::Resume => true,
+        Intent::Wake | Intent::Pause | Intent::Resume => true,
     }
 }
 fn valid_url(url: &str) -> bool {
@@ -472,6 +478,7 @@ fn desired(intent: &Intent, app: Option<&App>, state: &Observed) -> bool {
     }
     match intent {
         Intent::OpenApp { .. } => app.is_some_and(|a| state.active_app.as_ref() == Some(&a.id)),
+        Intent::Wake => state.awake == Some(true),
         Intent::Pause => state.playback == Playback::Paused,
         Intent::Resume => {
             state.playback == Playback::Playing

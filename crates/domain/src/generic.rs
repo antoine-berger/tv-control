@@ -32,6 +32,7 @@ pub enum Intent {
         app: String,
         url: String,
     },
+    Wake,
     Pause,
     Resume,
     Navigate {

@@ -391,3 +391,32 @@ fn unsafe_urls_fail_before_any_effect() {
         assert_eq!(d.effects.load(Ordering::SeqCst), 0);
     }
 }
+
+#[test]
+fn already_awake_is_verified_without_a_mutation() {
+    let (s, d, _) = setup(vec![]);
+    d.state.lock().unwrap().awake = Some(true);
+    let result = s.execute(req(Intent::Wake), &Never);
+    assert_eq!(result.status, Status::Verified);
+    assert_eq!(d.effects.load(Ordering::SeqCst), 0);
+}
+#[test]
+fn wake_unknown_power_is_only_dispatched_and_deduplicated() {
+    let (s, d, _) = setup(vec![]);
+    let result = s.execute(req(Intent::Wake), &Never);
+    assert_eq!(result.status, Status::Observed);
+    assert_eq!(result.code, "wake_dispatched_unverified");
+    assert!(s.execute(req(Intent::Wake), &Never).cached);
+    assert_eq!(d.effects.load(Ordering::SeqCst), 1);
+}
+#[test]
+fn wake_still_asleep_expires_as_unknown_without_repeating() {
+    let (s, d, _) = setup(vec![]);
+    d.state.lock().unwrap().awake = Some(false);
+    let result = s.execute(req(Intent::Wake), &Never);
+    assert_eq!(result.status, Status::OutcomeUnknown);
+    assert_eq!(d.effects.load(Ordering::SeqCst), 1);
+    let mut retry = req(Intent::Wake);
+    retry.expires_at_unix_ms = 3000;
+    assert!(s.execute(retry, &Never).cached);
+}
