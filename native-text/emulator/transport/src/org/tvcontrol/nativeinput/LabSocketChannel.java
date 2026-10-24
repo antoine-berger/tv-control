@@ -222,6 +222,17 @@ final class LabSocketChannel {
         finally { writer.unlock(); }
     }
     void abortIo() { failed=true; }
+    /** Linearizes a proven stop between syscalls, without closing the socket. */
+    void stopIo() throws LabProtocol.Fault {
+        boolean locked=false;
+        try {
+            locked=owner.tryLock(250,TimeUnit.MILLISECONDS);
+            if(!locked)throw new LabProtocol.Fault(LabProtocol.Reason.CLEANUP_UNVERIFIED);
+            failed=true;
+        } catch(InterruptedException error) {
+            Thread.currentThread().interrupt();throw new LabProtocol.Fault(LabProtocol.Reason.CLEANUP_UNVERIFIED);
+        } finally {if(locked)owner.unlock();}
+    }
     void close() throws LabProtocol.Fault {
         if (!closeClaimed.compareAndSet(false,true)) {
             if (!closeReturned) throw new LabProtocol.Fault(LabProtocol.Reason.CLEANUP_UNVERIFIED);

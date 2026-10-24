@@ -54,12 +54,17 @@ public final class LabSocketClient {
             catch(Throwable error){failure.compareAndSet(null,LabProtocol.Reason.TRANSPORT_LOST);channel.abortIo();}
         }
         boolean stopAndJoin(Thread thread) {
-            stop.set(true);
-            if(thread==null)return true;
+            boolean fenced=true;
+            try {channel.stopIo();}
+            catch(LabProtocol.Fault error) {
+                fenced=false;failure.set(LabProtocol.Reason.CLEANUP_UNVERIFIED);
+                channel.abortIo(); // Best effort only; failed fence never proves cleanup.
+            } finally {stop.set(true);}
+            if(thread==null)return fenced;
             try {
                 thread.join(250);
                 if(thread.isAlive()){thread.interrupt();thread.join(250);}
-                return !thread.isAlive();
+                return fenced && !thread.isAlive();
             } catch(InterruptedException error){Thread.currentThread().interrupt();return false;}
         }
     }

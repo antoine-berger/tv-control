@@ -227,11 +227,47 @@ public final class SocketClientTest {
                 :mode==1?LabProtocol.Reason.CANCELLED:LabProtocol.Reason.TRANSPORT_LOST));
         check(Os.output(Os.connected).length==0);input.stop();connection.close();noBorrowedClose();
     }
+    private static void stopDuringPartialCommit(boolean fenceTimeout)throws Exception {
+        reset();IssuedEditor.Clock clock=()->android.os.SystemClock.uptimeMillis();long until=clock.nowMillis()+15000;
+        LabClientConnection connection=new LabClientConnection(INSTANCE,10001,clock,until);
+        LabSocketChannel channel=connection.open();LabPipeIo input=new LabPipeIo(FileDescriptor.in,clock,until);input.prepare();
+        byte[] ref=reference(),request=commit(ref);Os.append(FileDescriptor.in,request);
+        LabSocketClient.ForwardState state=new LabSocketClient.ForwardState();
+        state.phase=LabProtocol.Opcode.OBSERVE;state.reference=LabReplies.parseReference(ref);state.referenceSent=true;
+        LabSocketClient.Forwarder forwarder=new LabSocketClient.Forwarder(input,channel,new LabDeadline(clock,until),state);
+        CountDownLatch entered=new CountDownLatch(1),release=new CountDownLatch(1);
+        Os.writeHook=()->{
+            if(Os.output(Os.connected).length==3) {
+                entered.countDown();
+                try{release.await(2,TimeUnit.SECONDS);}catch(InterruptedException error){Thread.currentThread().interrupt();}
+            }
+        };
+        Thread worker=new Thread(forwarder,"owned-partial-commit");boolean[] stopped={false};
+        Thread stopper=new Thread(()->stopped[0]=forwarder.stopAndJoin(worker),"owned-client-stopper");
+        worker.start();check(entered.await(1,TimeUnit.SECONDS));stopper.start();
+        if(fenceTimeout) {
+            stopper.join(1500);check(!stopper.isAlive());
+            check(!stopped[0]);check(forwarder.stop.get());
+            check(forwarder.failure.get()==LabProtocol.Reason.CLEANUP_UNVERIFIED);
+            release.countDown();
+        } else {
+            long end=System.nanoTime()+TimeUnit.MILLISECONDS.toNanos(150);
+            while(stopper.getState()!=Thread.State.TIMED_WAITING && System.nanoTime()<end)Thread.yield();
+            check(stopper.getState()==Thread.State.TIMED_WAITING);check(!forwarder.stop.get());
+            release.countDown();stopper.join(1000);check(!stopper.isAlive());check(stopped[0]);
+        }
+        worker.join(1000);check(!worker.isAlive());
+        check(Os.output(Os.connected).length==3);check(Os.state(Os.connected).writes==1);
+        check(state.phase==LabProtocol.Opcode.OBSERVE);
+        check(forwarder.failure.get()==(fenceTimeout?LabProtocol.Reason.CLEANUP_UNVERIFIED:LabProtocol.Reason.TRANSPORT_LOST));
+        input.stop();connection.close();noBorrowedClose();
+    }
     public static void main(String[] args)throws Exception {
         clientPositive(false);clientPositive(true);
         commitKeepsInputOpen(false,false);commitKeepsInputOpen(true,false);commitKeepsInputOpen(false,true);
         admissionAndProtocolFailures();replyFailures();pipeBoundaries();stopCannotCloseReusedFd();clientUnjoinedWriterIsNotClean();
         decodedLateFrameCannotBeHiddenByStop(0);decodedLateFrameCannotBeHiddenByStop(1);decodedLateFrameCannotBeHiddenByStop(2);
+        stopDuringPartialCommit(false);stopDuringPartialCommit(true);
         System.out.println("PASS private client host checks: "+checks);
     }
 }
