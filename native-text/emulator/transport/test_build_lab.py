@@ -136,6 +136,15 @@ class BuilderTest(unittest.TestCase):
             for argv, env in records:
                 self.assertFalse(any("adb" == Path(arg).name or "emulator" == Path(arg).name for arg in argv))
                 self.assertLessEqual(set(env), {"PATH", "LANG", "LC_ALL", "HOME", "TMPDIR", "JAVA_HOME"})
+            compiler = [argv for argv, _ in records if "jdk.compiler/com.sun.tools.javac.Main" in argv]
+            self.assertEqual(len(compiler), 1)
+            self.assertEqual(compiler[0][compiler[0].index("--release") + 1], "8")
+            self.assertEqual(compiler[0][compiler[0].index("-classpath") + 1], str(sdk / "platforms/android-31/android.jar"))
+            self.assertTrue(all(flag not in compiler[0] for flag in ("-bootclasspath", "-source", "-target", "--system")))
+            dex = [argv for argv, _ in records if "com.android.tools.r8.D8" in argv]
+            self.assertEqual(len(dex), 1)
+            self.assertEqual(dex[0][dex[0].index("--min-api") + 1], "31")
+            self.assertEqual(dex[0][dex[0].index("--lib") + 1], str(sdk / "platforms/android-31/android.jar"))
 
     def test_dirty_or_wrong_source_stops_before_output_or_sdk(self):
         with tempfile.TemporaryDirectory() as directory:

@@ -114,8 +114,8 @@ def build(sdk, java, baseline, out, provenance, source_commit):
         sources = [native / "src/org/tvcontrol/nativeinput/TextEngine.java"]
         sources += sorted((native / "modern/src").rglob("*.java"))
         sources += sorted((root / "src").rglob("*.java")) + sorted(generated.rglob("*.java"))
-        run([java, "-m", "jdk.compiler/com.sun.tools.javac.Main", "-source", "8", "-target", "8",
-             "-Xlint:-options", "-g:none", "-encoding", "UTF-8", "-bootclasspath", platform / "android.jar", "-d", classes, *sources])
+        run([java, "-m", "jdk.compiler/com.sun.tools.javac.Main", "--release", "8",
+             "-Xlint:-options", "-g:none", "-encoding", "UTF-8", "-classpath", platform / "android.jar", "-d", classes, *sources])
         stage = "DEX"
         run([java, "-cp", tools / "lib/d8.jar", "com.android.tools.r8.D8", "--release", "--min-api", "31",
              "--lib", platform / "android.jar", "--output", dex, *sorted(classes.rglob("*.class"))])
