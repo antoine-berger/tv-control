@@ -29,12 +29,22 @@ final class NativePendingRequest {
         @Override public String toString() { return "NativeTerminalResult"; }
     }
     private File cache;
+    private long startedUptime;
     private String token;
     private String publicInstance;
     private Lifecycle lifecycle;
-    private boolean cacheSet, tokenSet, entered, reported, finished, uncertain;
+    private boolean startSet, cacheSet, tokenSet, entered, reported, finished, uncertain;
     private String engineStatus = "refused";
     private Reason failure;
+
+    void startedUptime(long value) {
+        if (startSet || entered || finished || value < 0) throw new IllegalStateException("pending start state");
+        startedUptime = value; startSet = true;
+    }
+    long startedUptime() {
+        if (!startSet) throw new IllegalStateException("pending start unavailable");
+        return startedUptime;
+    }
 
     void cache(File value) {
         if (cacheSet || finished || value == null) throw new IllegalStateException("pending cache state");

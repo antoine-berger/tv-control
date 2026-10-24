@@ -26,6 +26,18 @@ socket name is `tv.native.lab.` followed by the instance. No text, before/after,
 ref, epoch or private cache token enters argv/environment/status/logs. Legacy
 default wrapper output has no lab instance and cleanup NOT_APPLICABLE; it cannot
 qualify as lab transport. Verified requires entered YES and reason NONE.
+The common owner records device uptime before context/UiAutomation connection;
+the lab instance deadline must derive from that timestamp, not restart after a
+slow connection. Reference expiry remains separately anchored to observation.
+
+Client connection uses the reviewed public pre-bind design: assign a LocalSocket
+owner, mark openAttempt, bind `tv.native.lab.client.<instance>` in ABSTRACT without
+listen, preserve flags via F_GETFL|O_NONBLOCK and verify them, then call exactly
+one connect(endpoint). Any failure, including EAGAIN/EINPROGRESS or policy denial,
+aborts and closes the same owner without another route/retry. Peer UID is checked
+before payload. Never use the timeout overload or hidden FD factories. A socket
+never opened must not be closed through LocalSocket.close, which lazily creates
+an FD; attempted/unknown allocation remains cleanup unverified.
 
 The Bundle cleanup field attests the **server wrapper's** owned watcher/FD/cache
 cleanup before finish. It does not prove the separately running client died.

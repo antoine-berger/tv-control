@@ -14,6 +14,7 @@ public final class WrapperLifecycleTest {
         Instrumentation.events.clear(); Instrumentation.contextThrows=false; Instrumentation.connectThrows=false;
         Instrumentation.nullAutomation=false; Instrumentation.finishThrows=false;
         TextEngine.calls=0; TextEngine.mode=0; TextEngine.status="verified"; TextEngine.sawToken=null;
+        android.os.SystemClock.time=100;
     }
     static class Life implements NativePendingRequest.Lifecycle {
         int closes; boolean closed,gate=true,cleanup=true,closeThrows,proofThrows,resultThrows,terminalThrows,failedThrows,badStatus,badReason,lateCancelReason;
@@ -50,6 +51,7 @@ public final class WrapperLifecycleTest {
         // Deliberately does NOT override onStart/finish: actual common lifecycle runs.
         @Override protected boolean prepareRequest(UiAutomation automation,NativePendingRequest pending) {
             Instrumentation.events.add("ingress");
+            check(pending.startedUptime()==100 && android.os.SystemClock.time==1100);
             check((automation.getServiceInfo().flags & 16)!=0);
             pending.publicInstance(INSTANCE); pending.attach(life);
             if(throwIngress) throw new AssertionError("fixture-private-value");

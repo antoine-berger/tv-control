@@ -208,7 +208,11 @@ failure. Close must not suppress a live watcher/FD/cache failure. An exception o
 unverified cleanup after possible entry leaves UNCERTAIN sticky; no stale verified
 sink value can become the published result. The common wrapper then calls finish
 exactly once with the final allowlisted Bundle, even if close recorded a failure.
-The subclass cannot override onStart, terminal publication, close or finish policy.
+The lab subclass must be final and source/compiled-class checks must prove it
+declares neither onStart nor finish and inherits the actual common lifecycle.
+The base remains Java-overridable for historical RuntimeProof, which proves only
+the direct engine path. This is an explicitly tested lab-class invariant, not a
+claim that Java prevents every other subclass from overriding the base.
 
 The **wrapper's final Bundle is the sole authoritative terminal result**, published
 after cleanup checks. Socket replies carry REF/progress only, never a competing

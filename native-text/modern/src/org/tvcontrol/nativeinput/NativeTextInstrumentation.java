@@ -4,6 +4,7 @@ import android.accessibilityservice.AccessibilityServiceInfo;
 import android.app.Instrumentation;
 import android.app.UiAutomation;
 import android.os.Bundle;
+import android.os.SystemClock;
 import android.view.accessibility.AccessibilityNodeInfo;
 
 /** No UI/network/service/IME changes. Installation requires separate explicit approval. */
@@ -42,6 +43,7 @@ public class NativeTextInstrumentation extends Instrumentation {
         // This resource owner exists even if context, connection or ingress throws.
         final NativePendingRequest pending = new NativePendingRequest();
         try {
+            pending.startedUptime(SystemClock.uptimeMillis());
             pending.cache(getTargetContext().getCacheDir());
             final UiAutomation automation = connectForText();
             if (automation != null && prepareRequest(automation, pending) && pending.enter()) {

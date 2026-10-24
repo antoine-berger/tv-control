@@ -25,6 +25,12 @@ as a typing transport and is not part of a release. The independently reviewed
   and emits only fixed Bundle metadata after explicit remote cleanup attestation.
   The lab socket subclass does not exist yet. The default legacy research ingress
   still yields NOT_APPLICABLE cleanup and can never qualify as lab transport.
+* LabEditorIssuer observes a native editor from that same UiAutomation connection,
+  checks intended package/resource before text access, rejects hint/secret metadata,
+  and requires the shared unique-focus predicate then refreshes and rechecks all
+  admission gates. The original observation time and exact immutable binding are
+  retained; it performs no action or selection repair. Its host tests use Android
+  and unique-focus fakes, not a real AOSP node or an independent tree algorithm proof.
 
 Pure host checks compile/run these actual Java classes with the pre-approved host
 JDK, fake clocks/entropy and synthetic strings. No Android API, SDK executable,
@@ -34,6 +40,7 @@ network/socket, emulator or TV is involved:
 python3.14 native-text/emulator/transport/test_core.py --java "$JAVA_HOME/bin/java"
 python3.14 native-text/emulator/transport/test_wrapper.py --java "$JAVA_HOME/bin/java"
 python3.14 -W error::ResourceWarning native-text/emulator/transport/test_owner.py
+python3.14 native-text/emulator/transport/test_issuer.py --java "$JAVA_HOME/bin/java"
 ```
 
 The checks cover malformed/truncated/noncanonical frames and bounds, nonce copies,
