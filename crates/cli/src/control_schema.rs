@@ -16,6 +16,17 @@ pub(super) fn compact(action: &mut Value) {
         let Some(properties) = variant["properties"].as_object() else {
             return;
         };
+        let Some(required) = variant["required"].as_array() else {
+            return;
+        };
+        if !properties.contains_key("type")
+            || required.len() != properties.len()
+            || !properties
+                .keys()
+                .all(|name| required.iter().any(|field| field.as_str() == Some(name)))
+        {
+            return;
+        }
         for (name, constraint) in properties {
             if name != "type" {
                 candidates
@@ -37,32 +48,29 @@ pub(super) fn compact(action: &mut Value) {
         .collect();
     for variant in variants.iter_mut() {
         variant.as_object_mut().unwrap().remove("type");
-        let properties = variant["properties"].as_object().unwrap();
-        let required = variant["required"].as_array();
-        if required.is_some_and(|required| {
-            required.len() == properties.len()
-                && required.iter().all(|name| {
-                    name.as_str()
-                        .is_some_and(|name| properties.contains_key(name))
-                })
-        }) {
-            // A closed shape with N possible keys and at least N keys requires
-            // every key, exactly like the full required list. No value or
-            // discriminator constraint is removed.
-            let count = properties.len();
+        let count = variant["properties"].as_object().unwrap().len();
+        // N required names plus a maximum of N properties is exactly a closed
+        // shape. The parent requires the discriminator; branches require every
+        // other name. No spare slot remains for an unknown or foreign field.
+        variant["required"]
+            .as_array_mut()
+            .unwrap()
+            .retain(|name| name != "type");
+        if variant["required"].as_array().unwrap().is_empty() {
             variant.as_object_mut().unwrap().remove("required");
-            variant["minProperties"] = json!(count);
         }
-        // Presence/absence is still decided by each variant's properties,
-        // required and additionalProperties:false. The parent validates the
-        // value of a present factored field, including in single-use shapes.
-        for (name, constraint) in variant["properties"].as_object_mut().unwrap() {
-            if common.contains_key(name) {
-                *constraint = json!({});
-            }
-        }
+        variant["maxProperties"] = json!(count);
+        variant
+            .as_object_mut()
+            .unwrap()
+            .remove("additionalProperties");
+        variant["properties"]
+            .as_object_mut()
+            .unwrap()
+            .retain(|name, _| !common.contains_key(name));
     }
     action["type"] = json!("object");
+    action["required"] = json!(["type"]);
     action["properties"] = Value::Object(common);
 }
 
@@ -74,7 +82,7 @@ mod tests {
     fn common_values_move_but_each_variant_keeps_its_closed_presence_contract() {
         let mut value = json!({"oneOf":[
             {"type":"object","properties":{"type":{"const":"first"},"id":{"type":"string","minLength":1},"index":{"minimum":0}},"required":["type","id","index"],"additionalProperties":false},
-            {"type":"object","properties":{"type":{"const":"second"},"id":{"type":"string","minLength":1},"index":{"minimum":-1}},"required":["type","id"],"additionalProperties":false}
+            {"type":"object","properties":{"type":{"const":"second"},"id":{"type":"string","minLength":1},"index":{"minimum":-1}},"required":["type","id","index"],"additionalProperties":false}
         ]});
         let original = value.clone();
         compact(&mut value);
@@ -84,15 +92,11 @@ mod tests {
             original["oneOf"][0]["properties"]["id"]
         );
         assert!(value["properties"].get("index").is_none());
+        assert_eq!(value["required"], json!(["type"]));
         for (i, branch) in value["oneOf"].as_array().unwrap().iter().enumerate() {
-            assert_eq!(branch["properties"]["id"], json!({}));
-            assert_eq!(branch["additionalProperties"], false);
-            if i == 0 {
-                assert!(branch.get("required").is_none());
-                assert_eq!(branch["minProperties"], 3);
-            } else {
-                assert_eq!(branch["required"], original["oneOf"][i]["required"]);
-            }
+            assert!(branch["properties"].get("id").is_none());
+            assert_eq!(branch["required"], json!(["id", "index"]));
+            assert_eq!(branch["maxProperties"], 3);
             assert_eq!(
                 branch["properties"]["index"],
                 original["oneOf"][i]["properties"]["index"]
@@ -106,5 +110,9 @@ mod tests {
         let original = value.clone();
         compact(&mut value);
         assert_eq!(value, original);
+        let mut optional = json!({"oneOf":[{"type":"object","properties":{"type":{"const":"x"},"optional":{"type":"string"}},"required":["type"],"additionalProperties":false}]});
+        let original = optional.clone();
+        compact(&mut optional);
+        assert_eq!(optional, original);
     }
 }

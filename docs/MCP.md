@@ -575,7 +575,8 @@ ID identifies the original relative/percentage request: recovery returns the
 retained result and never recomputes a delta. Different parameters with the same
 ID conflict. Physical remotes and independently configured controllers remain
 outside this journal's exclusion. These actions do not identify the physical
-audio output, restore volume, unmute, or establish silence. They are simulated
+audio output or establish silence. They issue no explicit unmute or restoration
+command; effects on mute state and the physical audio output are unqualified. They are simulated
 contracts until separately qualified on an authorized device/output.
 
 ### Relative seeking and source-bound track selection

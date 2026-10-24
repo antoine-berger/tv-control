@@ -46,6 +46,12 @@ class Volume(generic.GenericMcp):
                 break
         self.assertIn("tv_control", [tool["name"] for tool in tools])
         self.assertEqual(len(tools), 5)
+        control = next(tool for tool in tools if tool["name"] == "tv_control")
+        for semantic in ("native-scale", "global", "dispatch-only", "readback"):
+            self.assertIn(semantic, control["description"])
+        delta = control["inputSchema"]["properties"]["action"]["properties"]["delta"]
+        self.assertIn("native", delta["description"])
+        self.assertIn("index", delta["description"])
 
     def test_native_scale_targets_survive_restart_and_reject_conflict(self):
         path = self.root / "state.json"
@@ -94,10 +100,12 @@ class MediaFixture(BaseHTTPRequestHandler):
         if self.path == "/System/Info/Public":
             value = {"Version": "12.0.0"}
         elif self.path.startswith("/Sessions?"):
+            if state["playing"]:
+                state["position"] += 100_000  # Natural progress, without any seek.
             value = [{"Id": "session", "DeviceId": "example_device", "UserId": "example_user",
                       "SupportsRemoteControl": True, "SupportsMediaControl": True,
                       "SupportedCommands": state["commands"], "NowPlayingItem": {"Id": "episode"},
-                      "PlayState": {"IsPaused": True, "CanSeek": True, "MediaSourceId": "source",
+                      "PlayState": {"IsPaused": not state["playing"], "CanSeek": True, "MediaSourceId": "source",
                                     "PositionTicks": state["position"], "AudioStreamIndex": state["audio"],
                                     "SubtitleStreamIndex": state["subtitle"]}}]
         elif self.path.startswith("/Items?"):
@@ -124,7 +132,8 @@ class MediaFixture(BaseHTTPRequestHandler):
                 field = {"SetAudioStreamIndex": "audio", "SetSubtitleStreamIndex": "subtitle"}[command["Name"]]
                 state[field] = int(command["Arguments"]["Index"])
         elif self.path.startswith("/Sessions/session/Playing/Seek?"):
-            state["position"] = int(parse_qs(urlsplit(self.path).query)["seekPositionTicks"][0])
+            if not state["ignore_seek"]:
+                state["position"] = int(parse_qs(urlsplit(self.path).query)["seekPositionTicks"][0])
         else:
             self.send_error(404)
             return
@@ -138,7 +147,7 @@ class Media(unittest.TestCase):
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), MediaFixture)
         self.server.state = {"commands": ["SetAudioStreamIndex", "SetSubtitleStreamIndex"],
                              "position": 50_000_000, "audio": 0, "subtitle": None,
-                             "ignore": False, "posts": []}
+                             "ignore": False, "ignore_seek": False, "playing": False, "posts": []}
         self.thread = threading.Thread(target=self.server.serve_forever)
         self.thread.start()
         self.tmp = tempfile.TemporaryDirectory()
@@ -229,6 +238,24 @@ class Media(unittest.TestCase):
         self.assertTrue(self.control("seek_once", action)["structuredContent"]["cached"])
         self.assertEqual(self.server.state["position"], 40_000_000)
 
+    def test_ignored_small_relative_seek_is_uncertain_not_verified_by_tolerance(self):
+        self.server.state["ignore_seek"] = True
+        action = {"type": "seek_relative", "item_id": "episode", "source_id": "source", "delta_ms": -50}
+        result = self.control("ignored_seek", action, ttl=300)
+        self.assertEqual(result["structuredContent"]["status"], "outcome_unknown", result)
+        self.assertEqual(self.server.state["position"], 50_000_000)
+        self.assertEqual(len(self.server.state["posts"]), 1)
+        self.assertEqual(self.control("ignored_seek", action)["structuredContent"]["status"], "outcome_unknown")
+        self.assertEqual(len(self.server.state["posts"]), 1)
+
+    def test_playing_relative_seek_refuses_before_post_despite_natural_progress(self):
+        self.server.state["playing"] = True
+        for delta in (-50, 50, -1000, 1000):
+            action = {"type": "seek_relative", "item_id": "episode", "source_id": "source", "delta_ms": delta}
+            result = self.control("playing_seek_" + str(delta).replace("-", "minus"), action)
+            self.assertEqual(result["structuredContent"]["status"], "unsupported", result)
+            self.assertEqual(result["structuredContent"]["code"], "relative_seek_playing_unverifiable")
+            self.assertEqual(self.server.state["posts"], [])
     def test_missing_capability_and_wrong_track_refuse_before_post(self):
         self.server.state["commands"] = []
         action = {"type": "select_audio_track", "item_id": "episode", "source_id": "source", "index": 1}

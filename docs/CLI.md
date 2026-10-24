@@ -92,8 +92,9 @@ The relative-volume unit is one Android music stream index. Percentage is a
 fraction of the observed native index range, **not acoustic loudness**. For a
 zero-based scale with maximum `M`, the target is `(M * percent + 50) / 100` using
 integer division (nearest index, ties upward). Percent is 0–100. Relative targets
-outside the observed scale are rejected, not clamped. These actions never restore
-a previous level, infer an audio output identity, or toggle mute. See the
+outside the observed scale are rejected, not clamped. These actions issue no
+explicit unmute or restoration command and do not infer an audio output identity.
+Effects of a native volume set on mute state and physical output are unqualified. See the
 [capability and concurrency limits](MCP.md#relative-and-percentage-volume).
 
 Configured Jellyfin devices also accept these source-bound actions:

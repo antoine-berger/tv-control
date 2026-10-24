@@ -563,7 +563,7 @@ pub fn extend_tools(tools: &mut Value) {
         .iter_mut()
         .find(|t| t["name"] == "tv_control")
         .expect("control tool");
-    control["description"] = json!("Never retry outcome_unknown.");
+    control["description"] = json!("Volume: native index / native-scale %, not loudness. Media: exact session; remote_media: global. Search/URL/next/previous: dispatch-only. Text: layout dependent; matching accessibility readback required. Never retry outcome_unknown.");
     let actions = control["inputSchema"]["properties"]["action"]["oneOf"]
         .as_array_mut()
         .unwrap();
@@ -573,7 +573,7 @@ pub fn extend_tools(tools: &mut Value) {
         }
     }
     actions.extend([
-        json!({"type":"object","properties":{"type":{"const":"adjust_volume"},"delta":{"type":"integer","minimum":-1000,"maximum":1000}},"required":["type","delta"],"additionalProperties":false}),
+        json!({"type":"object","properties":{"type":{"const":"adjust_volume"},"delta":{"type":"integer","minimum":-1000,"maximum":1000,"description":"Signed native stream index steps; no clamping."}},"required":["type","delta"],"additionalProperties":false}),
         json!({"type":"object","properties":{"type":{"const":"set_volume_percent"},"percent":{"type":"integer","minimum":0,"maximum":100}},"required":["type","percent"],"additionalProperties":false}),
         json!({"type":"object","properties":{"type":{"const":"remote_media"},"command":{"enum":["play","pause","stop","next","previous"]}},"required":["type","command"],"additionalProperties":false}),
         json!({"type":"object","properties":{"type":{"const":"media"},"session":{"type":"string","maxLength":384},"command":{"enum":["pause","resume","next","previous"]}},"required":["type","session","command"],"additionalProperties":false}),
