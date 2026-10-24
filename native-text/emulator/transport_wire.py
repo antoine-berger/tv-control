@@ -84,34 +84,61 @@ class Responses:
         self.reference = None
         self.channel_closed = False
         self.remote_exit = None
+        self._diagnostic_count = 0
+        self._length_class = self._opcode_class = self._rejected_at = None
+
+    def count_discarded(self, chunk):
+        # Counts saturate; even oversized/unrecognized output exposes no raw
+        # prefix, arbitrary numeric length, content, epoch/ref or expiry.
+        if type(chunk) is bytes:
+            self._diagnostic_count = min(MAX_RESPONSES, self._diagnostic_count + len(chunk))
+
+    def diagnostics(self):
+        return dict(byte_count=self._diagnostic_count, closed=self.channel_closed,
+                    owner=self.remote_exit is not None, length_class=self._length_class,
+                    opcode_class=self._opcode_class, rejected_at=self._rejected_at)
+
+    def _fault(self, code, at):
+        if self._rejected_at is None:
+            self._rejected_at = at
+        raise TransportFault(code)
 
     def feed(self, chunk):
+        self.count_discarded(chunk)
         if not isinstance(chunk, bytes) or self._total + len(chunk) > MAX_RESPONSES:
-            raise TransportFault('LIMIT_EXCEEDED')
+            self._fault('LIMIT_EXCEEDED', 'LIMIT')
         self._total += len(chunk)
         self._buffer.extend(chunk)
         while len(self._buffer) >= 4:
             length, = struct.unpack('>I', self._buffer[:4])
+            self._length_class = {7: 'BODY_7', 23: 'BODY_23', 46: 'BODY_46'}.get(length, 'INVALID')
+            self._opcode_class = None
             if length not in (7, 23, 46):
-                raise TransportFault('INVALID_FRAME')
+                self._fault('INVALID_FRAME', 'LENGTH')
             if len(self._buffer) < length + 4:
                 return
             body = bytes(self._buffer[4:length + 4])
             del self._buffer[:length + 4]
             magic, version, opcode = struct.unpack('>IBB', body[:6])
-            if magic != MAGIC or version != 1:
-                raise TransportFault('INVALID_FRAME')
+            self._opcode_class = {0x81: 'REF', 0x82: 'CLOSED', 0x83: 'OWNER'}.get(opcode, 'OTHER')
+            if magic != MAGIC:
+                self._fault('INVALID_FRAME', 'MAGIC')
+            if version != 1:
+                self._fault('INVALID_FRAME', 'VERSION')
             if opcode == 0x81 and length == 46 and self.reference is None and not self.channel_closed:
                 expires, = struct.unpack('>q', body[38:46])
-                self.reference = PrivateRef(body[6:22], body[22:38], expires)
+                try:
+                    self.reference = PrivateRef(body[6:22], body[22:38], expires)
+                except TransportFault:
+                    self._fault('INVALID_FRAME', 'ORDER_OR_FIELDS')
             elif opcode == 0x82 and body[6:] == b'\x01' and not self.channel_closed:
                 self.channel_closed = True
             elif (opcode == 0x83 and length == 23 and self.channel_closed
                   and self.remote_exit is None and body[6:22] == self._instance and body[22] in (0, 1)):
                 self.remote_exit = body[22]
             else:
-                raise TransportFault('INVALID_FRAME')
+                self._fault('INVALID_FRAME', 'ORDER_OR_FIELDS')
 
     def eof(self):
         if self._buffer or not self.channel_closed or self.remote_exit is None:
-            raise TransportFault('CHANNEL_LOST')
+            self._fault('CHANNEL_LOST', 'EOF')

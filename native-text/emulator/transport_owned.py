@@ -222,7 +222,7 @@ def connectivity(ready, pins, deadline):
             failure.stage_cleanup_verified = True
     if time.monotonic() >= operation_deadline:
         failure = TransportUnqualified(Outcome('UNKNOWN', 'HOST_DEADLINE', result.server_cleanup,
-                                               result.client_cleanup, result.local_cleanup, False))
+                                               result.client_cleanup, result.local_cleanup, False, result.diagnostics))
         failure.stage_cleanup_verified = True
         raise failure
     return result

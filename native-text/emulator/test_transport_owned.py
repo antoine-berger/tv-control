@@ -189,13 +189,14 @@ class ConnectivityLifecycle(unittest.TestCase):
             def __init__(self, launcher, deadline):
                 self.deadline = deadline
             def probe_connectivity(self):
-                return Outcome('CONNECTED', 'CANCELLED', 'VERIFIED', 'REAPED', True, True)
+                return Outcome('CONNECTED', 'CANCELLED', 'VERIFIED', 'REAPED', True, True, {'server_ready': True})
         with patch('transport_owned.OwnedLauncher', Launcher), patch('transport_owned.Host', Probe), \
              patch('transport_owned.time.monotonic', side_effect=lambda: clock.now):
             with self.assertRaises(TransportUnqualified) as failure:
                 connectivity(object(), object(), 130)
             self.assertEqual(failure.exception.transport_outcome['status'], 'UNKNOWN')
             self.assertEqual(failure.exception.transport_outcome['cleanup'], 'UNVERIFIED')
+            self.assertEqual(failure.exception.transport_outcome['diagnostics'], {'server_ready': True})
             self.assertTrue(failure.exception.stage_cleanup_verified)
 
     def test_stage_failure_keeps_existing_transport_evidence_separate(self):
