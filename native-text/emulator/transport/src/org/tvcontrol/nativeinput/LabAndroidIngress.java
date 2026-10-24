@@ -40,9 +40,10 @@ final class LabAndroidIngress {
             channel=server.accept(until);
             channel.admitPeer(2000); // Standard Android shell UID, before any private frame.
         }
-        public byte[] read(long until,LabSocketChannel.StopSignal stop) throws Exception {
+        public LabSocketSession.Read read(long until,LabSocketChannel.StopSignal stop) throws Exception {
             LabSocketChannel.FrameRead result=channel.readFrame(until,stop);
-            return result.kind==LabSocketChannel.Kind.DATA ? result.bytes() : null;
+            if(result.kind==LabSocketChannel.Kind.DATA)return LabSocketSession.Read.data(result.bytes());
+            return result.kind==LabSocketChannel.Kind.EOF ? LabSocketSession.Read.eof() : LabSocketSession.Read.stopped();
         }
         public void write(byte[] frame,long until) throws Exception {channel.writeFrame(frame,until);}
         public void close() throws Exception {closed=true;if(server!=null)server.close();}

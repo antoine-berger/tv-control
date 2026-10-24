@@ -145,17 +145,15 @@ final class LabSocketChannel {
                 }
                 int count=Os.read(borrowed, target, offset + position, length - position);
                 deadline.remaining(until,1);
-                if (stop != null && stop.stopped()) {
-                    if(count>0 || position!=0)throw new LabProtocol.Fault(LabProtocol.Reason.INVALID_FRAME);
-                    return Kind.STOP;
-                }
-                usable(true);
                 if (count == 0) {
                     if (cleanEof && position == 0) return Kind.EOF;
                     throw new LabProtocol.Fault(LabProtocol.Reason.INVALID_FRAME);
                 }
                 if (count < 0 || count > length-position)
                     throw new LabProtocol.Fault(LabProtocol.Reason.TRANSPORT_LOST);
+                if (stop != null && stop.stopped())
+                    throw new LabProtocol.Fault(LabProtocol.Reason.INVALID_FRAME);
+                usable(true);
                 inputBytes += count;
                 if (inputBytes > LabProtocol.MAX_INPUT_BYTES)
                     throw new LabProtocol.Fault(LabProtocol.Reason.LIMIT_EXCEEDED);

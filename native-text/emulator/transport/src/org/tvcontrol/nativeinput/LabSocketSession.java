@@ -1,14 +1,30 @@
 package org.tvcontrol.nativeinput;
 
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.locks.ReentrantLock;
 
 /** One lab ingress attached to the common wrapper before resource allocation. */
 final class LabSocketSession implements NativePendingRequest.Lifecycle {
+    enum ReadKind { DATA, EOF, STOP }
+    static final class Read {
+        final ReadKind kind;
+        private final byte[] bytes;
+        private Read(ReadKind type,byte[] frame){kind=type;bytes=frame==null?null:frame.clone();}
+        static Read data(byte[] frame) {
+            if(frame==null)throw new IllegalArgumentException("missing private frame");
+            return new Read(ReadKind.DATA,frame);
+        }
+        static Read eof(){return new Read(ReadKind.EOF,null);}
+        static Read stopped(){return new Read(ReadKind.STOP,null);}
+        byte[] bytes(){return bytes==null?null:bytes.clone();}
+        @Override public String toString(){return "PrivateSessionRead";}
+    }
     interface Port {
         void open(long deadline) throws Exception;
         void ready() throws Exception;
         void accept(long until) throws Exception;
-        byte[] read(long until, LabSocketChannel.StopSignal stop) throws Exception; // null = EOF/STOP
+        Read read(long until, LabSocketChannel.StopSignal stop) throws Exception;
         void write(byte[] frame, long until) throws Exception;
         void close() throws Exception;
         boolean cleanupVerified();
@@ -35,6 +51,7 @@ final class LabSocketSession implements NativePendingRequest.Lifecycle {
     private final Capture capture;
     private final AtomicBoolean stop = new AtomicBoolean();
     private final AtomicBoolean closeClaimed = new AtomicBoolean();
+    private final ReentrantLock markerBoundary = new ReentrantLock();
     private final LabProtocol.InputBudget input = new LabProtocol.InputBudget();
     private IssuedEditor core;
     private Thread watcher;
@@ -64,9 +81,9 @@ final class LabSocketSession implements NativePendingRequest.Lifecycle {
             : LabProtocol.Reason.TRANSPORT_LOST);
     }
     private LabProtocol.Command read(long until, LabSocketChannel.StopSignal signal) throws Exception {
-        byte[] frame=port.read(until,signal);
-        if(frame==null)throw new LabProtocol.Fault(LabProtocol.Reason.TRANSPORT_LOST);
-        return LabProtocol.decode(frame,input); // Every codec fault is caught by ingress/watcher and aborts.
+        Read received=port.read(until,signal);
+        if(received==null || received.kind!=ReadKind.DATA)throw new LabProtocol.Fault(LabProtocol.Reason.TRANSPORT_LOST);
+        return LabProtocol.decode(received.bytes(),input); // Every codec fault aborts.
     }
     boolean prepare() {
         try {
@@ -96,20 +113,31 @@ final class LabSocketSession implements NativePendingRequest.Lifecycle {
         try {
             LabSocketChannel.StopSignal signal=new LabSocketChannel.StopSignal(){public boolean stopped(){return stop.get();}};
             while(!stop.get()) {
-                byte[] frame=port.read(deadline,signal);
-                if(stop.get())return;
-                if(frame==null)throw new LabProtocol.Fault(LabProtocol.Reason.TRANSPORT_LOST);
-                LabProtocol.Command command=LabProtocol.decode(frame,input);
+                Read received=port.read(deadline,signal);
+                if(received==null)throw new LabProtocol.Fault(LabProtocol.Reason.TRANSPORT_LOST);
+                if(received.kind==ReadKind.STOP && stop.get())return;
+                if(received.kind!=ReadKind.DATA)throw new LabProtocol.Fault(LabProtocol.Reason.TRANSPORT_LOST);
+                // DATA was already observed: cleanup cannot discard it, even if
+                // stop changed at the return boundary. EOF is never idle STOP.
+                LabProtocol.Command command=LabProtocol.decode(received.bytes(),input);
                 if(command.opcode!=LabProtocol.Opcode.CANCEL)
                     throw new LabProtocol.Fault(LabProtocol.Reason.INVALID_FRAME);
                 abort(LabProtocol.Reason.CANCELLED);
-                store.cancel();
                 return;
             }
         } catch(Throwable error) {
             fault(error);
-            try {store.cancel();}catch(Throwable ignored){abort(LabProtocol.Reason.CLEANUP_UNVERIFIED);}
-        } finally {watcherFinished=true;}
+        } finally {
+            // Exactly one marker attempt. The same boundary as stop prevents a
+            // new cache write after a successful cleanup stop transition.
+            boolean locked=false;
+            try {
+                locked=markerBoundary.tryLock(100,TimeUnit.MILLISECONDS);
+                if(!locked)abort(LabProtocol.Reason.CLEANUP_UNVERIFIED);
+                else if(!stop.get())store.cancel();
+            } catch(Throwable ignored){abort(LabProtocol.Reason.CLEANUP_UNVERIFIED);}
+            finally {if(locked)markerBoundary.unlock();watcherFinished=true;}
+        }
     }
     @Override public boolean beforeEntry() {
         try {core.markEngineEntered();return true;}
@@ -121,7 +149,12 @@ final class LabSocketSession implements NativePendingRequest.Lifecycle {
         if(!closeClaimed.compareAndSet(false,true))throw new LabProtocol.Fault(LabProtocol.Reason.CLEANUP_UNVERIFIED);
         boolean verified=true;
         if(core!=null)try {core.beginCleanup();}catch(Throwable error){verified=false;}
-        stop.set(true);
+        boolean stopLocked=false;
+        try {
+            stopLocked=markerBoundary.tryLock(100,TimeUnit.MILLISECONDS);
+            if(!stopLocked)verified=false;
+        } catch(InterruptedException error){Thread.currentThread().interrupt();verified=false;}
+        finally {stop.set(true);if(stopLocked)markerBoundary.unlock();}
         if(watcherStartAttempted) {
             if(!watcherStarted)verified=false;
             if(watcher!=null)try {watcher.join(300);}catch(InterruptedException error){Thread.currentThread().interrupt();verified=false;}

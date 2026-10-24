@@ -136,6 +136,10 @@ public final class SocketIoTest {
         Os.state(fd).eof=false;final Clock stopClock=clock;java.util.concurrent.atomic.AtomicBoolean stopped=new java.util.concurrent.atomic.AtomicBoolean();
         Os.pollHook=() -> { stopClock.time=5100;stopped.set(true); };
         check(peer.readFrame(15100,() -> stopped.get()).kind==LabSocketChannel.Kind.STOP && Os.state(fd).reads==0);peer.close();
+        clock=reset();socket=LocalSocket.accepted(2000,new byte[0]);fd=socket.getFileDescriptor();peer=channel(socket,clock);
+        final FileDescriptor eofFd=fd;
+        check(peer.readFrame(15100,() -> Os.state(eofFd).reads>0).kind==LabSocketChannel.Kind.EOF);
+        check(Os.state(fd).reads==1);peer.close();check(peer.cleanupVerified());
         for(int threshold:new int[]{1,4,7,10}) {
             clock=reset();socket=LocalSocket.accepted(2000,observe());fd=socket.getFileDescriptor();peer=channel(socket,clock);
             final FileDescriptor partialFd=fd;final int consumed=threshold;final LabSocketChannel partial=peer;

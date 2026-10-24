@@ -24,11 +24,12 @@ public final class SocketSessionTest {
     }
     static final class Cache implements LabSocketSession.Store {
         int writes,closes;volatile int cancels;boolean failOpen,failClose,proof=true;
+        final CountDownLatch marker=new CountDownLatch(1);
         public String open(IssuedEditor.PendingText request) throws Exception {
             writes++;check(request.expires==4100);check("seedx".equals(request.after()));
             if(failOpen)throw new LabProtocol.Fault(LabProtocol.Reason.IDENTITY_CHANGED);return "private-cache-token";
         }
-        public void cancel(){cancels++;}
+        public void cancel(){cancels++;marker.countDown();}
         public void close() throws Exception {closes++;if(failClose)throw new Exception("not printed");}
         public boolean cleanupVerified(){return proof && closes==1;}
     }
@@ -36,22 +37,30 @@ public final class SocketSessionTest {
         final Clock clock;int opens,ready,accepts,reads,writes,closes;
         int first=1;boolean wrongRef,malformed,expire,openFault,closeFault,proof=true;
         volatile int late;byte[] reply;final CountDownLatch waiting=new CountDownLatch(1), delivered=new CountDownLatch(1);
+        LabSocketSession.Read completedOnStop;
         Port(Clock time){clock=time;}
         public void open(long deadline) throws Exception {opens++;check(deadline==15100);if(openFault)throw new LabProtocol.Fault(LabProtocol.Reason.POLICY_DENIED);}
         public void ready(){ready++;check(opens==1);}
         public void accept(long until){accepts++;check(ready==1);check(until==5100);}
-        public byte[] read(long until,LabSocketChannel.StopSignal stop) throws Exception {
+        public LabSocketSession.Read read(long until,LabSocketChannel.StopSignal stop) throws Exception {
             reads++;
-            if(reads==1){if(malformed)return new byte[]{1};return frame(first);}
-            if(reads==2){if(expire)clock.now=4100;return commit(reply,wrongRef);}
+            if(reads==1){if(malformed)return LabSocketSession.Read.data(new byte[]{1});return LabSocketSession.Read.data(frame(first));}
+            if(reads==2){if(expire)clock.now=4100;return LabSocketSession.Read.data(commit(reply,wrongRef));}
             waiting.countDown();
+            if(completedOnStop!=null) {
+                // Complete bytes/event were observed before cleanup. Schedule
+                // the method return only after the real session requests stop.
+                while(!stop.stopped())Thread.yield();
+                return completedOnStop;
+            }
             while(!stop.stopped() && late==0)Thread.sleep(1);
-            if(stop.stopped())return null;
+            if(stop.stopped())return LabSocketSession.Read.stopped();
             delivered.countDown();
-            if(late==1)return frame(3);
-            if(late==2)return frame(1);
-            if(late==3)return new byte[]{1};
-            if(late==4)return null;
+            if(late==1)return LabSocketSession.Read.data(frame(3));
+            if(late==2)return LabSocketSession.Read.data(frame(1));
+            if(late==3)return LabSocketSession.Read.data(new byte[]{1});
+            if(late==4)return LabSocketSession.Read.eof();
+            if(late==6)return LabSocketSession.Read.stopped();
             throw new LabProtocol.Fault(LabProtocol.Reason.DEADLINE);
         }
         public void write(byte[] frame,long until){writes++;reply=frame.clone();check(until==2100);}
@@ -89,14 +98,26 @@ public final class SocketSessionTest {
         Fixture expired=new Fixture();expired.port.expire=true;check(!expired.session.prepare());terminal(expired.end(),"refused","REF_EXPIRED",false,true);check(expired.cache.writes==0);
         Fixture policy=new Fixture();policy.port.openFault=true;check(!policy.session.prepare());terminal(policy.end(),"refused","POLICY_DENIED",false,true);check(policy.port.ready==0);check(policy.captures==0);
         Fixture cacheFailure=new Fixture();cacheFailure.cache.failOpen=true;check(!cacheFailure.session.prepare());terminal(cacheFailure.end(),"refused","IDENTITY_CHANGED",false,true);
-        for(int event=1;event<=5;event++) {
+        for(int event=1;event<=6;event++) {
             Fixture late=new Fixture();late.prepare();check(late.owner.enter());late.port.late=event;
             check(late.port.delivered.await(1,TimeUnit.SECONDS));
+            check(late.cache.marker.await(1,TimeUnit.SECONDS));
             // Result may race with abort; both orders must retain the external event.
             late.owner.result("refused");
             NativePendingRequest.Terminal outcome=late.end();
             check("uncertain".equals(outcome.status));check(outcome.entered);check(outcome.cleanup==NativePendingRequest.Cleanup.VERIFIED);
             check(late.cache.cancels==1);
+        }
+        LabSocketSession.Read[] complete={LabSocketSession.Read.data(new byte[]{1}),
+            LabSocketSession.Read.data(frame(1)),LabSocketSession.Read.data(frame(3)),
+            LabSocketSession.Read.eof(),LabSocketSession.Read.stopped()};
+        String[] reasons={"INVALID_FRAME","INVALID_FRAME","CANCELLED","TRANSPORT_LOST","NONE"};
+        for(int race=0;race<complete.length;race++) {
+            Fixture cleanupRace=new Fixture();cleanupRace.port.completedOnStop=complete[race];
+            cleanupRace.prepare();check(cleanupRace.owner.enter());cleanupRace.owner.result("verified");
+            terminal(cleanupRace.end(),race==4?"verified":"uncertain",reasons[race],true,true);
+            check(cleanupRace.cache.cancels==0); // Never write a marker after stop.
+            check(cleanupRace.cache.closes==1);check(cleanupRace.port.closes==1);
         }
         Fixture noWrite=new Fixture();noWrite.prepare();noWrite.port.late=1;
         check(noWrite.port.delivered.await(1,TimeUnit.SECONDS));
