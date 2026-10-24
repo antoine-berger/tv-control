@@ -62,7 +62,10 @@ The runner only reserves initially absent scenario-specific packages in its
 fresh exclusive AVD. Cleanup checks actual presence, uninstalls only a reserved
 present package for the same Android user, requires Success and verifies absence.
 It never uninstalls the fixture package in the connectivity branch. Owner-file
-cleanup is limited to its own created path. Full AVD teardown is containment,
+cleanup is limited to its own acknowledged created path. Allocation attempted
+before mkdir is tracked: a post-dispatch failure cannot prove absence or grant
+ownership. Such ambiguity makes staging and the final runtime receipt cleanup
+unverified without deleting an unproven path. Full AVD teardown is containment,
 not proof of client/Binder/watcher cleanup.
 
 These observations are not atomic against another process sharing Android shell
