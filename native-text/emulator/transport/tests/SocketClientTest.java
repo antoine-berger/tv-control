@@ -63,6 +63,7 @@ public final class SocketClientTest {
         check(Arrays.equals(Os.output(FileDescriptor.out),LabReplies.channelClosed()));
         check(LocalSocket.binds==1 && LocalSocket.connects==1 && LocalSocket.closes==1);
         check(!Os.state(FileDescriptor.in).eof);noBorrowedClose();noWriter();
+        check(Os.output(FileDescriptor.err).length==0); // Success never emits a diagnostic.
     }
     private static void commitKeepsInputOpen(boolean closeInput,boolean lateMalformed)throws Exception {
         reset();byte[] ref=reference(),commit=commit(ref);Os.append(FileDescriptor.in,frame(1));
@@ -79,6 +80,7 @@ public final class SocketClientTest {
         };
         check(run()==(closeInput || lateMalformed?1:0));check(frameCount(Os.output(Os.connected))==2);
         check(frameCount(Os.output(FileDescriptor.out))==(closeInput || lateMalformed?1:2));
+        if(!closeInput && !lateMalformed)check(Os.output(FileDescriptor.err).length==0);
         noBorrowedClose();noWriter();
     }
     private static void admissionAndProtocolFailures()throws Exception {

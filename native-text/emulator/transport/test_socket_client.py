@@ -30,7 +30,7 @@ import java.util.*;
 public final class Os {
     public static final class State {
         public int flags,reads,writes,polls,closes,readChunk=3,writeChunk=3,position,
-            readErrno,writeErrno,fcntlErrno,readAdvanceAfter,readAdvance,writeAdvance;
+            readErrno,writeErrno,fcntlErrno,readAdvanceAfter,readAdvance,writeAdvance,fcntlGets,fcntlSets;
         public boolean eof,closed,blocked,ignoreFlags;
         public byte[] input=new byte[0];
         public final ByteArrayOutputStream output=new ByteArrayOutputStream();
@@ -38,15 +38,15 @@ public final class Os {
     public static final IdentityHashMap<FileDescriptor,State> states=new IdentityHashMap<FileDescriptor,State>();
     public static int uid=2000,euid=2000,directCloses;
     public static volatile FileDescriptor connected;
-    public static volatile Runnable writeHook,pollHook;
+    public static volatile Runnable writeHook,pollHook,fcntlHook;
     public static volatile java.util.function.Consumer<FileDescriptor> pollEach;
     public static java.util.function.IntConsumer advance;
     public static int getuid(){return uid;}public static int geteuid(){return euid;}
     public static synchronized FileDescriptor create(){FileDescriptor fd=new FileDescriptor();states.put(fd,new State());return fd;}
     public static synchronized State state(FileDescriptor fd){State s=states.get(fd);if(s==null)throw new AssertionError("unknown fake FD");return s;}
     public static synchronized void reset(){
-        states.clear();states.put(FileDescriptor.in,new State());states.put(FileDescriptor.out,new State());
-        uid=euid=2000;directCloses=0;connected=null;writeHook=null;pollHook=null;pollEach=null;advance=null;
+        states.clear();states.put(FileDescriptor.in,new State());states.put(FileDescriptor.out,new State());states.put(FileDescriptor.err,new State());
+        uid=euid=2000;directCloses=0;connected=null;writeHook=null;pollHook=null;fcntlHook=null;pollEach=null;advance=null;
     }
     public static void append(FileDescriptor fd,byte[] bytes){State s=state(fd);synchronized(s){
         byte[] next=Arrays.copyOf(s.input,s.input.length+bytes.length);System.arraycopy(bytes,0,next,s.input.length,bytes.length);s.input=next;
@@ -55,8 +55,10 @@ public final class Os {
     public static byte[] output(FileDescriptor fd){State s=state(fd);synchronized(s){return s.output.toByteArray();}}
     public static int fcntlInt(FileDescriptor fd,int cmd,int value)throws ErrnoException {
         State s=state(fd);synchronized(s){
+            if(cmd==OsConstants.F_GETFL)s.fcntlGets++;else if(cmd==OsConstants.F_SETFL)s.fcntlSets++;
             if(s.closed || s.fcntlErrno!=0)throw new ErrnoException("fixed",s.closed?9:s.fcntlErrno);
-            if(cmd==OsConstants.F_SETFL && !s.ignoreFlags)s.flags=value;return s.flags;
+            if(cmd==OsConstants.F_SETFL && !s.ignoreFlags)s.flags=value;
+            Runnable hook=fcntlHook;if(hook!=null)hook.run();return s.flags;
         }
     }
     public static int poll(StructPollfd[] values,int timeout)throws ErrnoException {
@@ -150,14 +152,19 @@ def main():
         core = root / "src/org/tvcontrol/nativeinput"
         sources += [core / name for name in ("LabProtocol.java", "EditorBinding.java", "IssuedEditor.java",
                                              "LabReplies.java", "LabDeadline.java", "LabSocketChannel.java",
-                                             "LabClientConnection.java", "LabPipeIo.java", "LabSocketClient.java")]
+                                             "LabClientConnection.java", "LabPipeIo.java", "LabClientDiagnostic.java", "LabSocketClient.java")]
         sources.append(root / "tests/SocketClientTest.java")
+        sources.append(root / "tests/ClientDiagnosticTest.java")
         command([args.java, "-m", "jdk.compiler/com.sun.tools.javac.Main", "-encoding", "UTF-8",
                  "-source", "8", "-target", "8", "-Xlint:-options", "-d", work, *sources], env, 30)
         result = command([args.java, "-cp", work, "org.tvcontrol.nativeinput.SocketClientTest"], env, 15)
         if not re.fullmatch(r"PASS private client host checks: [0-9]+\n", result):
             raise RuntimeError("invalid private-client host result")
         print(result.strip())
+        diagnostic = command([args.java, "-cp", work, "org.tvcontrol.nativeinput.ClientDiagnosticTest"], env, 10)
+        if not re.fullmatch(r"PASS closed client diagnostic host checks: [0-9]+\n", diagnostic):
+            raise RuntimeError("invalid closed-client-diagnostic host result")
+        print(diagnostic.strip())
 
 
 if __name__ == "__main__":
