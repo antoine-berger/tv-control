@@ -1,5 +1,6 @@
 """Lab-only two-channel supervision. Not a production capability or free-serial CLI."""
 import secrets
+import math
 import time
 from transport_bundle import CLEANUP, ENTERED, REASON, TEXT, Instrumentation
 from transport_pipes import wait_children
@@ -63,7 +64,33 @@ class Host:
         bundle = wire = None
         children = []
         client_failure = None
-        until = self.clock() + self.budget
+        origin = self.clock()
+        until = origin + self.budget
+        timing = dict.fromkeys(('ready_received_ms', 'host_client_guard_start_ms',
+                               'host_client_guard_end_ms', 'client_call_start_ms', 'client_call_end_ms'))
+        timing_bad = False
+        timing_last = origin
+        ready_seen = False
+
+        def stamp(key):
+            nonlocal timing_bad, timing_last
+            # Secondary observation only: never raise into operation control.
+            try:
+                now = self.clock()
+                if (type(now) not in (int, float) or type(origin) not in (int, float)
+                        or not math.isfinite(now) or not math.isfinite(origin) or now < timing_last):
+                    timing_bad = True
+                    return
+                timing_last = now
+                elapsed = (now - origin) * 1000
+                if not math.isfinite(elapsed) or elapsed < 0:
+                    timing_bad = True
+                    return
+                if elapsed > 15000:
+                    timing_bad = True
+                timing[key] = min(15000, round(elapsed))
+            except BaseException:
+                timing_bad = True
         if self.deadline is not None:
             until = min(until, self.deadline)
 
@@ -123,6 +150,9 @@ class Host:
                         if chunk:
                             if is_am and not am_bad:
                                 bundle.feed(chunk)
+                                if bundle.ready and not ready_seen:
+                                    ready_seen = True
+                                    stamp('ready_received_ms')
                             elif not is_am and not client_bad:
                                 wire.feed(chunk)
                             elif not is_am:
@@ -142,9 +172,17 @@ class Host:
                             client_bad = True
                         fail(error.args[0])
                 if bundle.ready and client is None and fault is None:
-                    guarded()
+                    stamp('host_client_guard_start_ms')
+                    try:
+                        guarded()
+                    finally:
+                        stamp('host_client_guard_end_ms')
                     client_failure = ClientFailure()
-                    client = self.launcher.client(instance)
+                    stamp('client_call_start_ms')
+                    try:
+                        client = self.launcher.client(instance)
+                    finally:
+                        stamp('client_call_end_ms')
                     children.append(client)
                     client.queue(frames.cancel() if connectivity else frames.observe())
                 if client is not None:
@@ -214,11 +252,25 @@ class Host:
             fault = fault or 'INVALID_BUNDLE'
         if final is not None and final[TEXT] == 'verified' and not commit_flushed:
             fault = fault or 'INVALID_BUNDLE'
+        launcher_timing = dict(guard_ms=None, popen_ms=None, incomplete=True)
+        try:
+            observed_timing = self.launcher.client_timing
+            if (type(observed_timing) is dict and observed_timing.keys() == launcher_timing.keys()
+                    and type(observed_timing['incomplete']) is bool
+                    and all(value is None or type(value) is int and 0 <= value <= 15000
+                            for key, value in observed_timing.items() if key != 'incomplete')):
+                launcher_timing = dict(observed_timing)
+        except BaseException:
+            pass
+        timing_incomplete = (timing_bad or any(value is None for value in timing.values())
+            or launcher_timing['incomplete'] or any(launcher_timing[key] is None for key in ('guard_ms', 'popen_ms')))
         diagnostics = dict(server_ready=bundle is not None and bundle.ready,
                            server_final=None if final is None else dict(text=final[TEXT], cleanup=final[CLEANUP],
                                entered=final[ENTERED], reason=final[REASON]),
                            response=None if wire is None else wire.diagnostics(),
-                           client_stderr=None if client_failure is None else client_failure.public())
+                           client_stderr=None if client_failure is None else client_failure.public(),
+                           timing=dict(origin='HOST_RUN_MONOTONIC', host=dict(timing),
+                                       launcher=launcher_timing, incomplete=timing_incomplete))
         complete = started and server_clean and client_clean and local_clean and fault is None
         if complete:
             status = 'CONNECTED' if connectivity else {

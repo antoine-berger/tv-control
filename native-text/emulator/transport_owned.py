@@ -1,6 +1,7 @@
 """Fixed LAB launcher for an already owned AVD. Never starts or connects ADB."""
 from dataclasses import dataclass
 import re
+import math
 import secrets
 import subprocess
 import time
@@ -80,8 +81,12 @@ class ReadyAvd:
 
 class OwnedLauncher:
     """No free serial/argv API; every command is fixed by this module's LAB contract."""
-    def __init__(self, ready, pins):
+    def __init__(self, ready, pins, clock=time.monotonic):
         self.ready, self.pins = ready, pins
+        self._timing_clock = clock
+        self._timing_last = None
+        self._timing_bad = False
+        self._client_timing = dict(guard_ms=None, popen_ms=None, incomplete=True)
         self.channels = []
         self.user = self.uid = self.base = self.directory = self.owner_path = None
         self.directory_created = False
@@ -154,22 +159,79 @@ class OwnedLauncher:
         self._hash(self.owner_path, self.pins.owner_hash, deadline)
         remaining(deadline)
 
-    def _spawn(self, words, deadline):
-        self.guard(deadline)
+    @property
+    def client_timing(self):
+        return dict(self._client_timing)
+
+    def _timing_now(self):
+        try:
+            now = self._timing_clock()
+            if (type(now) not in (int, float) or not math.isfinite(now)
+                    or self._timing_last is not None and now < self._timing_last):
+                self._timing_bad = True
+                return None
+            self._timing_last = now
+            return now
+        except BaseException:
+            self._timing_bad = True
+            return None
+
+    def _timing_duration(self, start, end):
+        if start is None or end is None:
+            self._timing_bad = True
+            return None
+        try:
+            elapsed = (end - start) * 1000
+            if not math.isfinite(elapsed) or elapsed < 0:
+                self._timing_bad = True
+                return None
+            if elapsed > 15000:
+                self._timing_bad = True
+            return min(15000, round(elapsed))
+        except BaseException:
+            self._timing_bad = True
+            return None
+
+    def _spawn(self, words, deadline, *, _client=False):
+        if _client:
+            self._client_timing = dict(guard_ms=None, popen_ms=None, incomplete=True)
+        guard_start = self._timing_now() if _client else None
+        try:
+            self.guard(deadline)
+        finally:
+            if _client:
+                self._client_timing['guard_ms'] = self._timing_duration(guard_start, self._timing_now())
         PipedChild.require_supported()
         adb = self.ready.adb
         remaining(deadline)
-        process = subprocess.Popen([str(adb.adb), '-H', '127.0.0.1', '-P', str(adb.ports.adb_port),
-                                    '-s', adb.serial, 'shell', '-T', *words], env=adb.env,
-                                   stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                                   start_new_session=True)
-        return PipedChild(process, self.channels.append)
+        popen_start = self._timing_now() if _client else None
+        registered = completed = False
+        def register(child):
+            nonlocal registered
+            self.channels.append(child)  # Always establish ownership before diagnostics.
+            registered = True
+            if _client:
+                self._client_timing['popen_ms'] = self._timing_duration(popen_start, self._timing_now())
+        try:
+            process = subprocess.Popen([str(adb.adb), '-H', '127.0.0.1', '-P', str(adb.ports.adb_port),
+                                        '-s', adb.serial, 'shell', '-T', *words], env=adb.env,
+                                       stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                       start_new_session=True)
+            child = PipedChild(process, register)
+            completed = True
+            return child
+        finally:
+            if _client:
+                if not registered:
+                    self._client_timing['popen_ms'] = self._timing_duration(popen_start, self._timing_now())
+                self._client_timing['incomplete'] = (not completed or self._timing_bad
+                    or any(self._client_timing[key] is None for key in ('guard_ms', 'popen_ms')))
 
     def instrumentation(self, instance):
         return self._spawn(['am', 'instrument', '-w', '-e', 'lab_instance', instance, COMPONENT], self.deadline)
 
     def client(self, instance):
-        return self._spawn(['/system/bin/sh', self.owner_path, instance, self.base, str(self.uid)], self.deadline)
+        return self._spawn(['/system/bin/sh', self.owner_path, instance, self.base, str(self.uid)], self.deadline, _client=True)
 
     def owned(self):
         return tuple(self.channels)
