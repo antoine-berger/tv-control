@@ -3,20 +3,23 @@ import secrets
 import time
 from transport_bundle import CLEANUP, ENTERED, REASON, TEXT, Instrumentation
 from transport_pipes import wait_children
+from transport_diagnostics import ClientFailure
 from transport_wire import InputFrames, PrivateAppend, Responses, TransportFault
 
 
 class Outcome:
-    def __init__(self, status, reason, server_cleanup, client_cleanup, local_cleanup, qualified):
+    def __init__(self, status, reason, server_cleanup, client_cleanup, local_cleanup, qualified, diagnostics=None):
         self.status, self.reason = status, reason
         self.server_cleanup, self.client_cleanup = server_cleanup, client_cleanup
         self.local_cleanup, self.qualified = local_cleanup, qualified
+        self.diagnostics = diagnostics
 
     def public(self):
         return {'status': self.status, 'reason': self.reason,
                 'server_cleanup': self.server_cleanup, 'client_cleanup': self.client_cleanup,
                 'local_cleanup': self.local_cleanup, 'qualified': self.qualified,
-                'cleanup': 'VERIFIED' if self.qualified else 'UNVERIFIED'}
+                'cleanup': 'VERIFIED' if self.qualified else 'UNVERIFIED',
+                'diagnostics': self.diagnostics}
 
 
 class Host:
@@ -59,6 +62,7 @@ class Host:
         started = False
         bundle = wire = None
         children = []
+        client_failure = None
         until = self.clock() + self.budget
         if self.deadline is not None:
             until = min(until, self.deadline)
@@ -103,12 +107,15 @@ class Host:
                         continue
                     error_output = child.read('stderr')
                     if error_output:
+                        if not is_am:
+                            client_failure.feed(error_output)
                         fail('STDERR_OUTPUT')
                     elif error_output == b'':
                         if is_am:
                             am_err_eof = True
                         else:
                             client_err_eof = True
+                            client_failure.eof()
                     chunk = child.read('stdout')
                     if chunk is None:
                         continue
@@ -118,6 +125,8 @@ class Host:
                                 bundle.feed(chunk)
                             elif not is_am and not client_bad:
                                 wire.feed(chunk)
+                            elif not is_am:
+                                wire.count_discarded(chunk)
                         elif is_am:
                             am_eof = True
                             if not am_bad:
@@ -134,6 +143,7 @@ class Host:
                         fail(error.args[0])
                 if bundle.ready and client is None and fault is None:
                     guarded()
+                    client_failure = ClientFailure()
                     client = self.launcher.client(instance)
                     children.append(client)
                     client.queue(frames.cancel() if connectivity else frames.observe())
@@ -204,12 +214,17 @@ class Host:
             fault = fault or 'INVALID_BUNDLE'
         if final is not None and final[TEXT] == 'verified' and not commit_flushed:
             fault = fault or 'INVALID_BUNDLE'
+        diagnostics = dict(server_ready=bundle is not None and bundle.ready,
+                           server_final=None if final is None else dict(text=final[TEXT], cleanup=final[CLEANUP],
+                               entered=final[ENTERED], reason=final[REASON]),
+                           response=None if wire is None else wire.diagnostics(),
+                           client_stderr=None if client_failure is None else client_failure.public())
         complete = started and server_clean and client_clean and local_clean and fault is None
         if complete:
             status = 'CONNECTED' if connectivity else {
                 'verified': 'VERIFIED', 'refused': 'REFUSED', 'uncertain': 'UNKNOWN'}[final[TEXT]]
-            return Outcome(status, final[REASON], 'VERIFIED', 'REAPED', True, status != 'UNKNOWN')
+            return Outcome(status, final[REASON], 'VERIFIED', 'REAPED', True, status != 'UNKNOWN', diagnostics)
         status = 'UNKNOWN' if started or children else 'REFUSED'
         return Outcome(status, fault or 'CLEANUP_UNVERIFIED',
                        'VERIFIED' if server_clean else 'UNVERIFIED',
-                       'REAPED' if client_clean else 'UNVERIFIED', local_clean, False)
+                       'REAPED' if client_clean else 'UNVERIFIED', local_clean, False, diagnostics)
