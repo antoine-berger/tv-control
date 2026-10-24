@@ -75,11 +75,21 @@ it proves neither client termination nor server effect. The client exits bounded
 after that event and never waits for the Instrumentation Bundle. Only the host
 correlates that separate process's final Bundle.
 
-The remote shell owner and exact wait/marker command need independent review:
+The remote shell owner source is client-owner.sh; its exact wait/marker command
+needs independent review and Android execution remains unverified:
 no broad process search/kill, daemon, new permissions or ownership inferred from
 a recycled PID. The public instance and fixed marker are not authentication
 against another shell-UID process. The owner's pinned source/direct-child wait
 and exclusive lab assumption are part of this proof boundary.
+The owner takes exactly three non-sensitive arguments: public instance, pinned
+client artifact path, expected helper UID. Its child command is
+`CLASSPATH=<artifact> /system/bin/app_process /system/bin org.tvcontrol.nativeinput.LabSocketClient <instance> <uid> <&0`.
+It runs in the foreground, records the child's status, emits0x83 using only fixed
+octal bytes/public instance and then exits with the child status. No background
+stdin rule, set-e, trap or PID kill is used. The host must still enforce deadlines;
+a hung client yields no witness and remains cleanup unverified, never a local
+process-exit-based substitute. Host shell tests substitute fixed executable paths
+with owned fakes; they do not prove Android toybox/mksh execution or SELinux.
 
 ## EOF, cancellation and cleanup
 
