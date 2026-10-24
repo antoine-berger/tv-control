@@ -15,7 +15,7 @@ spec = importlib.util.spec_from_file_location("release", ROOT / "scripts/release
 release = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(release)
 SHA = "a" * 40
-VERSION = "0.4.10"
+VERSION = "0.4.11"
 BRANCH = f"release/v{VERSION}-{SHA}"
 REF = "refs/heads/" + BRANCH
 SELECTION = {"sha": SHA, "tag": "v" + VERSION, "branch": BRANCH, "run_id": 123, "run_attempt": 1}
@@ -105,7 +105,7 @@ class Guards(unittest.TestCase):
                        {"repository": {"full_name": "someone/fork"}}):
             with self.subTest(change=change), self.assertRaises(ValueError):
                 release.context(environment(), {**event(), **change}, SHA, VERSION)
-        for head, version in (("b" * 40, VERSION), (SHA, "0.5.0"), (SHA, "0.4.10-rc1")):
+        for head, version in (("b" * 40, VERSION), (SHA, "0.5.0"), (SHA, "0.4.11-rc1")):
             with self.subTest(head=head, version=version), self.assertRaises(ValueError):
                 release.context(environment(), event(), head, version)
 
@@ -183,7 +183,7 @@ class Publication(unittest.TestCase):
         self.assertTrue(result["prerelease"])
         self.assertFalse(result["promoted"])
         writes = self.writes()
-        self.assertEqual(writes[0][2], {"ref": "refs/tags/v0.4.10", "sha": SHA})
+        self.assertEqual(writes[0][2], {"ref": "refs/tags/v0.4.11", "sha": SHA})
         self.assertEqual(writes[1][2]["make_latest"], "false")
         self.assertTrue(writes[1][2]["draft"])
         self.assertEqual(writes[-1][2], {"draft": False, "prerelease": True, "make_latest": "false"})
@@ -192,7 +192,7 @@ class Publication(unittest.TestCase):
 
     def test_existing_tag_release_or_draft_stops_before_writes(self):
         for attribute, value in (("tag_exists", True), ("existing_release", {"id": 9}),
-                                 ("release_listing", [{"tag_name": "v0.4.10", "draft": True}])):
+                                 ("release_listing", [{"tag_name": "v0.4.11", "draft": True}])):
             with self.subTest(attribute=attribute):
                 self.api = FakeGitHub()
                 setattr(self.api, attribute, value)
