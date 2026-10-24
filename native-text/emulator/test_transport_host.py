@@ -50,11 +50,16 @@ class FakeChild:
             self.launcher.command(command)
 
     def read(self, name):
+        if (self.launcher.mode == 'late_stderr' and self.name == 'client'
+                and name == 'stderr' and not self.eof['stdout']):
+            return None
         items = self.output if name == 'stdout' else self.errors
         if items:
             return items.popleft()
         if self.done and not self.eof[name]:
             self.eof[name] = True
+            if self.launcher.mode == 'late_stderr' and self.name == 'client' and name == 'stdout':
+                self.errors.append(b'PRIVATE_SYNTHETIC_CANARY')
             return b''
         return None
 
@@ -75,6 +80,8 @@ class FakeChild:
 
     def cleanup(self):
         self.cleanups += 1
+        if self.launcher.cleanup_hook is not None:
+            self.launcher.cleanup_hook()
         self.done = True
         if self.launcher.mode == 'cleanup_raises':
             raise RuntimeError('PRIVATE_SYNTHETIC_CANARY')
@@ -89,6 +96,7 @@ class Launcher:
         self.commands = []
         self.started_clients = 0
         self.witness_emitted = False
+        self.cleanup_hook = None
 
     def guard(self):
         self.guards += 1
@@ -193,6 +201,35 @@ class Supervision(unittest.TestCase):
         _, _, _, result = self.run_case('forged_verified_before_commit')
         self.assertEqual(result.status, 'UNKNOWN')
         self.assertFalse(result.qualified)
+
+    def test_cleanup_cannot_publish_success_after_deadline_or_cancellation(self):
+        for mode in ('deadline', 'cancelled'):
+            with self.subTest(mode=mode):
+                launcher, clock = Launcher(), Clock()
+                cancelled = [False]
+                def cleanup():
+                    if mode == 'deadline':
+                        clock.now = 2
+                    else:
+                        cancelled[0] = True
+                launcher.cleanup_hook = cleanup
+                host = Host(launcher, clock=clock, wait=clock.wait,
+                            entropy=lambda: PUBLIC_INSTANCE, budget=.5)
+                result = host.run('fixture', cancelled=lambda: cancelled[0])
+                self.assertEqual(result.status, 'UNKNOWN')
+                self.assertEqual(result.reason, 'HOST_DEADLINE' if mode == 'deadline' else 'HOST_CANCELLED')
+                self.assertFalse(result.qualified)
+                self.assertEqual(launcher.commands, [1, 2])
+                self.assertTrue(all(child.cleanups == 1 for child in launcher.channels))
+
+    def test_stderr_arriving_between_stdout_eof_and_exit_is_drained(self):
+        launcher, _, _, result = self.run_case('late_stderr')
+        self.assertEqual(result.status, 'UNKNOWN')
+        self.assertEqual(result.reason, 'STDERR_OUTPUT')
+        self.assertFalse(result.qualified)
+        self.assertTrue(launcher.peer.eof['stderr'])
+        self.assertFalse(launcher.peer.errors)
+        self.assertNotIn('PRIVATE_SYNTHETIC_CANARY', str(result.public()))
 
     def test_short_writes_complete_one_frame_without_replay(self):
         launcher, _, _, outcome = self.run_case(write_limit=3, budget=2)

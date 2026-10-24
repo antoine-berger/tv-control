@@ -43,6 +43,7 @@ class Host:
         self._used = True
         am = client = None
         am_eof = client_eof = False
+        am_err_eof = client_err_eof = False
         am_bad = client_bad = False
         committed = commit_flushed = False
         fault = None
@@ -93,6 +94,11 @@ class Host:
                     error_output = child.read('stderr')
                     if error_output:
                         fail('STDERR_OUTPUT')
+                    elif error_output == b'':
+                        if is_am:
+                            am_err_eof = True
+                        else:
+                            client_err_eof = True
                     chunk = child.read('stdout')
                     if chunk is None:
                         continue
@@ -138,7 +144,7 @@ class Host:
                 if am_eof and client is None:
                     fail('CHANNEL_LOST')
                     break
-                if am_eof and client_eof and all(child.exited() for child in children):
+                if am_eof and client_eof and am_err_eof and client_err_eof and all(child.exited() for child in children):
                     if not all(child.exit_ok() for child in children):
                         fail('CHANNEL_LOST')
                     break
@@ -166,6 +172,15 @@ class Host:
                     local_clean = False
             if not local_clean:
                 fault = fault or 'LOCAL_CLEANUP_FAILED'
+        # Cleanup can consume the remaining budget or race caller cancellation.
+        # Recheck without touching pipes that have already been closed/reaped.
+        try:
+            if self.clock() >= until:
+                fault = fault or 'HOST_DEADLINE'
+            elif cancelled():
+                fault = fault or 'HOST_CANCELLED'
+        except BaseException:
+            fault = fault or 'HOST_FAILURE'
         final = None if bundle is None or am_bad or not am_eof else bundle.final
         server_clean = final is not None and final[CLEANUP] == 'VERIFIED'
         client_clean = wire is not None and not client_bad and client_eof and wire.remote_exit is not None
