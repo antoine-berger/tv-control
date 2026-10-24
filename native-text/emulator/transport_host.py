@@ -1,7 +1,7 @@
 """Lab-only two-channel supervision. Not a production capability or free-serial CLI."""
 import secrets
 import time
-from transport_bundle import CLEANUP, REASON, TEXT, Instrumentation
+from transport_bundle import CLEANUP, ENTERED, REASON, TEXT, Instrumentation
 from transport_pipes import wait_children
 from transport_wire import InputFrames, PrivateAppend, Responses, TransportFault
 
@@ -22,7 +22,7 @@ class Outcome:
 class Host:
     """The injected launcher belongs to the existing, exclusively owned AVD runtime.
 
-    guard() must revalidate the private ADB owner and pinned helper/user/UID/artifact
+    guard(deadline) must revalidate the private ADB owner and pinned helper/user/UID/artifact
     identity. instrumentation(instance) and client(instance) launch only the reviewed
     fixed commands, registering each owned child before any operation can raise.
     owned() must retain every such channel, including a partially failed launch.
@@ -30,14 +30,22 @@ class Host:
     No real launcher or command-line adapter is selected by this module.
     """
     def __init__(self, launcher, clock=time.monotonic, wait=wait_children,
-                 entropy=lambda: secrets.token_hex(16), budget=15):
+                 entropy=lambda: secrets.token_hex(16), budget=15, deadline=None):
         if not 0 < budget <= 15:
             raise TransportFault('HOST_DEADLINE')
         self.launcher, self.clock, self.wait = launcher, clock, wait
         self.entropy, self.budget = entropy, budget
+        self.deadline = deadline
         self._used = False
 
     def run(self, text, cancelled=lambda: False):
+        return self._run(text, cancelled, False)
+
+    def probe_connectivity(self, cancelled=lambda: False):
+        """Closed lab probe: CANCEL first, with no OBSERVE, editor capture or text."""
+        return self._run(None, cancelled, True)
+
+    def _run(self, text, cancelled, connectivity):
         if self._used:
             return Outcome('REFUSED', 'REF_CONSUMED', 'UNVERIFIED', 'UNVERIFIED', True, False)
         self._used = True
@@ -45,13 +53,15 @@ class Host:
         am_eof = client_eof = False
         am_err_eof = client_err_eof = False
         am_bad = client_bad = False
-        committed = commit_flushed = False
+        committed = commit_flushed = cancel_flushed = False
         fault = None
         local_clean = True
         started = False
         bundle = wire = None
         children = []
         until = self.clock() + self.budget
+        if self.deadline is not None:
+            until = min(until, self.deadline)
 
         def fail(code):
             nonlocal fault
@@ -63,7 +73,7 @@ class Host:
         def guarded():
             valid, failed = None, False
             try:
-                valid = self.launcher.guard()
+                valid = self.launcher.guard(until)
             except BaseException:
                 failed = True
             if failed or valid is not None and valid is not True:
@@ -74,7 +84,7 @@ class Host:
                 raise TransportFault('HOST_CANCELLED')
 
         try:
-            append = PrivateAppend(text)  # Validate before any remote launch.
+            append = None if connectivity else PrivateAppend(text)  # Validate before any remote launch.
             instance = self.entropy()
             bundle, wire = Instrumentation(instance), Responses(instance)
             frames = InputFrames()
@@ -126,19 +136,24 @@ class Host:
                     guarded()
                     client = self.launcher.client(instance)
                     children.append(client)
-                    client.queue(frames.observe())
+                    client.queue(frames.cancel() if connectivity else frames.observe())
                 if client is not None:
-                    if wire.reference is not None and not committed and not wire.channel_closed and fault is None:
+                    if connectivity and wire.reference is not None:
+                        fail('INVALID_FRAME')
+                    if not connectivity and wire.reference is not None and not committed and not wire.channel_closed and fault is None:
                         guarded()
                         committed = True  # Never queue a second COMMIT or renew the device expiry.
                         client.queue(frames.commit(wire.reference, append))
-                    if wire.channel_closed and committed and not commit_flushed:
+                    if wire.channel_closed and (committed and not commit_flushed
+                                                or connectivity and not cancel_flushed):
                         fail('CHANNEL_LOST')
                     if wire.remote_exit is not None:
                         client.close_input()  # Only the remote-owner witness permits normal stdin closure.
                         if wire.remote_exit != 0:
                             fail('CLIENT_EXIT_NONZERO')
                     client.flush()
+                    if connectivity and fault is None and not wire.channel_closed and client.pending_bytes() == 0:
+                        cancel_flushed = True
                     if committed and fault is None and not wire.channel_closed and client.pending_bytes() == 0:
                         commit_flushed = True
                 if am_eof and client is None:
@@ -184,11 +199,15 @@ class Host:
         final = None if bundle is None or am_bad or not am_eof else bundle.final
         server_clean = final is not None and final[CLEANUP] == 'VERIFIED'
         client_clean = wire is not None and not client_bad and client_eof and wire.remote_exit is not None
+        if connectivity and final is not None and (not cancel_flushed or wire.reference is not None
+                or final[TEXT] != 'refused' or final[REASON] != 'CANCELLED' or final[ENTERED] != 'NO'):
+            fault = fault or 'INVALID_BUNDLE'
         if final is not None and final[TEXT] == 'verified' and not commit_flushed:
             fault = fault or 'INVALID_BUNDLE'
         complete = started and server_clean and client_clean and local_clean and fault is None
         if complete:
-            status = {'verified': 'VERIFIED', 'refused': 'REFUSED', 'uncertain': 'UNKNOWN'}[final[TEXT]]
+            status = 'CONNECTED' if connectivity else {
+                'verified': 'VERIFIED', 'refused': 'REFUSED', 'uncertain': 'UNKNOWN'}[final[TEXT]]
             return Outcome(status, final[REASON], 'VERIFIED', 'REAPED', True, status != 'UNKNOWN')
         status = 'UNKNOWN' if started or children else 'REFUSED'
         return Outcome(status, fault or 'CLEANUP_UNVERIFIED',

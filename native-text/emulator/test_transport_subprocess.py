@@ -43,24 +43,29 @@ if role=='am':
         sys.stdout.buffer.write(b'x'*9000);sys.stdout.buffer.flush();sys.exit(0)
     count=2 if mode=='double_bundle' else 1
     for _ in range(count):
-        for key,value in [('tv_native_lab_protocol_v1','1'),('tv_native_lab_instance_v1',instance),('tv_native_text_v1','verified'),('tv_native_cleanup_v1','VERIFIED'),('tv_native_entered_v1','YES'),('tv_native_reason_v1','NONE')]:
+        for key,value in [('tv_native_lab_protocol_v1','1'),('tv_native_lab_instance_v1',instance),('tv_native_text_v1','refused' if mode=='connectivity' else 'verified'),('tv_native_cleanup_v1','VERIFIED'),('tv_native_entered_v1','NO' if mode=='connectivity' else 'YES'),('tv_native_reason_v1','CANCELLED' if mode=='connectivity' else 'NONE')]:
             line(key,value)
         sys.stdout.buffer.write(b'INSTRUMENTATION_CODE: 0\n')
     sys.stdout.buffer.flush()
 else:
-    if command() is None: sys.exit(0)
-    ref=frame(0x81,b'e'*16+b'r'*16+struct.pack('>q',4000))
-    if mode=='slow':
-        for value in ref:
-            sys.stdout.buffer.write(bytes([value]));sys.stdout.buffer.flush();time.sleep(.02)
+    first=command()
+    if first is None: sys.exit(0)
+    if mode=='connectivity':
+        if first[5]!=3 or len(first)!=6: sys.exit(2)
     else:
-        sys.stdout.buffer.write(ref);sys.stdout.buffer.flush()
-    if mode=='premature_eof': sys.exit(0)
-    request=command()
-    if request is None: sys.exit(0)
-    if request[5]!=2: sys.exit(2)
-    if mode=='stderr':
-        sys.stderr.buffer.write(request[42:]);sys.stderr.buffer.flush()
+        if first[5]!=1 or len(first)!=6: sys.exit(2)
+        ref=frame(0x81,b'e'*16+b'r'*16+struct.pack('>q',4000))
+        if mode=='slow':
+            for value in ref:
+                sys.stdout.buffer.write(bytes([value]));sys.stdout.buffer.flush();time.sleep(.02)
+        else:
+            sys.stdout.buffer.write(ref);sys.stdout.buffer.flush()
+        if mode=='premature_eof': sys.exit(0)
+        request=command()
+        if request is None: sys.exit(0)
+        if request[5]!=2: sys.exit(2)
+        if mode=='stderr':
+            sys.stderr.buffer.write(request[42:]);sys.stderr.buffer.flush()
     os.write(fd,b'D')
     sys.stdout.buffer.write(frame(0x82,b'\x01'));sys.stdout.buffer.flush()
     if mode=='survivor':
@@ -86,7 +91,7 @@ class Launcher:
         self.read_fd, self.write_fd = os.pipe()
         self.guards = 0
 
-    def guard(self):
+    def guard(self, deadline):
         self.guards += 1  # Fake owned-runtime guard; no ADB implementation is selected.
 
     def _start(self, role, instance, descriptor):
@@ -121,7 +126,8 @@ class RealPipes(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix='lab-host-fake-') as directory:
             launcher = Launcher(Path(directory), mode)
             try:
-                result = Host(launcher, entropy=lambda: PUBLIC_INSTANCE, budget=budget).run('PRIVATE_STDIN_CANARY')
+                host = Host(launcher, entropy=lambda: PUBLIC_INSTANCE, budget=budget)
+                result = host.probe_connectivity() if mode == 'connectivity' else host.run('PRIVATE_STDIN_CANARY')
                 self.assertTrue(all(child.process.returncode is not None for child in launcher.channels))
                 self.assertTrue(all(all(getattr(child.process, name).closed for name in ('stdin', 'stdout', 'stderr'))
                                     for child in launcher.channels))
@@ -136,6 +142,12 @@ class RealPipes(unittest.TestCase):
         result = self.run_case('valid')
         self.assertEqual(result.status, 'VERIFIED')
         self.assertTrue(result.qualified)
+
+    def test_connectivity_has_no_observe_or_commit_and_keeps_stdin_open(self):
+        result = self.run_case('connectivity')
+        self.assertEqual(result.status, 'CONNECTED')
+        self.assertTrue(result.qualified)
+        self.assertEqual(result.reason, 'CANCELLED')
 
     def test_local_zero_without_remote_bundle_or_owner_is_unknown(self):
         for mode in ('no_bundle', 'no_remote_owner'):
