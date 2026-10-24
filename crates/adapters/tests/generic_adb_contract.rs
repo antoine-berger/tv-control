@@ -123,3 +123,6 @@ mod volume;
 
 #[path = "generic_adb_contract/text_result.rs"]
 mod text_result;
+
+#[path = "generic_adb_contract/app_details.rs"]
+mod app_details;

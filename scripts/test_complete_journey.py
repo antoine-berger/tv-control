@@ -513,7 +513,7 @@ class CompleteJourney(JourneyFixture):
         # owned this controller. Its uninstall must not even query the tunnel.
         other_prefix=installer.root/'another installation'
         archive=installer.asset()
-        result=installer.run_script(['--prefix',str(other_prefix),'--version','v0.4.8','--archive',str(archive),'--json'],env=env)
+        result=installer.run_script(['--prefix',str(other_prefix),'--version','v0.4.9','--archive',str(archive),'--json'],env=env)
         self.assertEqual(result.returncode,0,result.stdout+result.stderr)
         events=(self.root/'tunnel-events.jsonl').read_bytes()
         result=installer.run_script(['--prefix',str(other_prefix),'--uninstall','--json'],env=env)

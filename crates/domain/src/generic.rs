@@ -9,6 +9,24 @@ pub struct App {
     pub label: Option<String>,
     pub search_component: Option<String>,
 }
+/// Read-only selected-app evidence, not a guarantee of runtime acceptance.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AppDetails {
+    pub app: App,
+    pub version: Option<AppVersion>,
+    pub native_search: NativeSearch,
+}
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AppVersion {
+    pub code: u64,
+    pub name: Option<String>,
+}
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum NativeSearch {
+    Handler { component: String },
+    Unsupported,
+    Unknown,
+}
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Key {
     Up,
@@ -171,6 +189,9 @@ pub struct RemoteCapabilities {
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Read {
+    AppDetails {
+        app: String,
+    },
     Media,
     RemoteCapabilities,
     State,
@@ -194,6 +215,7 @@ pub struct ReadRequest {
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Data {
+    AppDetails(AppDetails),
     Media {
         sessions: Vec<MediaSession>,
         truncated: bool,

@@ -59,6 +59,14 @@ impl Device for SharedFake {
         self.reads.fetch_add(1, Ordering::SeqCst);
         Ok(self.apps.clone())
     }
+    fn app_details(&self, _: &str, app: &App, ctx: &Context<'_>) -> PortResult<AppDetails> {
+        ctx.check()?;
+        Ok(AppDetails {
+            app: app.clone(),
+            version: None,
+            native_search: NativeSearch::Unknown,
+        })
+    }
     fn observe(&self, _: &str, _: &Context<'_>) -> PortResult<Observed> {
         Ok(self.state.lock().unwrap().clone())
     }
@@ -641,4 +649,46 @@ fn standby_cancelled_after_dispatch_is_unknown_and_cached() {
     assert_eq!(result.code, "cancelled");
     assert!(s.execute(req(Intent::Standby), &Never).cached);
     assert_eq!(d.effects.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn app_details_require_exact_fresh_unambiguous_discovered_identity() {
+    let first = app("org.example.player", Some("Player"));
+    let mut second = first.clone();
+    second.component = "org.example.player/.Other".into();
+    let (service, device, journal) = setup(vec![first.clone(), second]);
+    let read = |app: &str| ReadRequest {
+        device: "living".into(),
+        read: Read::AppDetails { app: app.into() },
+        expires_at_unix_ms: 2000,
+    };
+    assert_eq!(
+        service.read(read("Player"), &Never).unwrap_err().code,
+        "app_not_found"
+    );
+    assert_eq!(
+        service
+            .read(read("org.example.player"), &Never)
+            .unwrap_err()
+            .code,
+        "app_ambiguous"
+    );
+    for _ in 0..2 {
+        let Data::AppDetails(details) = service.read(read(&first.component), &Never).unwrap()
+        else {
+            panic!("wrong result")
+        };
+        assert_eq!(details.app, first);
+    }
+    assert_eq!(
+        device.reads.load(Ordering::SeqCst),
+        4,
+        "details cannot use stale catalogue"
+    );
+    assert_eq!(device.effects.load(Ordering::SeqCst), 0);
+    assert!(journal.entries.lock().unwrap().is_empty());
+    let mut expired = read(&first.component);
+    expired.expires_at_unix_ms = 1000;
+    assert_eq!(service.read(expired, &Never).unwrap_err().code, "expired");
+    assert_eq!(device.reads.load(Ordering::SeqCst), 4);
 }

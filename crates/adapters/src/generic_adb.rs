@@ -17,6 +17,7 @@ use std::{
 use tv_application::{generic::Device, Context};
 use tv_domain::{generic::*, Failure, Observed, PlaybackEvidence, PortResult};
 
+mod app_details;
 mod cache;
 mod catalogue;
 mod interaction;
@@ -315,6 +316,9 @@ impl Device for GenericAdb {
         ctx: &Context<'_>,
     ) -> PortResult<Vec<App>> {
         self.read_apps(alias, query, ctx)
+    }
+    fn app_details(&self, alias: &str, app: &App, ctx: &Context<'_>) -> PortResult<AppDetails> {
+        self.read_app_details(alias, app, ctx)
     }
     fn media(&self, alias: &str, ctx: &Context<'_>) -> PortResult<Vec<MediaSession>> {
         let listing = self.shell(

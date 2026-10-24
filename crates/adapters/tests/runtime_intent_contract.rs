@@ -245,10 +245,10 @@ fn build_record_is_bound_to_the_current_generation_and_old_readers_keep_working(
         record_build(&temp.0, &first, "0.4.5"),
         Err("bridge_build_binding_mismatch")
     );
-    record_build(&temp.0, &second, "0.4.8-rc.1").unwrap();
+    record_build(&temp.0, &second, "0.4.9-rc.1").unwrap();
     assert_eq!(
         last_started_version(&temp.0, "installation", "revision", "screen").unwrap(),
-        "0.4.8-rc.1"
+        "0.4.9-rc.1"
     );
     assert_eq!(
         last_started_version(&temp.0, "installation", "other", "screen"),

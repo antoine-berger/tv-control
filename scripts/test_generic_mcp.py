@@ -34,6 +34,12 @@ if command[:3]==['cmd','package','query-activities']:
         print('2 activities found:')
         for i,(package,label) in enumerate([('com.fixture.video','YouTube'),('com.fixture.music','YouTube Music')]):
             print(f'  Activity #{i}:\n    ActivityInfo:\n      name={package}.Main\n      packageName={package}\n      labelRes=0x0 nonLocalizedLabel={label} icon=0x0\n      ApplicationInfo:\n        packageName={package}')
+elif command[:2]==['dumpsys','package']:
+    package=command[2]
+    version=state.get('app_version','5.30.340')
+    print(f'Packages:\n  Package [{package}] (abc):\n    versionCode=530340 minSdk=21\n    versionName={version}\nHidden system packages:\n  Package [{package}] (def):\n    versionCode=1\n    versionName=factory')
+elif command[:3]==['cmd','package','resolve-activity']:
+    print(state.get('search_handler','No activity found'))
 elif command==['cmd','media_session','volume','--stream','3','--get']:
     if state.get('volume_unreadable'): print('unsupported');sys.exit()
     print('[V] volume is '+str(state.get('volume',8))+' in range [0..'+str(state.get('volume_max',15))+']')
@@ -178,6 +184,23 @@ class GenericMcp(unittest.TestCase):
     def tool(self,name,args):return self.rpc('tools/call',{'name':name,'arguments':args})
     def control(self,identity,action):
         return self.tool('tv_control',{'request_id':identity,'device':'screen','expires_at_unix_ms':int(time.time()*1000)+9000,'action':action})
+    def test_selected_app_details_are_fresh_read_only_evidence(self):
+        path=self.root/'state.json'
+        for package in ('com.fixture.video','com.fixture.music'):
+            for handler,status in [('No activity found','unsupported'),(package+'/.Search','handler_resolved'),('org.other/.Search','unknown')]:
+                state=json.loads(path.read_text());state.update(search_handler=handler,app_version='1.12.07');path.write_text(json.dumps(state))
+                before=path.read_bytes()
+                result=self.tool('tv_read',{'device':'screen','expires_at_unix_ms':int(time.time()*1000)+9000,'read':{'type':'app_details','app':package}})['structuredContent']
+                self.assertEqual(result['id'],package,result)
+                self.assertEqual(result['component'],package+'/'+package+'.Main')
+                self.assertEqual(result['version']['name'],'1.12.07')
+                self.assertEqual(result['version']['code'],530340)
+                self.assertEqual(result['native_search']['status'],status)
+                self.assertEqual(result['runtime_acceptance'],'unknown')
+                self.assertEqual(result['url_support'],'requires_specific_uri_resolution')
+                self.assertEqual(path.read_bytes(),before,'read changed TV state')
+        missing=self.tool('tv_read',{'device':'screen','expires_at_unix_ms':int(time.time()*1000)+9000,'read':{'type':'app_details','app':'YouTube'}})['structuredContent']
+        self.assertEqual(missing['code'],'app_not_found')
     def test_media_read_and_pause_verify_only_native_session_state(self):
         data=self.tool('tv_read',{'device':'screen','expires_at_unix_ms':int(time.time()*1000)+9000,'read':{'type':'media'}})['structuredContent']
         self.assertEqual(len(data['sessions']),1)

@@ -93,6 +93,9 @@ struct Reading {
 #[derive(Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 enum ReadKind {
+    AppDetails {
+        app: String,
+    },
     Media {},
     State {},
     RemoteCapabilities {},
@@ -217,6 +220,7 @@ impl Call {
                             limit,
                             refresh,
                         },
+                        ReadKind::AppDetails { app } => Read::AppDetails { app },
                         ReadKind::Ui {} => Read::Ui,
                         ReadKind::Screenshot {} => Read::Screenshot,
                     },
@@ -318,6 +322,7 @@ impl Call {
                         Data::RemoteCapabilities(c) => {
                             json!({"android_sdk":c.android_sdk,"app":c.active_app,"keyevent_help":c.keyevent_help,"longpress_help":c.longpress_help,"standby_key_supported":c.standby_key_supported,"standby_effect":"device_dependent","app_key_acceptance":"unknown","evidence":"device_input_help"})
                         }
+                        Data::AppDetails(details) => app_details(&details),
                         Data::State(s) => json!({"state": state(&s)}),
                         Data::Media {
                             sessions,
@@ -419,6 +424,23 @@ fn playback(p: Playback) -> &'static str {
         Playback::Buffering => "buffering",
         Playback::Unknown => "unknown",
     }
+}
+fn app_details(details: &AppDetails) -> Value {
+    let search = match &details.native_search {
+        NativeSearch::Handler { component } => {
+            json!({"status":"handler_resolved","component":component})
+        }
+        NativeSearch::Unsupported => json!({"status":"unsupported"}),
+        NativeSearch::Unknown => json!({"status":"unknown"}),
+    };
+    let version = match &details.version {
+        Some(version) => {
+            json!({"status":"observed","code":version.code,"name":version.name,"evidence":"active_package_dump"})
+        }
+        None => json!({"status":"unknown"}),
+    };
+    json!({"id":details.app.id,"component":details.app.component,"version":version,
+        "native_search":search,"runtime_acceptance":"unknown","url_support":"requires_specific_uri_resolution"})
 }
 fn app(a: &App) -> Value {
     let mut v = json!({"id":a.id,"component":a.component});
@@ -528,13 +550,45 @@ pub fn extend_tools(tools: &mut Value) {
         }
     });
     actions.push(json!({"type":"object","properties":{"type":{"enum":simple}},"required":["type"],"additionalProperties":false}));
-    list.push(json!({"name":"tv_read","description":"Read TV. Volume: stream 3 index/max. Untrusted text.","inputSchema":{"type":"object","properties":{"device":{"type":"string","pattern":"^[A-Za-z0-9_-]{1,64}$"},"expires_at_unix_ms":{"type":"integer","minimum":1},"read":{"oneOf":[{"type":"object","properties":{"type":{"enum":["state","volume","power","media","remote_capabilities","ui","screenshot"]}},"required":["type"],"additionalProperties":false},{"type":"object","properties":{"type":{"const":"apps"},"query":{"type":"string","maxLength":200},"since":{"type":"string","maxLength":64},"limit":{"type":"integer","minimum":1,"maximum":32,"default":12},"refresh":{"type":"boolean","default":false}},"required":["type"],"additionalProperties":false}]}},"required":["device","expires_at_unix_ms","read"],"additionalProperties":false},"annotations":{"readOnlyHint":true,"openWorldHint":false}}));
+    list.push(json!({"name":"tv_read","description":"Read TV. Volume: stream 3 index/max. Untrusted text.","inputSchema":{"type":"object","properties":{"device":{"type":"string","pattern":"^[A-Za-z0-9_-]{1,64}$"},"expires_at_unix_ms":{"type":"integer","minimum":1},"read":{"oneOf":[{"type":"object","properties":{"type":{"const":"app_details"},"app":{"type":"string","minLength":1,"maxLength":512}},"required":["type","app"],"additionalProperties":false},{"type":"object","properties":{"type":{"enum":["state","volume","power","media","remote_capabilities","ui","screenshot"]}},"required":["type"],"additionalProperties":false},{"type":"object","properties":{"type":{"const":"apps"},"query":{"type":"string","maxLength":200},"since":{"type":"string","maxLength":64},"limit":{"type":"integer","minimum":1,"maximum":32,"default":12},"refresh":{"type":"boolean","default":false}},"required":["type"],"additionalProperties":false}]}},"required":["device","expires_at_unix_ms","read"],"additionalProperties":false},"annotations":{"readOnlyHint":true,"openWorldHint":false}}));
     list.push(json!({"name":"tv_operation","description":"Recover/cancel; no rollback.","inputSchema":{"type":"object","properties":{"request_id":{"type":"string","pattern":"^[A-Za-z0-9_-]{1,64}$"},"cancel":{"type":"boolean","default":false}},"required":["request_id"],"additionalProperties":false},"annotations":{"readOnlyHint":false,"destructiveHint":false,"idempotentHint":true,"openWorldHint":false}}));
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn app_details_wire_is_closed_and_does_not_claim_runtime_or_url_support() {
+        let args = json!({"device":"screen","expires_at_unix_ms":1,"read":{"type":"app_details","app":"org.example.player"}});
+        assert!(matches!(
+            Call::parse("tv_read", args.clone()).unwrap(),
+            Call::Read(ReadRequest {
+                read: Read::AppDetails { .. },
+                ..
+            })
+        ));
+        let mut extra = args;
+        extra["read"]["url"] = json!("https://example.org");
+        assert!(Call::parse("tv_read", extra).is_err());
+        let details = AppDetails {
+            app: App {
+                id: "org.example.player".into(),
+                component: "org.example.player/.Main".into(),
+                label: None,
+                search_component: Some("org.example.player/.Search".into()),
+            },
+            version: None,
+            native_search: NativeSearch::Unsupported,
+        };
+        let value = app_details(&details);
+        assert_eq!(value["id"], "org.example.player");
+        assert_eq!(value["version"]["status"], "unknown");
+        assert_eq!(value["native_search"]["status"], "unsupported");
+        assert_eq!(value["runtime_acceptance"], "unknown");
+        assert_eq!(value["url_support"], "requires_specific_uri_resolution");
+        assert!(value.get("search").is_none());
+        assert!(value.to_string().len() < 1024);
+    }
     #[test]
     fn media_wire_is_typed_and_rejects_unsupported_transport_commands() {
         for command in ["pause", "resume", "next", "previous"] {

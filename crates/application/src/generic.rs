@@ -15,6 +15,9 @@ pub trait Device: Send + Sync {
     ) -> PortResult<Vec<App>> {
         self.apps(device, ctx)
     }
+    fn app_details(&self, _device: &str, _app: &App, _ctx: &Context<'_>) -> PortResult<AppDetails> {
+        Err(tv_domain::Failure::before("unsupported"))
+    }
     fn observe(&self, device: &str, ctx: &Context<'_>) -> PortResult<Observed>;
     fn observe_for(
         &self,
@@ -308,6 +311,24 @@ impl<D: Device, C: Clock> Control for Service<D, C> {
         self.device.resource(&req.device)?;
         let ctx = self.context(req.expires_at_unix_ms, cancel)?;
         let result = match req.read {
+            Read::AppDetails { app } => {
+                if !valid_text(&app, 512) {
+                    return Err(Failure::before("invalid_app"));
+                }
+                // Refresh identity rather than reusing a potentially removed/replaced app.
+                // Details accept only exact discovered IDs/components, never fuzzy labels.
+                let (apps, _) = self.catalogue(&req.device, true, Some(&app), &ctx)?;
+                let matches: Vec<_> = apps
+                    .iter()
+                    .filter(|a| a.id == app || a.component == app)
+                    .collect();
+                let selected = match matches.as_slice() {
+                    [selected] => *selected,
+                    [] => return Err(Failure::before("app_not_found")),
+                    _ => return Err(Failure::before("app_ambiguous")),
+                };
+                Data::AppDetails(self.device.app_details(&req.device, selected, &ctx)?)
+            }
             Read::Media => {
                 let mut sessions = self.device.media(&req.device, &ctx)?;
                 let truncated = sessions.len() > 8;

@@ -549,3 +549,32 @@ that journal before using this version with Jellyfin. Concurrent old/new readers
 and downgrade after writing source-aware receipts are not supported. Do not
 remove a journal to work around this: it contains no-replay evidence for uncertain
 commands. This change does not migrate credentials or change account access.
+
+### Selected app details (read-only)
+
+After discovering apps, request `tv_read` with
+`read: {"type":"app_details","app":"org.example.player"}` and the usual device
+and deadline. Use an exact returned ID, or the returned component when an ID has
+multiple launchers. Labels and partial names are not accepted here. This read
+refreshes discovery and does not cache versions or capabilities. It never launches
+an app, searches, opens a URL, or injects input; no generic mutation grant is needed.
+
+The result preserves the discovered `id` and launcher `component`. `version` is
+`observed` only when a bounded package dump has one unambiguous active package
+record, with numeric `code` and optional `name`. Factory versions under **Hidden
+system packages** are not the installed active version. Missing, unfamiliar or
+ambiguous evidence yields `version.status: "unknown"`.
+
+`native_search.status` is `handler_resolved` (with its component) only when a fresh
+package-restricted ACTION_SEARCH resolution names a component inside that package;
+`unsupported` means the platform explicitly returned no activity, and `unknown`
+means resolution could not establish either outcome. This does not use a launcher
+fallback as search evidence. `runtime_acceptance` always remains `unknown`: a
+resolved handler need not process the query. These are sequential observations,
+not an atomic guarantee against app updates. Existing search dispatch behavior is
+unchanged by this read.
+
+`url_support` is `requires_specific_uri_resolution`. Resolving an arbitrary example
+URL cannot prove general URL support; a particular URI must be resolved separately.
+Output/transport/deadline failures remain bounded errors, not negative capability
+claims. Platform read-command failures can leave individual evidence unknown.

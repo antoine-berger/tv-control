@@ -102,3 +102,20 @@ qualification is implied by fixture success.
 Journey cleanup uses the private fixture's owned shutdown handshake instead of
 signalling stale saved process IDs or groups. The integrated terminal and runtime
 fixtures exercise this ownership boundary without touching a real TV or account.
+
+## Read-only app details (v0.4.9 source candidate)
+
+App details describe the freshly discovered current-user app, its active package
+version and package-scoped native SEARCH resolver evidence. Hidden factory
+versions, ambiguous records, failed reads and unknown output formats cannot
+become affirmative capability evidence. A resolved handler is not proof that an
+app accepts a query, displays results or can be controlled through that intent.
+
+The read does not launch an activity, modify search dispatch/configuration, cache
+capabilities, reserve a mutation journal or invalidate an existing UI reference.
+The cross-feature regression preserves reference activation after reading details
+and checks that handler evidence does not rewrite the selected app's search field.
+The generic core has no per-app fallback or hardcoded application exceptions.
+Existing minimum-frame paginated discovery and installer proof checks remain
+required. These offline results do not qualify actual app behavior on hardware.
+No native text helper prototype is included in this source candidate.
