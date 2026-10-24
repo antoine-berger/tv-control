@@ -1,0 +1,78 @@
+import java.io.*;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.*;
+import java.util.Arrays;
+
+// Runs the actual Request constructor/text decoder, not an Android runtime.
+public final class ProtocolDecoder {
+    static final class Rect {
+        final int left, top, right, bottom;
+        Rect(int l, int t, int r, int b) { left=l; top=t; right=r; bottom=b; }
+    }
+    @REQUEST_DECODER@
+
+    static Request decode(byte[] bytes) throws Exception {
+        return new Request(new DataInputStream(new ByteArrayInputStream(bytes)));
+    }
+    static void require(boolean condition, String label) {
+        if (!condition) throw new AssertionError(label);
+    }
+    static void refuses(byte[] bytes) throws Exception {
+        try { decode(bytes); } catch (Exception expected) { return; }
+        throw new AssertionError("malformed request accepted");
+    }
+    static byte[] hex(Path path) throws Exception {
+        String text = new String(Files.readAllBytes(path), StandardCharsets.US_ASCII).trim();
+        require(text.length()%2==0, "hex length");
+        byte[] bytes = new byte[text.length()/2];
+        for (int i=0;i<bytes.length;i++) {
+            int high=Character.digit(text.charAt(i*2),16), low=Character.digit(text.charAt(i*2+1),16);
+            require(high>=0 && low>=0,"hex digits"); bytes[i]=(byte)((high<<4)|low);
+        }
+        return bytes;
+    }
+    static void field(DataOutputStream out, byte[] bytes) throws Exception {
+        out.writeInt(bytes.length); out.write(bytes);
+    }
+    static byte[] alteredText(byte[] before, byte[] after) throws Exception {
+        ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+        DataOutputStream out = new DataOutputStream(bytes);
+        out.writeInt(0x54564e31); out.writeLong(1400);
+        for (String s : new String[]{"example.pkg", "example.pkg:id/editor", "android.widget.EditText"})
+            field(out,s.getBytes(StandardCharsets.UTF_8));
+        for (int n : new int[]{7,-2,3,101,55}) out.writeInt(n);
+        field(out,before); field(out,after); return bytes.toByteArray();
+    }
+    public static void main(String[] args) throws Exception {
+        byte[] bytes=hex(Paths.get(args[0]));
+        Request r=decode(bytes);
+        require(r.expires==1400,"expiry");
+        require(r.pkg.equals("example.pkg"),"package");
+        require(r.resource.equals("example.pkg:id/editor"),"resource");
+        require(r.role.equals("android.widget.EditText"),"class");
+        require(r.window==7,"window");
+        require(r.bounds.left==-2 && r.bounds.top==3 && r.bounds.right==101 && r.bounds.bottom==55,"bounds");
+        require(r.before.equals("Pré🙂"),"before UTF-8");
+        require(r.after.equals("Pré🙂 Tanya %s'\""),"after UTF-8");
+        int rejections=0;
+        for (int i=0;i<bytes.length;i++) { refuses(Arrays.copyOf(bytes,i)); rejections++; }
+        refuses(Arrays.copyOf(bytes,bytes.length+1)); rejections++;
+        byte[] bad=bytes.clone(); bad[0]^=1; refuses(bad); rejections++;
+        // First field length is at offset12. Negative and >2048 lengths refuse.
+        bad=bytes.clone(); Arrays.fill(bad,12,16,(byte)0xff); refuses(bad); rejections++;
+        bad=bytes.clone(); bad[12]=0;bad[13]=0;bad[14]=8;bad[15]=1; refuses(bad); rejections++;
+        // Overlong UTF-8, isolated continuation, surrogate encoding and truncated scalar.
+        for (byte[] malformed : new byte[][] {
+            {(byte)0xc0,(byte)0xaf}, {(byte)0x80}, {(byte)0xed,(byte)0xa0,(byte)0x80}, {(byte)0xf0,(byte)0x9f}
+        }) {
+            refuses(alteredText(malformed,new byte[]{65})); rejections++;
+            refuses(alteredText(new byte[0],malformed)); rejections++;
+        }
+        refuses(alteredText(new byte[]{65},new byte[]{66})); rejections++;
+        refuses(alteredText(new byte[]{65},new byte[]{65})); rejections++;
+        refuses(alteredText(new byte[0],new byte[0])); rejections++;
+        String tooLong=new String(new char[129]).replace("\0","🙂");
+        refuses(alteredText(new byte[0],tooLong.getBytes(StandardCharsets.UTF_8))); rejections++;
+        System.out.println("Shared full protocol golden decoded; "+rejections+" malformed/truncated requests rejected (algorithm-only)");
+    }
+}

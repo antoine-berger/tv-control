@@ -1,0 +1,69 @@
+name: Isolated native text API31 proof
+# Deliberate opt-in publication only. Never runs from main, tags or pull requests.
+on:
+  push:
+    branches: [qa/native-text-runtime]
+    paths:
+      - native-text/**
+      - .github/workflows/native-text-runtime.yml
+permissions:
+  contents: read
+concurrency:
+  group: native-text-runtime-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  owned-emulator:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    env:
+      TV_NATIVE_OWNED_AVD: api31-disposable
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: Check pre-existing licensed SDK and hosted JDK
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -x "$JAVA_HOME_21_X64/bin/java"
+          test -s "$ANDROID_HOME/licenses/android-sdk-license"
+          # No permission, ACL or group changes. Fail clearly if acceleration is unavailable.
+          if ! test -c /dev/kvm || ! test -r /dev/kvm || ! test -w /dev/kvm; then
+            echo "Blocked: hosted runner lacks pre-existing KVM access; no permissions changed."
+            exit 1
+          fi
+      - name: Provision checksum-pinned official SDK packages without accepting licenses
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 native-text/emulator/provision.py \
+            --sdk "$RUNNER_TEMP/native-runtime-sdk" \
+            --existing-licenses "$ANDROID_HOME/licenses"
+      - name: Pure protocol and guard tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 native-text/tests/test_focus_guards.py --java "$JAVA_HOME_21_X64/bin/java"
+          python3 native-text/tests/protocol_decoder.py --java "$JAVA_HOME_21_X64/bin/java"
+          cargo test --manifest-path native-text/host/Cargo.toml --locked --offline
+      - name: Build project-owned fixture and instrumentation APKs
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 native-text/emulator/build_runtime.py \
+            --sdk "$RUNNER_TEMP/native-runtime-sdk" \
+            --java "$JAVA_HOME_21_X64/bin/java" \
+            --out "$RUNNER_TEMP/native-runtime-build"
+      - name: Test only fresh owned API31 emulator, audio disabled
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 native-text/emulator/run_proof.py \
+            --sdk "$RUNNER_TEMP/native-runtime-sdk" \
+            --build "$RUNNER_TEMP/native-runtime-build" \
+            --work "$RUNNER_TEMP/native-runtime-avd"
+      - name: Remove only this job's owned temporary artifacts
+        if: always()
+        shell: bash
+        run: |
+          rm -rf -- "$RUNNER_TEMP/native-runtime-sdk" "$RUNNER_TEMP/native-runtime-build" "$RUNNER_TEMP/native-runtime-avd"

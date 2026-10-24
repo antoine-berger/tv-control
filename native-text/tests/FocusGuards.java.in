@@ -1,0 +1,87 @@
+import java.util.*;
+// Algorithm-only fakes: not an Android runtime, Binder, accessibility or OEM test.
+public final class FocusGuards {
+    // Android public InputType constant values; real SDK compilation is separate.
+    static class InputType {
+        static final int TYPE_MASK_CLASS = 0xf, TYPE_MASK_VARIATION = 0xff0;
+        static final int TYPE_CLASS_TEXT = 1, TYPE_CLASS_NUMBER = 2;
+        static final int TYPE_TEXT_VARIATION_PASSWORD = 0x80;
+        static final int TYPE_TEXT_VARIATION_VISIBLE_PASSWORD = 0x90;
+        static final int TYPE_TEXT_VARIATION_WEB_PASSWORD = 0xe0;
+        static final int TYPE_NUMBER_VARIATION_PASSWORD = 0x10;
+    }
+    static class Node {
+        int id, selectionStart, selectionEnd, actions = ACTION_SET_TEXT;
+        static final int ACTION_SET_TEXT = 0x200000;
+        boolean focused, refreshed, refreshSucceeds = true, loseFocusOnRefresh;
+        Node parent;
+        ArrayList<Node> children = new ArrayList<>();
+        Node(int id, boolean focused) { this.id = id; this.focused = focused; }
+        static Node obtain(Node n) { return n; }
+        Node getParent() { return parent; }
+        void recycle() { }
+        int getChildCount() { return children.size(); }
+        Node getChild(int i) { return children.get(i); }
+        boolean isFocused() { return focused; }
+        boolean refresh() {
+            refreshed = true;
+            if (loseFocusOnRefresh) focused = false;
+            return refreshSucceeds;
+        }
+        int getTextSelectionStart() { return selectionStart; }
+        int getTextSelectionEnd() { return selectionEnd; }
+        int getActions() { return actions; }
+        public boolean equals(Object value) { return value instanceof Node && ((Node)value).id == id; }
+        public int hashCode() { return id; }
+    }
+    static class Request {
+        String before = "";
+        boolean identityMatches = true;
+        boolean matches(Node n, String text) { return n.refreshed && n.focused && identityMatches; }
+    }
+    // Methods below are extracted from the production helper at test time.
+    // Only the Android type name is replaced with Node. No algorithm copy.
+    @METHODS@
+
+    static void require(boolean condition, String label) {
+        if (!condition) throw new AssertionError(label);
+    }
+    static Node tree(Node... children) {
+        Node root = new Node(0, false);
+        for (Node child : children) { root.children.add(child); if (child != null) child.parent = root; }
+        return root;
+    }
+    public static void main(String[] args) {
+        for (int type : new int[] {0x81, 0x91, 0xe1, 0x12, 0x80091})
+            require(sensitiveInputType(type), "password input variation must refuse");
+        for (int type : new int[] {0, 1, 2, 0x21, 0x31, 0x20001})
+            require(!sensitiveInputType(type), "ordinary input variation not classified password");
+        Node selected = new Node(1, true);
+        tree(selected);
+        require(uniqueFocus(selected), "same sole focus must pass");
+        Node stale = new Node(1, true);
+        Node root = tree(new Node(1, false), new Node(2, true));
+        stale.parent = root;
+        require(!uniqueFocus(stale), "different sole focus must refuse stale selected node");
+        tree(selected, new Node(2, true));
+        require(!uniqueFocus(selected), "multiple focus must refuse");
+        tree(selected, null);
+        require(!uniqueFocus(selected), "missing accessible child must refuse");
+        selected = new Node(1, true); tree(selected);
+        selected.loseFocusOnRefresh = true;
+        require(uniqueFocus(selected), "focus existed during traversal");
+        require(!readyToDispatch(selected, new Request()), "focus changed after traversal must refuse");
+        selected = new Node(1, true);
+        require(readyToDispatch(selected, new Request()), "fresh exact target may dispatch");
+        selected.selectionStart = 1;
+        require(!readyToDispatch(selected, new Request()), "selection changed after traversal must refuse");
+        selected.selectionStart = 0; selected.actions = 0;
+        require(!readyToDispatch(selected, new Request()), "lost action capability must refuse");
+        selected.actions = Node.ACTION_SET_TEXT;
+        Request request = new Request(); request.identityMatches = false;
+        require(!readyToDispatch(selected, request), "identity changed after traversal must refuse");
+        selected.refreshSucceeds = false;
+        require(!readyToDispatch(selected, new Request()), "refresh failure must refuse");
+        System.out.println("21 focus/last-boundary/password algorithm checks passed (not Android runtime tests)");
+    }
+}

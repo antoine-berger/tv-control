@@ -1,0 +1,11 @@
+[package]
+name = "tv-native-text-prototype"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[workspace]
+
+[dependencies]
+tv-domain = { path = "../../crates/domain" }
+tv-application = { path = "../../crates/application" }
