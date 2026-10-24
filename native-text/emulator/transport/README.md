@@ -1,9 +1,14 @@
 # Lab transport implementation: host-tested components
 
-Java ingress, IPC client and a separate API31 lab manifest/builder now exist as
-host-tested source. The full host integration is a separate reviewed lot. There
-are no transport APKs or runtime qualification yet. It is not usable as a
-qualified typing transport and is not part of a release. The independently reviewed
+The current API31 connectivity probe is blocked by a conservative native
+permission stop signal. Its [runtime evidence and limits](CONNECTIVITY_EVIDENCE.md)
+do not qualify host transport or integrated typing. That route is stopped.
+
+Java ingress, IPC client, host launcher and a separate API31 lab manifest/builder
+exist as reviewed, host-tested source. A private lab APK was built for the
+connectivity probe; that failed probe does not provide runtime qualification.
+No transport APK is distributed in a product release. This is not usable as a
+qualified typing transport. The independently reviewed
 [design](../LAB_TRANSPORT_DESIGN.md) remains the integration contract.
 
 * LabProtocol parses complete bounded binary frames with closed commands/reasons,
