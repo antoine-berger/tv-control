@@ -1,9 +1,9 @@
 # Lab transport implementation: host-tested components
 
-The implementation is incomplete: the Java client, manifest/build wiring and full
-host integration are still being assembled. There are no transport APKs or runtime
-qualification. It is not usable
-as a typing transport and is not part of a release. The independently reviewed
+Java ingress, IPC client and a separate API31 lab manifest/builder now exist as
+host-tested source. The full host integration is a separate reviewed lot. There
+are no transport APKs or runtime qualification yet. It is not usable as a
+qualified typing transport and is not part of a release. The independently reviewed
 [design](../LAB_TRANSPORT_DESIGN.md) remains the integration contract.
 
 * LabProtocol parses complete bounded binary frames with closed commands/reasons,
@@ -57,6 +57,8 @@ python3.14 native-text/emulator/transport/test_private_request.py --java "$JAVA_
 python3.14 native-text/emulator/transport/test_socket_io.py --java "$JAVA_HOME/bin/java"
 python3.14 native-text/emulator/transport/test_session.py --java "$JAVA_HOME/bin/java"
 python3.14 native-text/emulator/transport/test_lab_entry.py --java "$JAVA_HOME/bin/java"
+python3.14 native-text/emulator/transport/test_socket_client.py --java "$JAVA_HOME/bin/java"
+python3.14 -W error::ResourceWarning native-text/emulator/transport/test_build_lab.py
 ```
 
 The checks cover malformed/truncated/noncanonical frames and bounds, nonce copies,
@@ -98,3 +100,34 @@ The final Bundle is emitted only after bounded watcher join and attempted socket
 cache closure with explicit proofs. The Bundle attests those owned resources;
 the host must separately require the remote shell's client wait/reap witness.
 Tests use fake ports/cache/editor/engine and do not qualify a remote lifecycle.
+
+The Java client authenticates the kernel peer UID before reading stdin. It keeps
+stdin open after COMMIT and treats EOF as cancellation. Only bounded binary REF/
+CHANNEL_CLOSED frames reach stdout. A stopped partial frame or a decoded late
+invalid/cancelled frame cannot silently become successful closure. The client
+joins its stdin worker and closes its socket before emitting CHANNEL_CLOSED;
+an unresolved worker yields a nonzero exit, never verified cleanup. Borrowed
+stdio is not closed. A child exit still requires the separate owner wait witness.
+
+## Unexecuted API31 lab build source
+
+LabManifest.xml contains only the self-targeted LabSocketInstrumentation and its
+application: no activity/service/provider/receiver, uses-permission, debuggable
+flag or exported typing endpoint. The target is only the disposable fixture.
+build_lab.py is Darwin ARM64 lab tooling, not an installer. Before its first tool
+call it checks the existing private SDK/baseline-build receipt, all recorded SDK
+hashes, the approved private Java archive, API31/build-tools coverage and a clean
+checkout at the explicitly reviewed commit. It performs no download or license
+acceptance and never invokes adb/emulator. The baseline build is checked only as
+existing provenance; it is not silently replaced by this distinct lab artifact.
+
+The separate lab-helper.apk includes the client and wrapper. Its single signing
+certificate must match the locally generated disposable certificate, verified
+through apksigner; the private test key is removed before the new receipt is
+written. lab-build-receipt.json binds schema1, lab_package,
+instrumentation_component, source_commit, sdk_provenance_sha256, lab_apk_sha256,
+lab_certificate_sha256 and owner_sha256. The certificate is never learned from
+the device. APK/signing/owner pins remain an additional gate for later host
+staging/PM reads, not permission to install on a TV. Builder host tests mock every
+executable call; Android compilation and signing remain unexecuted until the
+root-controlled review/build gate.

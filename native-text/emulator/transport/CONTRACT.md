@@ -1,8 +1,8 @@
 # Lab host / Java interface v1
 
-Frozen for parallel implementation review. It is not an implemented or qualified
-IPC/client/host transport yet. The pure command codec already exists; response,
-socket and remote-owner layers remain separate work. All channels belong to the
+Frozen for parallel implementation review. Java IPC/client/entrypoint and the
+remote-owner source now have host/fake tests; the whole transport has not been
+compiled or qualified on Android. Host integration remains a separate lot. All channels belong to the
 same exclusively operated disposable AVD; same-UID impersonation is not prevented.
 
 ## Final Instrumentation Bundle
@@ -38,6 +38,10 @@ aborts and closes the same owner without another route/retry. Peer UID is checke
 before payload. Never use the timeout overload or hidden FD factories. A socket
 never opened must not be closed through LocalSocket.close, which lazily creates
 an FD; attempted/unknown allocation remains cleanup unverified.
+This public pre-bind path follows API31 [LocalSocket](https://android.googlesource.com/platform/frameworks/base/+/refs/tags/android-12.0.0_r1/core/java/android/net/LocalSocket.java),
+[LocalSocketImpl JNI](https://android.googlesource.com/platform/frameworks/base/+/refs/tags/android-12.0.0_r1/core/jni/android_net_LocalSocketImpl.cpp)
+and [cutils single-connect](https://android.googlesource.com/platform/system/core/+/refs/tags/android-12.0.0_r1/libcutils/socket_local_client_unix.cpp)
+source. It is not a SELinux workaround: a denied bind/connect ends the experiment.
 
 The Bundle cleanup field attests the **server wrapper's** owned watcher/FD/cache
 cleanup before finish. It does not prove the separately running client died.
