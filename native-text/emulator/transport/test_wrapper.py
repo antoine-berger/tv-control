@@ -11,6 +11,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from owned_runtime import command
 
 STUBS = {
+    "android/os/SystemClock.java": "package android.os; public class SystemClock { public static long time=100; public static long uptimeMillis(){return time;} }",
     "android/os/Bundle.java": r'''
 package android.os;
 public class Bundle {
@@ -65,6 +66,7 @@ public class Instrumentation {
     }
     public UiAutomation getUiAutomation(int flags) {
         events.add("connect"); lastFlags=flags;
+        android.os.SystemClock.time+=1000;
         if(connectThrows) throw new IllegalStateException("fixture-private-value");
         return nullAutomation ? null : new UiAutomation();
     }
