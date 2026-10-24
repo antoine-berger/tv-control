@@ -18,7 +18,10 @@ pub(super) fn compact(action: &mut Value) {
         };
         for (name, constraint) in properties {
             if name != "type" {
-                candidates.entry(name.clone()).or_default().push(constraint.clone());
+                candidates
+                    .entry(name.clone())
+                    .or_default()
+                    .push(constraint.clone());
             }
         }
     }
@@ -26,7 +29,10 @@ pub(super) fn compact(action: &mut Value) {
         .into_iter()
         .filter_map(|(name, constraints)| {
             let first = constraints.first()?;
-            constraints.iter().all(|c| c == first).then(|| (name, first.clone()))
+            constraints
+                .iter()
+                .all(|c| c == first)
+                .then(|| (name, first.clone()))
         })
         .collect();
     for variant in variants.iter_mut() {
@@ -36,7 +42,8 @@ pub(super) fn compact(action: &mut Value) {
         if required.is_some_and(|required| {
             required.len() == properties.len()
                 && required.iter().all(|name| {
-                    name.as_str().is_some_and(|name| properties.contains_key(name))
+                    name.as_str()
+                        .is_some_and(|name| properties.contains_key(name))
                 })
         }) {
             // A closed shape with N possible keys and at least N keys requires
@@ -72,7 +79,10 @@ mod tests {
         let original = value.clone();
         compact(&mut value);
         assert_eq!(value["type"], "object");
-        assert_eq!(value["properties"]["id"], original["oneOf"][0]["properties"]["id"]);
+        assert_eq!(
+            value["properties"]["id"],
+            original["oneOf"][0]["properties"]["id"]
+        );
         assert!(value["properties"].get("index").is_none());
         for (i, branch) in value["oneOf"].as_array().unwrap().iter().enumerate() {
             assert_eq!(branch["properties"]["id"], json!({}));
@@ -83,7 +93,10 @@ mod tests {
             } else {
                 assert_eq!(branch["required"], original["oneOf"][i]["required"]);
             }
-            assert_eq!(branch["properties"]["index"], original["oneOf"][i]["properties"]["index"]);
+            assert_eq!(
+                branch["properties"]["index"],
+                original["oneOf"][i]["properties"]["index"]
+            );
         }
     }
 

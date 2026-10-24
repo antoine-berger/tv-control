@@ -45,6 +45,7 @@ jobs:
       - run: python3 -W error::ResourceWarning scripts/test_mcp.py target/release/tv-control
       - run: python3 -W error::ResourceWarning scripts/test_media_read.py target/release/tv-control
       - run: python3 -W error::ResourceWarning scripts/test_generic_mcp.py target/release/tv-control
+      - run: python3 -W error::ResourceWarning scripts/test_advanced_mcp.py target/release/tv-control
       - run: python3 -W error::ResourceWarning scripts/test_onboarding.py target/release/tv-control
       - run: python3 -W error::ResourceWarning scripts/test_install_flow.py target/release/tv-control
       - run: python3 -W error::ResourceWarning scripts/test_zero_arg_ux.py target/release/tv-control

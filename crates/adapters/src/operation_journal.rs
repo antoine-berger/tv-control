@@ -169,9 +169,9 @@ struct StateWire {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     media_source_id: Option<String>,
     position_ticks: Option<u64>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     audio_index: Option<i32>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     subtitle_index: Option<i32>,
     #[serde(default)]
     awake: Option<bool>,

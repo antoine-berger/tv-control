@@ -546,7 +546,7 @@ source fields are not written as new null keys. Journals containing non-null
 `media_source_id` (including Jellyfin observations saved in control receipts)
 require the updated reader. New relative/percentage volume intents and track-aware
 receipts also require the updated reader once written. Upgrade/restart **all** CLI/bridge processes sharing
-that journal before using this version with Jellyfin. Concurrent old/new readers
+that journal before using the new volume or Jellyfin controls. Concurrent old/new readers
 and downgrade after writing source-aware receipts are not supported. Do not
 remove a journal to work around this: it contains no-replay evidence for uncertain
 commands. This change does not migrate credentials or change account access.

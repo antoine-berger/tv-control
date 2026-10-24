@@ -132,6 +132,7 @@ fn capabilities(cfg: &Config) -> Value {
                 "observe":true,"open_app":false,"pause":true,"resume":true,"set_volume":false,"mute":false,"resume_media":true,"media_read":true,"play_item":"client_capability_and_source_dependent","seek_media":"client_can_seek_and_source_dependent","seek_relative":"fresh_position_client_can_seek_and_source_dependent","select_audio_track":"fresh_client_command_and_source_dependent","select_subtitle_track":"fresh_client_command_and_source_dependent","adjust_volume":false,"set_volume_percent":false},"qualification":"requires_patched_server_and_compatible_client"})
         }).collect::<Vec<_>>(),"apps":cfg.apps.keys().collect::<Vec<_>>(),"media":cfg.media.keys().collect::<Vec<_>>(),"workflows":cfg.workflows.keys().collect::<Vec<_>>()})
 }
+
 fn run() -> Result<i32, &'static str> {
     let args: Vec<_> = std::env::args().collect();
     if args.get(1).is_some_and(|s| s == "onboard")
@@ -303,6 +304,41 @@ fn main() {
                 eprintln!("tv-control: {code}");
             }
             std::process::exit(1);
+        }
+    }
+}
+
+#[cfg(test)]
+mod capability_tests {
+    use super::*;
+
+    #[test]
+    fn new_controls_advertise_backend_and_grant_limits_without_device_access() {
+        let mut cfg = Config::from_json(include_bytes!("../../../examples/config.json")).unwrap();
+        for granted in [false, true] {
+            cfg.generic_adb_control = granted;
+            let value = capabilities(&cfg);
+            for device in value["devices"].as_array().unwrap() {
+                let actions = &device["actions"];
+                if device["adapter"] == "adb" {
+                    assert_eq!(actions["adjust_volume"].is_string(), granted);
+                    assert_eq!(actions["set_volume_percent"].is_string(), granted);
+                    assert_eq!(actions["seek_relative"], false);
+                    assert_eq!(actions["select_audio_track"], false);
+                    assert_eq!(actions["select_subtitle_track"], false);
+                } else {
+                    assert_eq!(actions["adjust_volume"], false);
+                    assert_eq!(actions["set_volume_percent"], false);
+                    for action in [
+                        "seek_relative",
+                        "select_audio_track",
+                        "select_subtitle_track",
+                    ] {
+                        assert!(actions[action].is_string());
+                        assert!(actions[action].as_str().unwrap().contains("dependent"));
+                    }
+                }
+            }
         }
     }
 }

@@ -1,6 +1,6 @@
 # Development
 
-Build on Linux or macOS Apple Silicon with a stable Rust toolchain and native linker. Python 3
+Build on Linux or macOS Apple Silicon with a stable Rust toolchain and native linker. Python 3.11+
 is used for repository checks and stdio integration fixtures. CI tests native Linux
 and macOS Apple Silicon builds and cross-builds Linux x86-64 and ARM64 musl candidates; it does not run on a
 router or TV. Build a source checkout with:
@@ -113,6 +113,7 @@ python3 -W error::ResourceWarning scripts/test_verify_public_release.py
 python3 -W error::ResourceWarning scripts/test_installer.py
 python3 -W error::ResourceWarning scripts/test_mcp.py target/release/tv-control
 python3 -W error::ResourceWarning scripts/test_generic_mcp.py target/release/tv-control
+python3 -W error::ResourceWarning scripts/test_advanced_mcp.py target/release/tv-control
 python3 -W error::ResourceWarning scripts/test_media_read.py target/release/tv-control
 python3 -W error::ResourceWarning scripts/test_onboarding.py target/release/tv-control
 python3 -W error::ResourceWarning scripts/test_install_flow.py target/release/tv-control

@@ -23,6 +23,30 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 
 
 class Volume(generic.GenericMcp):
+    def test_schema_pagination_with_long_rpc_id_fits_minimum_frame(self):
+        self.close_process()
+        config = json.loads(self.config.read_text())
+        config["preferences"]["max_output_bytes"] = 4096
+        self.config.write_text(json.dumps(config))
+        self.start()
+        cursor = None
+        tools = []
+        while True:
+            identity = "x" * 64
+            self.write({"jsonrpc": "2.0", "id": identity, "method": "tools/list",
+                        "params": {} if cursor is None else {"cursor": cursor}})
+            line = self.process.stdout.readline()
+            self.assertLess(len(line), 4096)
+            reply = json.loads(line)
+            self.assertEqual(reply["id"], identity)
+            self.assertNotIn("error", reply)
+            tools += reply["result"]["tools"]
+            cursor = reply["result"].get("nextCursor")
+            if cursor is None:
+                break
+        self.assertIn("tv_control", [tool["name"] for tool in tools])
+        self.assertEqual(len(tools), 5)
+
     def test_native_scale_targets_survive_restart_and_reject_conflict(self):
         path = self.root / "state.json"
         state = json.loads(path.read_text())

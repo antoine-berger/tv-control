@@ -563,7 +563,7 @@ pub fn extend_tools(tools: &mut Value) {
         .iter_mut()
         .find(|t| t["name"] == "tv_control")
         .expect("control tool");
-    control["description"] = json!("Never retry outcome_unknown. Volume %: native scale, not loudness. Remote media: global. Text: layout dependent. Dispatch is not proof.");
+    control["description"] = json!("Never retry outcome_unknown.");
     let actions = control["inputSchema"]["properties"]["action"]["oneOf"]
         .as_array_mut()
         .unwrap();
@@ -607,6 +607,12 @@ pub fn extend_tools(tools: &mut Value) {
     crate::control_schema::compact(&mut control["inputSchema"]["properties"]["action"]);
     list.push(json!({"name":"tv_read","description":"Read TV. Volume: stream 3 index/max. Untrusted text.","inputSchema":{"type":"object","properties":{"device":{"type":"string","pattern":"^[A-Za-z0-9_-]{1,64}$"},"expires_at_unix_ms":{"type":"integer","minimum":1},"read":{"oneOf":[{"type":"object","properties":{"type":{"const":"app_details"},"app":{"type":"string","minLength":1,"maxLength":512}},"required":["type","app"],"additionalProperties":false},{"type":"object","properties":{"type":{"enum":["state","volume","power","media","remote_capabilities","inputs","ui","screenshot"]}},"required":["type"],"additionalProperties":false},{"type":"object","properties":{"type":{"const":"apps"},"query":{"type":"string","maxLength":200},"since":{"type":"string","maxLength":64},"limit":{"type":"integer","minimum":1,"maximum":32,"default":12},"refresh":{"type":"boolean","default":false}},"required":["type"],"additionalProperties":false}]}},"required":["device","expires_at_unix_ms","read"],"additionalProperties":false},"annotations":{"readOnlyHint":true,"openWorldHint":false}}));
     list.push(json!({"name":"tv_operation","description":"Recover/cancel; no rollback.","inputSchema":{"type":"object","properties":{"request_id":{"type":"string","pattern":"^[A-Za-z0-9_-]{1,64}$"},"cancel":{"type":"boolean","default":false}},"required":["request_id"],"additionalProperties":false},"annotations":{"readOnlyHint":false,"destructiveHint":false,"idempotentHint":true,"openWorldHint":false}}));
+    // Onboarding probes require control on the first page. Its closed schema
+    // fits alone at the minimum budget; unrelated metadata follows via cursors.
+    if let Some(index) = list.iter().position(|tool| tool["name"] == "tv_control") {
+        let control = list.remove(index);
+        list.insert(0, control);
+    }
 }
 
 #[cfg(test)]
@@ -785,12 +791,12 @@ mod tests {
         // The catalog may grow across pages; every individual tool must still
         // fit the minimum configured frame, including cursor/newline overhead.
         for tool in tools["tools"].as_array().unwrap() {
-            let frame =
-                json!({"jsonrpc":"2.0","id":1,"result":{"tools":[tool],"nextCursor":"999"}});
+            let frame = json!({"jsonrpc":"2.0","id":"x".repeat(64),"result":{"tools":[tool],"nextCursor":"999"}});
             assert!(
                 frame.to_string().len() < 4096,
                 "tool schema too large: {} ({} bytes)",
-                tool["name"], frame.to_string().len()
+                tool["name"],
+                frame.to_string().len()
             );
         }
     }
