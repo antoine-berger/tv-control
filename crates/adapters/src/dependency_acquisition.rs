@@ -17,7 +17,7 @@ use release::executable_header;
 use std::{
     collections::BTreeMap,
     ffi::OsString,
-    fs::{self, OpenOptions},
+    fs::{self, File, OpenOptions},
     os::{
         fd::AsRawFd,
         unix::fs::{DirBuilderExt, OpenOptionsExt},
@@ -89,6 +89,25 @@ impl Drop for Stage {
         let _ = fs::remove_dir_all(&self.0);
     }
 }
+// Closing only this File is insufficient if fork/dup temporarily keeps its
+// open-file description alive. Release at the operation boundary, as the
+// operation journal's transaction guard does, before closing our owned handle.
+struct DependencyLock(File);
+impl DependencyLock {
+    fn acquire(file: File) -> Result<Self, &'static str> {
+        if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
+            return Err("tunnel_dependency_locked");
+        }
+        Ok(Self(file))
+    }
+}
+impl Drop for DependencyLock {
+    fn drop(&mut self) {
+        unsafe {
+            libc::flock(self.0.as_raw_fd(), libc::LOCK_UN);
+        }
+    }
+}
 /// Caller must obtain approval first. No credential, runtime, or account operations occur here.
 pub fn install_linux(
     state: &Path,
@@ -112,9 +131,7 @@ pub fn install_linux(
         .open(state.join("dependency.lock"))
         .map_err(|_| "tunnel_dependency_lock_failed")?;
     private_file(&state.join("dependency.lock"), false)?;
-    if unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
-        return Err("tunnel_dependency_locked");
-    }
+    let _lock = DependencyLock::acquire(lock)?;
     if let Some(binary) = installed(state, release, process, ctx)? {
         return Ok(binary);
     }
