@@ -40,6 +40,20 @@ public final class SocketIoTest {
     static LabSocketChannel channel(LocalSocket socket,Clock clock) throws Exception {
         LabSocketChannel value=new LabSocketChannel(socket,clock,15100);value.prepare();value.admitPeer(2000);return value;
     }
+    static void publicErrnoContract() {
+        check(LabDeadline.wouldBlock(new android.system.ErrnoException("fixed",OsConstants.EAGAIN)));
+        check(LabDeadline.wouldBlock(new java.io.IOException("fixed",new java.io.IOException("fixed",
+            new android.system.ErrnoException("fixed",OsConstants.EAGAIN)))));
+        check(!LabDeadline.wouldBlock(null));
+        check(!LabDeadline.wouldBlock(new java.io.IOException("EAGAIN is not an errno object")));
+        check(!LabDeadline.wouldBlock(new android.system.ErrnoException("fixed",OsConstants.EINPROGRESS)));
+        for(int code:new int[]{OsConstants.EPERM,OsConstants.EACCES}) {
+            Throwable denied=new android.system.ErrnoException("fixed",code);
+            check(!LabDeadline.wouldBlock(denied));
+            check(!LabDeadline.wouldBlock(new java.io.IOException("fixed",denied)));
+            check(LabDeadline.fault(denied,LabProtocol.Reason.TRANSPORT_LOST).reason==LabProtocol.Reason.POLICY_DENIED);
+        }
+    }
     static void constructorAndPeer() throws Exception {
         Clock clock=reset();LabSocketServer server=new LabSocketServer(INSTANCE,clock,15100);
         check(LocalServerSocket.constructors==0);server.open();check(LocalServerSocket.constructors==1);
@@ -234,7 +248,7 @@ public final class SocketIoTest {
         fault(LabProtocol.Reason.CLEANUP_UNVERIFIED,() -> peer.close());check(socket.closeCalls==0);
     }
     public static void main(String[] args) throws Exception {
-        constructorAndPeer();framesAndDeadlines();writesAndCleanup();client();closeWhilePolling();
+        publicErrnoContract();constructorAndPeer();framesAndDeadlines();writesAndCleanup();client();closeWhilePolling();
         System.out.println("PASS public socket owner host checks: "+checks);
     }
 }

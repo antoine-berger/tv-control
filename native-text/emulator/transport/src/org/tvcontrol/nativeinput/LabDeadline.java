@@ -36,7 +36,9 @@ final class LabDeadline {
         for (int count=0; error != null && count<8; count++, error=error.getCause()) {
             if (error instanceof ErrnoException) {
                 int code=((ErrnoException)error).errno;
-                return code == OsConstants.EAGAIN || code == OsConstants.EWOULDBLOCK;
+                // Android bionic aliases EWOULDBLOCK to EAGAIN. Only EAGAIN
+                // is exposed by the public API31 OsConstants SDK contract.
+                return code == OsConstants.EAGAIN;
             }
         }
         return false;

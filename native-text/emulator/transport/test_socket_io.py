@@ -22,7 +22,7 @@ public class ErrnoException extends Exception {
     "android/system/OsConstants.java": r'''
 package android.system;
 public final class OsConstants {
-    public static final int EPERM=1,EACCES=13,EAGAIN=11,EWOULDBLOCK=11,EINPROGRESS=115,
+    public static final int EPERM=1,EACCES=13,EAGAIN=11,EINPROGRESS=115,
         F_GETFL=3,F_SETFL=4,O_NONBLOCK=2048,POLLIN=1,POLLOUT=4,POLLERR=8,POLLHUP=16,POLLNVAL=32;
 }
 ''',
