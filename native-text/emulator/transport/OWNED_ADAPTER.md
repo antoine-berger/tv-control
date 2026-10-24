@@ -65,7 +65,11 @@ It never uninstalls the fixture package in the connectivity branch. Owner-file
 cleanup is limited to its own acknowledged created path. Allocation attempted
 before mkdir is tracked: a post-dispatch failure cannot prove absence or grant
 ownership. Such ambiguity makes staging and the final runtime receipt cleanup
-unverified without deleting an unproven path. Full AVD teardown is containment,
+unverified without deleting an unproven path. The final receipt separately records
+SDK containment, staging and transport cleanup plus the fixed public transport
+Outcome even on failure. Its aggregate cleanup cannot be true when remote
+proof is missing. A pre-host failure records no invented transport attestation;
+SDK teardown alone cannot qualify the aggregate. Full AVD teardown is containment,
 not proof of client/Binder/watcher cleanup.
 
 These observations are not atomic against another process sharing Android shell

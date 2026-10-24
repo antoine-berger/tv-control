@@ -16,6 +16,7 @@ from unittest.mock import patch
 
 import owned_runtime
 import run_proof
+from transport_host import Outcome
 from runtime_environment import Runtime
 
 
@@ -204,7 +205,7 @@ class MainCleanupTests(unittest.TestCase):
         self.args.scenario = "lab-connectivity"
         fake = SimpleNamespace(pid=456, stdout=io.BytesIO(b""))
         pins = SimpleNamespace(apk=self.build / "lab-helper.apk")
-        result = SimpleNamespace(public=lambda: {'status': 'CONNECTED', 'qualified': True})
+        result = SimpleNamespace(public=lambda: {'status': 'CONNECTED', 'qualified': True, 'cleanup': 'VERIFIED'})
         with patch.object(run_proof, "clean_source", return_value="a" * 40), \
              patch.object(run_proof.Pins, "load", return_value=pins), \
              patch.object(run_proof, "connectivity", return_value=result) as probe, \
@@ -234,7 +235,7 @@ class MainCleanupTests(unittest.TestCase):
         fake = SimpleNamespace(pid=456, stdout=io.BytesIO(b""))
         with patch.object(run_proof, "clean_source", return_value="a" * 40), \
              patch.object(run_proof.Pins, "load", return_value=SimpleNamespace(apk=self.build / "lab-helper.apk")), \
-             patch.object(run_proof, "connectivity", return_value=SimpleNamespace(public=lambda: {})), \
+             patch.object(run_proof, "connectivity", return_value=SimpleNamespace(public=lambda: {'status': 'CONNECTED', 'qualified': True, 'cleanup': 'VERIFIED'})), \
              patch.object(self.fake_adb, "target", target), \
              patch.object(run_proof.subprocess, "Popen", return_value=fake), \
              patch.object(run_proof, "stop_unreaped_group"), patch.object(run_proof, "drain_bounded_log"):
@@ -258,6 +259,48 @@ class MainCleanupTests(unittest.TestCase):
         self.assertFalse(receipt["proof_completed"])
         self.assertFalse(receipt["cleanup_verified"])
         self.assertIn("lab-stage-cleanup", receipt["cleanup_failures"])
+
+    def test_missing_transport_proofs_survive_successful_sdk_teardown_in_receipt(self):
+        self.args.scenario = "lab-connectivity"
+        for server, client in (("UNVERIFIED", "REAPED"), ("VERIFIED", "UNVERIFIED"), ("UNVERIFIED", "UNVERIFIED")):
+            with self.subTest(server=server, client=client):
+                # Each fake main owns a fresh work path and process object.
+                self.args.work = self.lab / ("run-" + server + "-" + client)
+                fake = SimpleNamespace(pid=456, stdout=io.BytesIO(b""))
+                failure = run_proof.TransportUnqualified(Outcome("UNKNOWN", "CLEANUP_UNVERIFIED", server, client, True, False))
+                failure.stage_cleanup_verified = True
+                with patch.object(run_proof, "run_command", side_effect=["1", str(24 * 1024**3), "Hypervisor.Framework ready"]), \
+                     patch.object(run_proof, "clean_source", return_value="a" * 40), \
+                     patch.object(run_proof.Pins, "load", return_value=SimpleNamespace(apk=self.build / "lab-helper.apk")), \
+                     patch.object(run_proof, "connectivity", side_effect=failure), \
+                     patch.object(run_proof.subprocess, "Popen", return_value=fake), \
+                     patch.object(run_proof, "stop_unreaped_group"), patch.object(run_proof, "drain_bounded_log"):
+                    with self.assertRaisesRegex(RuntimeError, "cleanup unverified: lab-transport-cleanup"):
+                        run_proof.main()
+                receipt = json.loads((self.args.work / "runtime-receipt.json").read_text())
+                self.assertTrue(receipt["sdk_cleanup_verified"])
+                self.assertTrue(receipt["stage_cleanup_verified"])
+                self.assertFalse(receipt["transport_cleanup_verified"])
+                self.assertFalse(receipt["cleanup_verified"])
+                self.assertFalse(receipt["proof_completed"])
+                self.assertEqual(receipt["transport_outcome"]["status"], "UNKNOWN")
+                self.assertEqual(receipt["transport_outcome"]["server_cleanup"], server)
+                self.assertEqual(receipt["transport_outcome"]["client_cleanup"], client)
+
+    def test_lab_failure_before_host_records_no_transport_attestation(self):
+        self.args.scenario = "lab-connectivity"
+        with patch.object(run_proof, "clean_source", return_value="a" * 40), \
+             patch.object(self.fake_adb, "start", side_effect=RuntimeError("synthetic startup failure")), \
+             patch.object(run_proof.subprocess, "Popen") as spawn:
+            with self.assertRaisesRegex(RuntimeError, "startup failure"):
+                run_proof.main()
+            spawn.assert_not_called()
+        receipt = json.loads((self.work / "runtime-receipt.json").read_text())
+        self.assertTrue(receipt["sdk_cleanup_verified"])
+        self.assertIsNone(receipt["transport_cleanup_verified"])
+        self.assertIsNone(receipt["transport_outcome"])
+        self.assertFalse(receipt["cleanup_verified"])
+        self.assertFalse(receipt["proof_completed"])
 
     def test_remaining_listener_is_explicit_failure_without_unowned_pid_signals(self):
         with patch.object(self.fake_adb, "start", side_effect=RuntimeError("fixture startup failed")), \

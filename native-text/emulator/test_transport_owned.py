@@ -8,8 +8,9 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
-from transport_owned import COMPONENT, PACKAGE, OwnedLauncher, Pins, ReadyAvd, StageCleanupUnverified, connectivity
+from transport_owned import COMPONENT, PACKAGE, OwnedLauncher, Pins, ReadyAvd, StageCleanupUnverified, TransportUnqualified, connectivity
 from transport_wire import TransportFault
+from transport_host import Outcome
 from runtime_environment import verify_lab_build
 
 SOURCE = 'a' * 40
@@ -188,11 +189,33 @@ class ConnectivityLifecycle(unittest.TestCase):
             def __init__(self, launcher, deadline):
                 self.deadline = deadline
             def probe_connectivity(self):
-                return SimpleNamespace(status='CONNECTED', qualified=True)
+                return Outcome('CONNECTED', 'CANCELLED', 'VERIFIED', 'REAPED', True, True)
         with patch('transport_owned.OwnedLauncher', Launcher), patch('transport_owned.Host', Probe), \
              patch('transport_owned.time.monotonic', side_effect=lambda: clock.now):
-            with self.assertRaisesRegex(RuntimeError, 'absolute deadline'):
+            with self.assertRaises(TransportUnqualified) as failure:
                 connectivity(object(), object(), 130)
+            self.assertEqual(failure.exception.transport_outcome['status'], 'UNKNOWN')
+            self.assertEqual(failure.exception.transport_outcome['cleanup'], 'UNVERIFIED')
+            self.assertTrue(failure.exception.stage_cleanup_verified)
+
+    def test_stage_failure_keeps_existing_transport_evidence_separate(self):
+        class Launcher:
+            def __init__(self, ready, pins):
+                pass
+            def prepare(self, deadline):
+                pass
+            def close_stage(self, deadline):
+                raise StageCleanupUnverified()
+        class Probe:
+            def __init__(self, launcher, deadline):
+                pass
+            def probe_connectivity(self):
+                return Outcome('CONNECTED', 'CANCELLED', 'VERIFIED', 'REAPED', True, True)
+        with patch('transport_owned.OwnedLauncher', Launcher), patch('transport_owned.Host', Probe):
+            with self.assertRaises(StageCleanupUnverified) as failure:
+                connectivity(object(), object(), time.monotonic() + 15)
+        self.assertEqual(failure.exception.transport_outcome['status'], 'CONNECTED')
+        self.assertFalse(failure.exception.stage_cleanup_verified)
 
     def test_failed_preparation_and_probe_always_attempt_owned_stage_cleanup(self):
         for failed in ('prepare', 'probe'):
@@ -211,7 +234,7 @@ class ConnectivityLifecycle(unittest.TestCase):
                     pass
                 def probe_connectivity(self):
                     events.append('probe')
-                    return SimpleNamespace(status='UNKNOWN', qualified=False)
+                    return Outcome('UNKNOWN', 'CLEANUP_UNVERIFIED', 'UNVERIFIED', 'UNVERIFIED', True, False)
             with patch('transport_owned.OwnedLauncher', Launcher), patch('transport_owned.Host', Probe):
                 with self.assertRaises(TransportFault):
                     connectivity(object(), object(), time.monotonic() + 15)

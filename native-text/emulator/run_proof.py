@@ -19,7 +19,7 @@ from owned_runtime import (Ports, PrivateAdb, command as run_command, isolated_e
                            owns_listener, port_closed, sdk_processes)
 from process_group import leader_exited, require_nonreaping_wait, stop_unreaped_group
 from runtime_environment import avd_config, select_runtime, verify_local_inputs
-from transport_owned import Pins, ReadyAvd, StageCleanupUnverified, connectivity
+from transport_owned import Pins, ReadyAvd, StageCleanupUnverified, TransportUnqualified, connectivity
 
 
 def select_acceleration(kvm_usable, allow_software):
@@ -139,6 +139,8 @@ def main():
     owned_ready, completed = False, False
     owned_packages = []
     package_user = None
+    transport_outcome = None
+    stage_cleanup_verified = None
     phase = "preflight"
     deadline = time.monotonic() + args.deadline_seconds
     adb.deadline = deadline
@@ -229,7 +231,9 @@ def main():
             pins = Pins.load(args.build, owner_source, args.provenance, source_commit, deadline)
             target("install", "--user", package_user, pins.apk, timeout=120)
             result = connectivity(ReadyAvd(adb, emulator, runtime.abi), pins, deadline)
-            print("LAB connectivity:", json.dumps(result.public(), sort_keys=True), flush=True)
+            transport_outcome = result.public()
+            stage_cleanup_verified = True
+            print("LAB connectivity:", json.dumps(transport_outcome, sort_keys=True), flush=True)
         completed = True
     except (OSError, subprocess.SubprocessError, RuntimeError, UnicodeError):
         if owned_ready:
@@ -237,7 +241,7 @@ def main():
         raise
     finally:
         primary_error = sys.exc_info()[1]
-        failures = ["lab-stage-cleanup"] if isinstance(primary_error, StageCleanupUnverified) else []
+        failures = []
         if owned_ready:
             for package in reversed(owned_packages):
                 try:
@@ -284,18 +288,32 @@ def main():
                 failures.append("remaining-runtime-listener")
         except (OSError, RuntimeError, subprocess.SubprocessError):
             failures.append("cleanup-observation-unavailable")
+        sdk_cleanup_verified = not failures
+        if isinstance(primary_error, (StageCleanupUnverified, TransportUnqualified)):
+            transport_outcome = primary_error.transport_outcome
+            stage_cleanup_verified = primary_error.stage_cleanup_verified
+        transport_cleanup_verified = None if transport_outcome is None else transport_outcome['cleanup'] == 'VERIFIED'
+        if isinstance(primary_error, StageCleanupUnverified):
+            failures.append("lab-stage-cleanup")
+        if transport_cleanup_verified is False:
+            failures.append("lab-transport-cleanup")
+        cleanup_verified = not failures and (args.scenario == "existing-proof"
+            or transport_cleanup_verified is True and stage_cleanup_verified is True)
         (args.work / "runtime-receipt.json").write_text(json.dumps({
             "mode": runtime.mode, "scenario": args.scenario, "abi": runtime.abi, "acceleration": runtime.acceleration,
             "adb_port": ports.adb_port, "console_port": ports.console_port,
             "adb_pid": adb.process.pid if adb.process else None,
             "emulator_pid": emulator.pid if emulator else None,
-            "proof_completed": completed, "cleanup_verified": not failures,
+            "proof_completed": completed, "cleanup_verified": cleanup_verified,
+            "sdk_cleanup_verified": sdk_cleanup_verified,
+            "transport_cleanup_verified": transport_cleanup_verified,
+            "stage_cleanup_verified": stage_cleanup_verified, "transport_outcome": transport_outcome,
             "phase": phase, "primary_error_type": type(primary_error).__name__ if primary_error else None,
             "adb_startup_diagnostic": getattr(adb, "startup_diagnostic", None),
             "cleanup_failures": failures}, indent=2) + "\n")
         if failures:
             raise RuntimeError("owned runtime cleanup unverified: " + ",".join(failures)) from primary_error
-        print("PASS owned runtime cleanup; no SDK process/listener remains", flush=True)
+        print("PASS owned SDK containment; transport qualification is recorded separately", flush=True)
 
 
 if __name__ == "__main__":
