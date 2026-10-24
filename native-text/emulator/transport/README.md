@@ -31,6 +31,13 @@ as a typing transport and is not part of a release. The independently reviewed
   admission gates. The original observation time and exact immutable binding are
   retained; it performs no action or selection repair. Its host tests use Android
   and unique-focus fakes, not a real AOSP node or an independent tree algorithm proof.
+* LabPrivateRequest owns only an exclusive private scratch directory/request/cancel
+  under the wrapper's Context cache. It serializes the existing engine frame with
+  the original expiry, pins file/directory identities, refuses links/collisions
+  and removes only known owned paths. Unknown allocation or close failures keep
+  cleanup unverified without another destructive attempt. Pure Java cannot
+  authenticate an arbitrary File as an Android sandbox; the Context is that trust
+  source, and hostile same-UID writers are outside the lab threat model.
 
 Pure host checks compile/run these actual Java classes with the pre-approved host
 JDK, fake clocks/entropy and synthetic strings. No Android API, SDK executable,
@@ -41,6 +48,7 @@ python3.14 native-text/emulator/transport/test_core.py --java "$JAVA_HOME/bin/ja
 python3.14 native-text/emulator/transport/test_wrapper.py --java "$JAVA_HOME/bin/java"
 python3.14 -W error::ResourceWarning native-text/emulator/transport/test_owner.py
 python3.14 native-text/emulator/transport/test_issuer.py --java "$JAVA_HOME/bin/java"
+python3.14 native-text/emulator/transport/test_private_request.py --java "$JAVA_HOME/bin/java"
 ```
 
 The checks cover malformed/truncated/noncanonical frames and bounds, nonce copies,
@@ -62,3 +70,7 @@ The client-owner.sh source preserves stdin in a foreground child and emits a
 binary remote-exit witness after that child's return. Actual shell host tests with
 owned Python fakes check the CLOSED-before-exit distinction, nonzero/signalled
 child outcomes, EOF misuse and rejected public arguments. No Android tool runs.
+Private-cache tests use real host files and the exact extracted TextEngine.Request
+decoder. They exercise exclusive creation/modes, original expiry, engine unlink,
+symlink/inode replacement preservation, unknown-allocation checkpoints and close
+failures. They do not qualify the Android NIO provider or a device cache.
