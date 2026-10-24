@@ -9,6 +9,7 @@ import tempfile
 import time
 
 from adb_diagnostic import capture as capture_adb_diagnostic
+from listener_fields import owned_loopback_listener
 from process_group import leader_exited, retained_exit_info, stop_unreaped_group
 
 OUTPUT_LIMIT = 128 * 1024
@@ -139,12 +140,7 @@ def owns_listener(pid, port, env):
                               f"-iTCP:{port}", "-sTCP:LISTEN", "-Fpn"], env, timeout=3)
         except subprocess.CalledProcessError:
             return False
-        lines = [line for line in output.splitlines() if line]
-        processes = {line for line in lines if line.startswith("p")}
-        endpoints = [line for line in lines if line.startswith("n")]
-        return (processes == {f"p{pid}"} and bool(endpoints)
-                and all(line in (f"n127.0.0.1:{port}", f"n[::1]:{port}") for line in endpoints)
-                and all(line[:1] in ("p", "n") for line in lines))
+        return owned_loopback_listener(output, pid, port)
     if sys.platform == "linux":
         root = Path(f"/proc/{pid}")
         inodes = {os.readlink(path)[8:-1] for path in (root / "fd").iterdir()

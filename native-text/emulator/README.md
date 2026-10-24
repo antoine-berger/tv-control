@@ -304,6 +304,15 @@ and [POSIX loopback implementation](https://android.googlesource.com/platform/pa
 Current AOSP source is supporting evidence, not an assertion that its revision
 matches the SDK release; the exact SDK binary's disassembly supplied that check.
 
+The second attempt kept the foreground ADB process running but stopped at the
+listener ownership guard before any AVD launch. The local `lsof -F?` contract
+documents an always-emitted `f` descriptor field, even with `-Fpn`; the original
+parser incorrectly rejected that field. The corrected parser requires one exact
+PID header followed by complete, unique numeric descriptor/loopback endpoint
+pairs. Wildcards, foreign PIDs, unknown fields, incomplete records and unexpected
+ports remain rejected. The lsof command and process ownership checks are unchanged.
+Both attempts completed cleanup verification; neither qualifies an Android runtime.
+
 This candidate adds `--mode ci-linux` and `--mode darwin-local`; mode selection is
 mandatory. Darwin requires a native ARM64 host, the official emulator's successful
 HVF acceleration check, no software/Rosetta fallback, a private SDK/lab, and

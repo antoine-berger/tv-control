@@ -59,12 +59,34 @@ class BoundedHostTests(unittest.TestCase):
 
     def test_darwin_listener_ownership_does_not_accept_wildcard_or_foreign_pid(self):
         with patch.object(owned_runtime.sys, "platform", "darwin"):
-            for value, expected in [("p123\nn127.0.0.1:49152\n", True),
-                                    ("p123\nn127.0.0.1:49152\nn[::1]:49152\n", True),
-                                    ("p999\nn127.0.0.1:49152\n", False),
-                                    ("p123\nn*:49152\n", False), ("", False)]:
-                with patch.object(owned_runtime, "command", return_value=value):
+            for value, expected in [("p123\nf5\nn127.0.0.1:49152\n", True),
+                                    ("p123\nf5\nn127.0.0.1:49152\nf6\nn[::1]:49152\n", True),
+                                    ("p999\nf5\nn127.0.0.1:49152\n", False),
+                                    ("p123\nf5\nn*:49152\n", False), ("", False)]:
+                with patch.object(owned_runtime, "command", return_value=value) as call:
                     self.assertEqual(owned_runtime.owns_listener(123, 49152, {}), expected)
+                    self.assertEqual(call.call_args.args[0], ["/usr/sbin/lsof", "-nP", "-a", "-p", "123",
+                                                             "-iTCP:49152", "-sTCP:LISTEN", "-Fpn"])
+
+    def test_darwin_lsof_records_are_complete_unambiguous_and_loopback_only(self):
+        valid = "p123\nf5\nn127.0.0.1:49152\n"
+        malformed = ["p123\nn127.0.0.1:49152\n",  # old fixture omitted mandatory f
+                     valid + "p999\nf6\nn127.0.0.1:49152\n",
+                     valid + "p123\nf6\nn127.0.0.1:49152\n",
+                     valid + "f5\nn127.0.0.1:49152\n",  # duplicate descriptor
+                     valid + "f6\n", valid + "n[::1]:49152\n",
+                     valid.replace("f5", "f"), valid.replace("f5", "f05"),
+                     valid.replace("f5", "f5u"), valid.replace("f5", "f-1"),
+                     valid.replace("f5", "f5\n\n"), valid.replace("f5", "cprocess"),
+                     valid.replace("127.0.0.1", "0.0.0.0"),
+                     valid.replace("127.0.0.1", "10.0.0.1"),
+                     valid.replace("127.0.0.1", "localhost"),
+                     valid.replace("49152", "5037"), valid.replace("49152", "15037"),
+                     "p123\nf5\nn127.0.0.1:49152\nf6\nn*:49152\n"]
+        with patch.object(owned_runtime.sys, "platform", "darwin"):
+            for value in malformed:
+                with self.subTest(value=value), patch.object(owned_runtime, "command", return_value=value):
+                    self.assertFalse(owned_runtime.owns_listener(123, 49152, {}))
 
     def test_log_drain_can_stop_while_an_owned_pipe_writer_remains_open(self):
         read_fd, write_fd = os.pipe()
