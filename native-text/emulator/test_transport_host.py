@@ -98,7 +98,7 @@ class Launcher:
         self.witness_emitted = False
         self.cleanup_hook = None
 
-    def guard(self):
+    def guard(self, deadline):
         self.guards += 1
         if self.mode == 'guard_false':
             return False
@@ -140,6 +140,19 @@ class Launcher:
                 self.am.done = True
                 self.peer.output.append(closed() + owner())
                 self.peer.done = True
+        elif opcode == 3:
+            fields = {'tv_native_text_v1': 'refused', 'tv_native_entered_v1': 'NO', 'tv_native_reason_v1': 'CANCELLED'}
+            if self.mode == 'probe_entered':
+                fields['tv_native_entered_v1'] = 'YES'
+                fields['tv_native_reason_v1'] = 'ENGINE_REFUSED'
+            if self.mode == 'probe_wrong_reason':
+                fields['tv_native_reason_v1'] = 'EDITOR_UNSUPPORTED'
+            self.am.output.append(final(**fields))
+            self.am.done = True
+            if self.mode == 'probe_ref':
+                self.peer.output.append(reference())
+            self.peer.output.append(closed() + (b'' if self.mode == 'probe_no_owner' else owner()))
+            self.peer.done = True
         elif opcode == 2:
             self.am.output.append(final())
             self.am.done = True
@@ -230,6 +243,46 @@ class Supervision(unittest.TestCase):
         self.assertTrue(launcher.peer.eof['stderr'])
         self.assertFalse(launcher.peer.errors)
         self.assertNotIn('PRIVATE_SYNTHETIC_CANARY', str(result.public()))
+
+    def test_connectivity_is_cancel_only_and_never_claims_text_effect(self):
+        launcher, clock = Launcher(), Clock()
+        host = Host(launcher, clock=clock, wait=clock.wait, entropy=lambda: PUBLIC_INSTANCE, budget=.5)
+        result = host.probe_connectivity()
+        self.assertEqual(result.status, 'CONNECTED')
+        self.assertTrue(result.qualified)
+        self.assertEqual(result.reason, 'CANCELLED')
+        self.assertEqual(launcher.commands, [3])
+        self.assertEqual(host.run('fixture').reason, 'REF_CONSUMED')
+
+    def test_connectivity_requires_no_reference_no_entry_exact_reason_and_both_proofs(self):
+        for mode in ('probe_ref', 'probe_entered', 'probe_wrong_reason', 'probe_no_owner'):
+            with self.subTest(mode=mode):
+                launcher, clock = Launcher(mode), Clock()
+                result = Host(launcher, clock=clock, wait=clock.wait,
+                              entropy=lambda: PUBLIC_INSTANCE, budget=.5).probe_connectivity()
+                self.assertEqual(result.status, 'UNKNOWN')
+                self.assertFalse(result.qualified)
+                self.assertEqual(launcher.commands, [3])
+
+    def test_external_absolute_deadline_is_not_renewed_by_host_creation(self):
+        launcher, clock = Launcher(), Clock()
+        clock.now = 2
+        result = Host(launcher, clock=clock, wait=clock.wait,
+                      entropy=lambda: PUBLIC_INSTANCE, deadline=1).probe_connectivity()
+        self.assertEqual(result.status, 'REFUSED')
+        self.assertEqual(result.reason, 'HOST_DEADLINE')
+        self.assertEqual(launcher.channels, [])
+
+    def test_launcher_without_deadline_aware_guard_has_no_compatibility_fallback(self):
+        launcher, clock = Launcher(), Clock()
+        calls = []
+        launcher.guard = lambda: calls.append('unbounded')
+        result = Host(launcher, clock=clock, wait=clock.wait,
+                      entropy=lambda: PUBLIC_INSTANCE).probe_connectivity()
+        self.assertEqual(result.status, 'REFUSED')
+        self.assertEqual(result.reason, 'GUARD_FAILED')
+        self.assertFalse(calls)
+        self.assertFalse(launcher.channels)
 
     def test_short_writes_complete_one_frame_without_replay(self):
         launcher, _, _, outcome = self.run_case(write_limit=3, budget=2)
