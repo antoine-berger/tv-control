@@ -1,6 +1,6 @@
 # Lab transport implementation: pure core only
 
-The implementation is incomplete: there are no sockets, lab entrypoint,
+The implementation is incomplete: there are no sockets, Java client, lab entrypoint,
 manifest/build wiring, APKs, ADB transport or runtime capability. It is not usable
 as a typing transport and is not part of a release. The independently reviewed
 [design](../LAB_TRANSPORT_DESIGN.md) remains the integration contract.
@@ -33,6 +33,7 @@ network/socket, emulator or TV is involved:
 ```sh
 python3.14 native-text/emulator/transport/test_core.py --java "$JAVA_HOME/bin/java"
 python3.14 native-text/emulator/transport/test_wrapper.py --java "$JAVA_HOME/bin/java"
+python3.14 -W error::ResourceWarning native-text/emulator/transport/test_owner.py
 ```
 
 The checks cover malformed/truncated/noncanonical frames and bounds, nonce copies,
@@ -50,3 +51,7 @@ additional required remote shell-owner wait proof for app_process. Local exit0
 and a client CHANNEL_CLOSED event are never enough; missing remote proof means
 unknown outcome/cleanup unverified. Future IPC borrows socket FDs without closing
 them through Os; the socket object remains the sole close owner.
+The client-owner.sh source preserves stdin in a foreground child and emits a
+binary remote-exit witness after that child's return. Actual shell host tests with
+owned Python fakes check the CLOSED-before-exit distinction, nonzero/signalled
+child outcomes, EOF misuse and rejected public arguments. No Android tool runs.
