@@ -32,6 +32,10 @@ could use this route to test the Binder/Instrumentation entrypoint. Such a test
 would not approve it for user text or weaken the private transport requirement.
 No new Bundle payload option is implemented in this candidate.
 
+The separate [lab transport design](../emulator/LAB_TRANSPORT_DESIGN.md) evaluates
+public local sockets and a one-shot stdin client. It is design only, identifies
+client/API/SELinux blockers, and does not approve implementation or user-device use.
+
 ## Private payload route
 
 The app-private-cache design keeps text out of argv, but still needs a reviewed
