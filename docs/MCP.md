@@ -254,6 +254,37 @@ The internal power-state dump has a separate 1 MiB limit, so verbose vendor diag
 
 ADB must remain reachable during standby. Deep sleep, powered-off devices, or a sleeping network interface may require the physical remote. This action does not add Wake-on-LAN, change power/network settings, or establish new device access. Hardware support must be tested separately.
 
+### Standby (device sleep, not physical display off)
+
+Use `tv_control` with `action: {"type":"standby"}` and the normal device,
+expiry and request ID. The generic ADB grant is required. This uses only Android's
+[dedicated KEYCODE_SLEEP (223), introduced in API 20](https://developer.android.com/reference/android/view/KeyEvent#KEYCODE_SLEEP).
+It never sends a power toggle, reboot, volume/mute command or fallback. Before
+sending, the adapter requires an observed SDK of at least 20 and device `input`
+help advertising keyevent syntax; otherwise it returns `standby_unsupported`
+with status `unsupported`. Help is read from stdout only: devices emitting usage
+solely on stderr conservatively remain unsupported, even if their OS can sleep.
+These are platform dispatch capabilities, not proof that vendor firmware honors
+sleep. `remote_capabilities` exposes `standby_key_supported` and qualifies the
+actual effect as device-dependent. No hardware qualification is implied.
+
+A unique native `mWakefulness=Asleep` observation verifies device standby. Already
+asleep is a no-op, including a new request ID. Dreaming, Dozing, unknown, duplicate
+or absent wakefulness fields do not establish asleep. A successful key dispatch
+alone never verifies standby: unknown evidence or lost network after dispatch
+returns `outcome_unknown`; still-awake observations are bounded by the original
+deadline. Retrieve/retry the same operation ID to recover its journaled result,
+not to replay the key, including after process restart. Expiry and cancellation
+apply even to an already-asleep no-op.
+
+`tv_read` with `read: {"type":"power"}` reads only native power evidence, with no
+mutation grant, foreground app or media session dependency. Known `state.awake`
+values carry `power_scope: "android_device_not_physical_display"`. An Android box
+being asleep does **not** prove an attached physical TV/display is off; HDMI/CEC
+behavior is outside this capability. Unknown formats omit `awake`. Power dumps
+share the bounded 1 MiB internal read; oversized/truncated evidence fails closed.
+
+
 
 ### Idempotent music-stream mute
 

@@ -43,44 +43,33 @@ class JourneyFixture(unittest.TestCase):
         for channel in self.channels: channel.close()
         for terminal in self.terminals: terminal.close()
         state=self.runtime_state()
-        owned_supervisors={process.pid:process for process in self.fixture_supervisors}
-        if state:
-            for key in ['supervisor_pid','bridge_pid']:
-                pid=state.get(key)
-                if pid in owned_supervisors and owned_supervisors[pid].poll() is not None: continue
-                if pid:
-                    try: os.kill(pid, signal.SIGTERM)
-                    except ProcessLookupError: pass
-            deadline=time.monotonic()+3
-            while time.monotonic()<deadline and not self.port_free(): time.sleep(.02)
-        # Restart supervisors are our direct children. Reap them before group
-        # escalation: Darwin may reject killpg for an unreaped zombie-only group.
-        # Once reaped, their recorded PIDs must not be signalled again.
+        # Runtime records outlive their processes. Never signal their PIDs: an
+        # orphan can be a Darwin zombie, or the PID may already have been reused.
+        # Only our private fixture scripts observe this filesystem stop request.
+        (self.root/'stop-fixture').touch(mode=0o600)
+        deadline=time.monotonic()+6
+        stopped=lambda: not state or not state.get('supervisor_pid') or (
+            self.root/f"supervisor-{state['supervisor_pid']}.stopped").exists()
+        while time.monotonic()<deadline and (not stopped() or not self.port_free()):
+            time.sleep(.02)
+        # Popen owns these direct children. Poll/wait reap exited children before
+        # any escalation, and Popen.kill rechecks them rather than trusting state.
         for supervisor in self.fixture_supervisors:
-            try: supervisor.wait(timeout=5)
-            except subprocess.TimeoutExpired: pass
-        if state:
-            for key in ['supervisor_pid','bridge_pid']:
-                pid=state.get(key)
-                if pid in owned_supervisors and owned_supervisors[pid].returncode is not None: continue
-                if pid:
-                    try: os.killpg(pid, signal.SIGKILL)
-                    except ProcessLookupError: pass
+            try: supervisor.wait(timeout=1)
+            except subprocess.TimeoutExpired:
+                supervisor.kill()
+                supervisor.wait(timeout=5)
         free=self.port_free()
-        # Preserve the failure while cleaning up only daemons recorded by this
-        # fixture. A failing/forcibly killed terminal must not leak its fake ADB.
+        shutdown=stopped()
         if not free:
-            events=self.root/'adb-events.jsonl'
-            if events.exists():
-                for line in events.read_text().splitlines():
-                    event=json.loads(line)
-                    if '-L' in event['args']:
-                        try:os.killpg(event['pid'],signal.SIGKILL)
-                        except ProcessLookupError:pass
+            # Release a leaked fake listener without hiding the original leak.
+            (self.root/'stop-adb-fixture').touch(mode=0o600)
+            deadline=time.monotonic()+2
+            while time.monotonic()<deadline and not self.port_free():time.sleep(.02)
         for installer in self.installers: installer.tearDown()
-        for supervisor in self.fixture_supervisors: supervisor.wait(timeout=5)
         self.temp.cleanup()
         self.assertTrue(free, 'owned ADB listener leaked after fixture teardown')
+        self.assertTrue(shutdown, 'fixture supervisor did not finish owned bridge cleanup')
 
     def runtime_state(self):
         path=self.connection_parent/'connection/tunnel/fixture-runtime.json'

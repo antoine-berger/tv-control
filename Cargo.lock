@@ -109,7 +109,7 @@ dependencies = [
 
 [[package]]
 name = "tv-adapters"
-version = "0.4.7"
+version = "0.4.8"
 dependencies = [
  "libc",
  "miniz_oxide",
@@ -121,14 +121,14 @@ dependencies = [
 
 [[package]]
 name = "tv-application"
-version = "0.4.7"
+version = "0.4.8"
 dependencies = [
  "tv-domain",
 ]
 
 [[package]]
 name = "tv-control"
-version = "0.4.7"
+version = "0.4.8"
 dependencies = [
  "libc",
  "serde",
@@ -140,7 +140,7 @@ dependencies = [
 
 [[package]]
 name = "tv-domain"
-version = "0.4.7"
+version = "0.4.8"
 
 [[package]]
 name = "unicode-ident"

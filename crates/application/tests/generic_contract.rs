@@ -581,3 +581,64 @@ fn expired_long_select_never_dispatches() {
     assert_eq!(s.execute(r, &Never).status, Status::Expired);
     assert_eq!(d.effects.load(Ordering::SeqCst), 0);
 }
+
+#[test]
+fn standby_already_asleep_is_noop_even_under_a_new_request_id() {
+    let (s, d, _) = setup(vec![]);
+    d.state.lock().unwrap().awake = Some(false);
+    assert_eq!(
+        s.execute(req(Intent::Standby), &Never).status,
+        Status::Verified
+    );
+    let mut next = req(Intent::Standby);
+    next.id = "next".into();
+    assert_eq!(s.execute(next, &Never).status, Status::Verified);
+    assert_eq!(d.effects.load(Ordering::SeqCst), 0);
+}
+#[test]
+fn standby_unknown_or_still_awake_is_unknown_and_never_replayed() {
+    for awake in [None, Some(true)] {
+        let (s, d, _) = setup(vec![]);
+        d.state.lock().unwrap().awake = awake;
+        assert_eq!(
+            s.execute(req(Intent::Standby), &Never).status,
+            Status::OutcomeUnknown
+        );
+        let mut retry = req(Intent::Standby);
+        retry.expires_at_unix_ms = 3000;
+        assert!(s.execute(retry, &Never).cached);
+        assert_eq!(d.effects.load(Ordering::SeqCst), 1);
+    }
+}
+#[test]
+fn standby_expired_or_cancelled_cannot_claim_even_an_asleep_noop() {
+    for cancelled in [false, true] {
+        let (s, d, journal) = setup(vec![]);
+        d.state.lock().unwrap().awake = Some(false);
+        let mut request = req(Intent::Standby);
+        if cancelled {
+            journal.cancel.store(true, Ordering::SeqCst);
+        } else {
+            request.expires_at_unix_ms = 1;
+        }
+        assert_ne!(s.execute(request, &Never).status, Status::Verified);
+        assert_eq!(d.effects.load(Ordering::SeqCst), 0);
+    }
+}
+
+#[test]
+fn standby_cancelled_after_dispatch_is_unknown_and_cached() {
+    struct AfterDispatch(Arc<Fake>);
+    impl Cancellation for AfterDispatch {
+        fn is_cancelled(&self) -> bool {
+            self.0.effects.load(Ordering::SeqCst) > 0
+        }
+    }
+    let (s, d, _) = setup(vec![]);
+    d.state.lock().unwrap().awake = Some(true);
+    let result = s.execute(req(Intent::Standby), &AfterDispatch(d.clone()));
+    assert_eq!(result.status, Status::OutcomeUnknown);
+    assert_eq!(result.code, "cancelled");
+    assert!(s.execute(req(Intent::Standby), &Never).cached);
+    assert_eq!(d.effects.load(Ordering::SeqCst), 1);
+}

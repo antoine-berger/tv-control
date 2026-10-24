@@ -513,7 +513,7 @@ class CompleteJourney(JourneyFixture):
         # owned this controller. Its uninstall must not even query the tunnel.
         other_prefix=installer.root/'another installation'
         archive=installer.asset()
-        result=installer.run_script(['--prefix',str(other_prefix),'--version','v0.4.7','--archive',str(archive),'--json'],env=env)
+        result=installer.run_script(['--prefix',str(other_prefix),'--version','v0.4.8','--archive',str(archive),'--json'],env=env)
         self.assertEqual(result.returncode,0,result.stdout+result.stderr)
         events=(self.root/'tunnel-events.jsonl').read_bytes()
         result=installer.run_script(['--prefix',str(other_prefix),'--uninstall','--json'],env=env)
@@ -601,55 +601,67 @@ class FixtureCleanup(unittest.TestCase):
     def fixture(self):
         fixture=CompleteJourney()
         fixture.channels=[];fixture.terminals=[];fixture.installers=[]
-        fixture.temp=mock.Mock()
+        directory=tempfile.TemporaryDirectory();self.addCleanup(directory.cleanup)
+        fixture.root=pathlib.Path(directory.name);fixture.temp=mock.Mock()
         fixture.port_free=mock.Mock(return_value=True)
         fixture.runtime_state=mock.Mock(return_value={'supervisor_pid':12345,'bridge_pid':12346})
+        (fixture.root/'supervisor-12345.stopped').touch()
         supervisor=mock.Mock(pid=12345,returncode=None)
-        supervisor.poll.return_value=None
         fixture.fixture_supervisors=[supervisor]
         return fixture,supervisor
 
-    def test_reaps_owned_supervisor_before_group_escalation(self):
+    def test_reaps_owned_supervisor_without_signalling_zombie_groups(self):
         fixture,supervisor=self.fixture()
-        def reap(timeout): supervisor.returncode=0
-        supervisor.wait.side_effect=reap
-        def escalate(pid,sig):
-            # Simulate Darwin rejecting a zombie-only supervisor group. The
-            # bridge group is inspected only after its supervisor was reaped.
-            if pid==supervisor.pid or supervisor.returncode is None:
-                raise PermissionError(errno.EPERM,'unreaped fixture supervisor')
-        with mock.patch.object(os,'kill') as terminate, mock.patch.object(os,'killpg',side_effect=escalate) as kill_group:
+        # Reproduce Darwin EPERM if any stale/zombie group is signalled.
+        with mock.patch.object(os,'kill',side_effect=AssertionError('stale PID')) as terminate, mock.patch.object(os,'killpg',side_effect=PermissionError(errno.EPERM,'zombie group')) as kill_group:
             fixture.tearDown()
-        terminate.assert_any_call(supervisor.pid,signal.SIGTERM)
-        kill_group.assert_called_once_with(12346,signal.SIGKILL)
-        supervisor.wait.assert_called_with(timeout=5)
+        terminate.assert_not_called();kill_group.assert_not_called()
+        supervisor.wait.assert_called_once_with(timeout=1);supervisor.kill.assert_not_called()
+        self.assertTrue((fixture.root/'stop-fixture').exists())
         fixture.temp.cleanup.assert_called_once()
 
-    def test_group_permission_error_is_not_suppressed(self):
+    def test_real_exited_child_is_reaped_without_a_signal(self):
+        fixture,_=self.fixture()
+        child=subprocess.Popen([sys.executable,'-c','pass'],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+        fixture.fixture_supervisors=[child]
+        try:
+            with mock.patch.object(os,'kill',side_effect=AssertionError('already exited child')):
+                fixture.tearDown()
+            self.assertEqual(child.returncode,0)
+        finally:
+            if child.poll() is None:child.kill()
+            child.wait(timeout=5)
+
+    def test_reused_nonchild_runtime_pids_are_never_signalled(self):
+        fixture,_=self.fixture();fixture.fixture_supervisors=[]
+        with mock.patch.object(os,'kill') as terminate, mock.patch.object(os,'killpg') as kill_group:
+            fixture.tearDown()
+        terminate.assert_not_called();kill_group.assert_not_called()
+
+    def test_owned_child_permission_error_is_not_suppressed(self):
         fixture,supervisor=self.fixture()
-        def reap(timeout): supervisor.returncode=0
-        supervisor.wait.side_effect=reap
-        with mock.patch.object(os,'kill'), mock.patch.object(os,'killpg',side_effect=PermissionError(errno.EPERM,'fixture group denied')):
-            with self.assertRaises(PermissionError): fixture.tearDown()
+        supervisor.wait.side_effect=subprocess.TimeoutExpired('fixture supervisor',1)
+        supervisor.kill.side_effect=PermissionError(errno.EPERM,'owned child denied')
+        with self.assertRaises(PermissionError):fixture.tearDown()
+        supervisor.kill.assert_called_once_with()
 
     def test_unresponsive_owned_supervisor_is_still_escalated_and_reaped(self):
         fixture,supervisor=self.fixture()
-        supervisor.wait.side_effect=[subprocess.TimeoutExpired('fixture supervisor',5),0]
-        with mock.patch.object(os,'kill'), mock.patch.object(os,'killpg') as kill_group:
-            fixture.tearDown()
-        kill_group.assert_any_call(supervisor.pid,signal.SIGKILL)
-        self.assertEqual(supervisor.wait.call_count,2)
+        supervisor.wait.side_effect=[subprocess.TimeoutExpired('fixture supervisor',1),0]
+        fixture.tearDown();supervisor.kill.assert_called_once_with()
+        self.assertEqual(supervisor.wait.call_args_list,[mock.call(timeout=1),mock.call(timeout=5)])
 
     def test_listener_leak_still_fails_after_supervisor_reaped(self):
-        fixture,supervisor=self.fixture()
-        def reap(timeout): supervisor.returncode=0
-        supervisor.wait.side_effect=reap
-        fixture.port_free.return_value=False
-        with tempfile.TemporaryDirectory() as root, mock.patch.object(os,'kill'), mock.patch.object(os,'killpg'), mock.patch.object(time,'monotonic',side_effect=[0,4]):
-            fixture.root=pathlib.Path(root)
-            with self.assertRaisesRegex(AssertionError,'owned ADB listener leaked'): fixture.tearDown()
+        fixture,_=self.fixture();fixture.port_free.return_value=False
+        with mock.patch.object(time,'monotonic',side_effect=[0,7,8,11]):
+            with self.assertRaisesRegex(AssertionError,'owned ADB listener leaked'):fixture.tearDown()
+        self.assertTrue((fixture.root/'stop-adb-fixture').exists())
         fixture.temp.cleanup.assert_called_once()
 
+    def test_missing_supervisor_cleanup_acknowledgement_fails(self):
+        fixture,_=self.fixture();(fixture.root/'supervisor-12345.stopped').unlink()
+        with mock.patch.object(time,'monotonic',side_effect=[0,7]):
+            with self.assertRaisesRegex(AssertionError,'supervisor did not finish'):fixture.tearDown()
 
 
 if __name__ == '__main__': unittest.main()

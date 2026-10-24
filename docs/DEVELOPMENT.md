@@ -136,6 +136,15 @@ script stream and controlling PTY together. An optional second binary argument t
 `test_install_flow.py` qualifies compatibility with an independently verified
 v0.2.2 executable; CI does not silently download or execute old releases.
 
+Journey teardown requests shutdown through its private fixture directory and
+waits for the fake supervisor to acknowledge bridge cleanup. Runtime-state PIDs
+are historical records, not ownership handles: never signal them during cleanup.
+Only directly owned `Popen` children may be escalated, after waiting/reaping;
+permission errors remain failures. A leaked ADB listener still fails the test,
+even when the fixture-only fallback subsequently releases it. This avoids stale
+PID reuse and Darwin's zombie-only process-group signal behavior (see Apple's
+[`killpg1` implementation](https://github.com/apple-oss-distributions/xnu/blob/main/bsd/kern/kern_sig.c)).
+
 Subprocess invocations own Unix process groups and bounded nonblocking pipes.
 Cleanup terminates owned processes on cancellation, timeout and exit. Inspect
 ownership and deadline behavior when changing these adapters. Executables are

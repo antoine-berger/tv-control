@@ -35,6 +35,8 @@ pub enum Intent {
         url: String,
     },
     Wake,
+    /// Dedicated idempotent device sleep; never a physical-display claim.
+    Standby,
     /// Set Android music stream to zero; never toggle mute or restore volume.
     Mute,
     SetVolume {
@@ -157,6 +159,8 @@ pub struct RemoteCapabilities {
     pub active_app: Option<String>,
     pub keyevent_help: bool,
     pub longpress_help: bool,
+    /// Platform dispatch eligibility only; not proof that the device will sleep.
+    pub standby_key_supported: bool,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Read {
@@ -164,6 +168,8 @@ pub enum Read {
     RemoteCapabilities,
     State,
     Volume,
+    /// Native device power only, independent of foreground/media/audio.
+    Power,
     Screenshot,
     Apps {
         query: Option<String>,

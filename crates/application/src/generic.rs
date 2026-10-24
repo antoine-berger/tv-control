@@ -248,6 +248,11 @@ impl<D: Device, C: Clock> Service<D, C> {
                 .map_err(|e| Failure::uncertain(e.code))?;
             ctx.check().map_err(|e| Failure::uncertain(e.code))?;
             reply.observed = Some(diagnostic_state(&observed));
+            if request.intent == Intent::Standby
+                && (!observed.connected || observed.awake.is_none())
+            {
+                return Err(Failure::uncertain("standby_unverified"));
+            }
             if request.intent == Intent::Wake && observed.awake.is_none() {
                 reply.status = Status::Observed;
                 reply.code = "wake_dispatched_unverified".into();
@@ -312,6 +317,11 @@ impl<D: Device, C: Clock> Control for Service<D, C> {
             Read::RemoteCapabilities => {
                 Data::RemoteCapabilities(self.device.remote_capabilities(&req.device, &ctx)?)
             }
+            Read::Power => Data::State(self.device.observe_for(
+                &req.device,
+                &Intent::Standby,
+                &ctx,
+            )?),
             Read::Volume => {
                 Data::State(self.device.observe_for(&req.device, &Intent::Mute, &ctx)?)
             }
@@ -476,7 +486,12 @@ fn valid_intent(intent: &Intent) -> bool {
         Intent::Activate { reference } => valid_text(reference, 200),
         Intent::TypeText { reference, text } => valid_text(reference, 200) && valid_text(text, 500),
         Intent::SetVolume { index } => *index <= 1000,
-        Intent::Wake | Intent::Mute | Intent::Pause | Intent::Resume | Intent::LongSelect => true,
+        Intent::Wake
+        | Intent::Standby
+        | Intent::Mute
+        | Intent::Pause
+        | Intent::Resume
+        | Intent::LongSelect => true,
     }
 }
 fn valid_url(url: &str) -> bool {
@@ -520,6 +535,7 @@ fn desired(intent: &Intent, app: Option<&App>, state: &Observed) -> bool {
     match intent {
         Intent::OpenApp { .. } => app.is_some_and(|a| state.active_app.as_ref() == Some(&a.id)),
         Intent::Wake => state.awake == Some(true),
+        Intent::Standby => state.connected && state.awake == Some(false),
         Intent::Mute => state.volume_index == Some(0),
         Intent::SetVolume { index } => state.volume_index == Some(*index),
         Intent::Pause => state.playback == Playback::Paused,
@@ -574,6 +590,7 @@ fn fail(reply: &mut Reply, e: Failure) {
             "expired" => Status::Expired,
             "cancelled" => Status::Cancelled,
             "unsupported"
+            | "standby_unsupported"
             | "search_unsupported"
             | "url_unsupported"
             | "input_text_unsupported"
@@ -743,5 +760,27 @@ impl crate::Control for LegacyGuard {
             result.code = "operation_persistence_failed";
         }
         result
+    }
+}
+
+#[cfg(test)]
+mod standby_failure_tests {
+    use super::*;
+
+    #[test]
+    fn unsupported_standby_never_downgrades_dispatch_uncertainty() {
+        let mut reply = Reply {
+            request_id: "standby".into(),
+            status: Status::Failed,
+            code: String::new(),
+            observed: None,
+            choices: vec![],
+            cached: false,
+            local_elapsed_ms: 0,
+        };
+        fail(&mut reply, Failure::before("standby_unsupported"));
+        assert_eq!(reply.status, Status::Unsupported);
+        fail(&mut reply, Failure::uncertain("standby_unsupported"));
+        assert_eq!(reply.status, Status::OutcomeUnknown);
     }
 }

@@ -381,6 +381,7 @@ impl Device for GenericAdb {
             active_app,
             keyevent_help,
             longpress_help,
+            standby_key_supported: keyevent_help && android_sdk.is_some_and(|sdk| sdk >= 20),
         })
     }
     fn apply(
@@ -423,6 +424,21 @@ impl Device for GenericAdb {
             Intent::Wake => {
                 // KEYCODE_WAKEUP is idempotent: never toggle an already-awake TV off.
                 self.shell(alias, &["input", "keyevent", "224"], &[], true, ctx)?;
+                Ok(())
+            }
+            Intent::Standby => {
+                // Android API 20+ defines dedicated KEYCODE_SLEEP, not a toggle.
+                // Qualify the platform and input syntax without a foreground dependency.
+                let sdk =
+                    self.shell(alias, &["getprop", "ro.build.version.sdk"], &[], false, ctx)?;
+                if !sdk.trim().parse::<u16>().ok().is_some_and(|sdk| sdk >= 20) {
+                    return Err(Failure::before("standby_unsupported"));
+                }
+                let help = self.shell(alias, &["input"], &[], false, ctx)?;
+                if !input_help_capabilities(&help).0 {
+                    return Err(Failure::before("standby_unsupported"));
+                }
+                self.shell(alias, &["input", "keyevent", "223"], &[], true, ctx)?;
                 Ok(())
             }
             Intent::SetVolume { index } => {

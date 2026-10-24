@@ -114,6 +114,8 @@ mod power;
 mod remote;
 #[path = "generic_adb_contract/screenshot.rs"]
 mod screenshot;
+#[path = "generic_adb_contract/standby.rs"]
+mod standby;
 #[path = "generic_adb_contract/ui.rs"]
 mod ui;
 #[path = "generic_adb_contract/volume.rs"]

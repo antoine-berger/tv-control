@@ -61,7 +61,7 @@ impl GenericAdb {
                 ..Observed::default()
             });
         }
-        if *intent == Intent::Wake {
+        if matches!(intent, Intent::Wake | Intent::Standby) {
             // No foreground activity or media session is required while asleep.
             let raw = self
                 .shell_bytes(
@@ -77,14 +77,22 @@ impl GenericAdb {
                 })
                 .map_err(|e| {
                     if e.code == "adb_read_failed" {
-                        Failure::before("wake_transport_unavailable")
+                        Failure::before(if *intent == Intent::Standby {
+                            "standby_transport_unavailable"
+                        } else {
+                            "wake_transport_unavailable"
+                        })
                     } else {
                         e
                     }
                 })?;
             return Ok(Observed {
                 connected: true,
-                awake: parse_awake(&raw),
+                awake: if *intent == Intent::Standby {
+                    parse_standby_awake(&raw)
+                } else {
+                    parse_awake(&raw)
+                },
                 ..Observed::default()
             });
         }
@@ -152,6 +160,22 @@ fn parse_awake(raw: &str) -> Option<bool> {
     match value.trim() {
         "Awake" => Some(true),
         "Asleep" | "Dozing" | "Dreaming" => Some(false),
+        _ => None,
+    }
+}
+
+// Dreaming/dozing are not proof of standby. Require the unique exact Asleep field.
+fn parse_standby_awake(raw: &str) -> Option<bool> {
+    let mut values = raw
+        .lines()
+        .filter_map(|line| line.trim().strip_prefix("mWakefulness="));
+    let value = values.next()?;
+    if values.next().is_some() {
+        return None;
+    }
+    match value.trim() {
+        "Awake" => Some(true),
+        "Asleep" => Some(false),
         _ => None,
     }
 }

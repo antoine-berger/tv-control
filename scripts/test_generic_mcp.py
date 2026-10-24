@@ -51,6 +51,15 @@ elif command==['dumpsys','power']:
     size=state.get('power_dump_bytes',len(dump))
     dump+=(history*((max(0,size-len(dump))+len(history)-1)//len(history)))[:max(0,size-len(dump))]
     sys.stdout.write(dump)
+elif command==['getprop','ro.build.version.sdk']:
+    print(state.get('sdk','35'))
+elif command==['input']:
+    print(state.get('input_help','keyevent [--longpress] <key code number or name> ...'))
+elif command==['input','keyevent','223']:
+    state['sleeps']=state.get('sleeps',0)+1
+    if state.get('fail_after_sleep'): state['offline']=True
+    if not state.get('sleep_ineffective'): state['power']='Asleep'
+    state_path.write_text(json.dumps(state))
 elif command==['input','keyevent','224']:
     state['wakes']=state.get('wakes',0)+1
     if state.get('fail_after_wake'): state['offline']=True
@@ -250,11 +259,43 @@ class GenericMcp(unittest.TestCase):
         result=self.control('text_after_media',{'type':'type_text','reference':ref,'text':'cats'})['structuredContent']
         self.assertEqual(result['code'],'ui_reference_unknown',result)
         self.assertNotIn('text_writes',json.loads(path.read_text()))
+    def test_standby_native_evidence_restart_dedup_and_read(self):
+        path=self.root/'state.json'; state=json.loads(path.read_text()); state['power']='Awake'; path.write_text(json.dumps(state))
+        result=self.control('sleep',{'type':'standby'})['structuredContent']
+        self.assertEqual(result['status'],'verified',result)
+        self.assertFalse(result['state']['awake'])
+        self.assertEqual(result['state']['power_scope'],'android_device_not_physical_display')
+        power=self.tool('tv_read',{'device':'screen','expires_at_unix_ms':int(time.time()*1000)+9000,'read':{'type':'power'}})['structuredContent']
+        self.assertFalse(power['state']['awake'])
+        caps=self.tool('tv_read',{'device':'screen','expires_at_unix_ms':int(time.time()*1000)+9000,'read':{'type':'remote_capabilities'}})['structuredContent']
+        self.assertTrue(caps['standby_key_supported'])
+        self.assertEqual(caps['standby_effect'],'device_dependent')
+        self.close_process();self.start()
+        self.assertTrue(self.control('sleep',{'type':'standby'})['structuredContent']['cached'])
+        self.assertEqual(self.control('sleep_again',{'type':'standby'})['structuredContent']['status'],'verified')
+        self.assertEqual(json.loads(path.read_text())['sleeps'],1)
+        self.assertNotIn('volume_sets',json.loads(path.read_text()))
+    def test_standby_lost_network_is_unknown_and_never_replayed(self):
+        path=self.root/'state.json'; state=json.loads(path.read_text()); state.update(power='Awake',fail_after_sleep=True); path.write_text(json.dumps(state))
+        result=self.control('sleep_lost',{'type':'standby'})['structuredContent']
+        self.assertEqual(result['status'],'outcome_unknown',result)
+        self.close_process();self.start()
+        self.assertTrue(self.control('sleep_lost',{'type':'standby'})['structuredContent']['cached'])
+        self.assertEqual(json.loads(path.read_text())['sleeps'],1)
+    def test_standby_unsupported_platform_or_help_never_dispatches(self):
+        for suffix,qualification in [('old',{'sdk':'19'}),('help',{'sdk':'35','input_help':'unsupported'})]:
+            with self.subTest(qualification=qualification):
+                path=self.root/'state.json'; state=json.loads(path.read_text()); state.update(power='Awake',**qualification); path.write_text(json.dumps(state))
+                result=self.control('sleep_'+suffix,{'type':'standby'})['structuredContent']
+                self.assertEqual(result['code'],'standby_unsupported',result)
+                self.assertEqual(result['status'],'unsupported',result)
+                self.assertNotIn('sleeps',json.loads(path.read_text()))
     def test_wake_verifies_power_and_replays_after_restart(self):
         schema=self.rpc('tools/list',{})
         control=next(t for t in schema['tools'] if t['name']=='tv_control')
         types=[kind for a in control['inputSchema']['properties']['action']['oneOf'] for kind in a['properties']['type'].get('enum',[a['properties']['type'].get('const')])]
         self.assertIn('wake',types)
+        self.assertIn('standby',types)
         self.assertIn('mute',types)
         self.assertIn('set_volume',types)
         result=self.control('wake',{'type':'wake'})['structuredContent']

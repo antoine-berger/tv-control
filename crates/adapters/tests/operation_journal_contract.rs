@@ -453,3 +453,30 @@ fn old_shape_journal_state_upgrades_without_a_source_and_none_is_not_written() {
     };
     assert_eq!(result.observed.unwrap().media_source_id, None);
 }
+
+#[test]
+fn abandoned_standby_is_never_replayed_and_conflicts_with_wake() {
+    let temp = Temp::new();
+    let mut request = request("standby");
+    request.intent = Intent::Standby;
+    {
+        let journal = temp.journal(4);
+        assert!(matches!(
+            journal.reserve(&request, "tv", 100).unwrap(),
+            Reservation::Acquired
+        ));
+    }
+    let journal = temp.journal(4);
+    assert!(matches!(
+        journal.reserve(&request, "tv", 200).unwrap(),
+        Reservation::Existing(Operation::Complete(Reply {
+            status: Status::OutcomeUnknown,
+            ..
+        }))
+    ));
+    request.intent = Intent::Wake;
+    assert!(matches!(
+        journal.reserve(&request, "tv", 200).unwrap(),
+        Reservation::Conflict
+    ));
+}

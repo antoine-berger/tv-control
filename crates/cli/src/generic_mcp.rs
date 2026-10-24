@@ -23,6 +23,7 @@ enum Action {
         url: String,
     },
     Wake {},
+    Standby {},
     Mute {},
     SetVolume {
         index: u16,
@@ -96,6 +97,7 @@ enum ReadKind {
     State {},
     RemoteCapabilities {},
     Volume {},
+    Power {},
     Apps {
         query: Option<String>,
         since: Option<String>,
@@ -131,6 +133,7 @@ pub fn routes_generic(config: &tv_adapters::config::Config, name: &str, args: &V
         Some(
             "mute"
                 | "wake"
+                | "standby"
                 | "navigate"
                 | "search"
                 | "open_url"
@@ -202,6 +205,7 @@ impl Call {
                         ReadKind::State {} => Read::State,
                         ReadKind::RemoteCapabilities {} => Read::RemoteCapabilities,
                         ReadKind::Volume {} => Read::Volume,
+                        ReadKind::Power {} => Read::Power,
                         ReadKind::Apps {
                             query,
                             since,
@@ -238,6 +242,7 @@ impl Call {
                         Action::OpenApp { app } => Intent::OpenApp { app },
                         Action::OpenUrl { app, url } => Intent::OpenUrl { app, url },
                         Action::Wake {} => Intent::Wake,
+                        Action::Standby {} => Intent::Standby,
                         Action::Mute {} => Intent::Mute,
                         Action::SetVolume { index } => Intent::SetVolume { index },
                         Action::Pause {} => Intent::Pause,
@@ -311,7 +316,7 @@ impl Call {
                 Ok(data) => (
                     match data {
                         Data::RemoteCapabilities(c) => {
-                            json!({"android_sdk":c.android_sdk,"app":c.active_app,"keyevent_help":c.keyevent_help,"longpress_help":c.longpress_help,"app_key_acceptance":"unknown","evidence":"device_input_help"})
+                            json!({"android_sdk":c.android_sdk,"app":c.active_app,"keyevent_help":c.keyevent_help,"longpress_help":c.longpress_help,"standby_key_supported":c.standby_key_supported,"standby_effect":"device_dependent","app_key_acceptance":"unknown","evidence":"device_input_help"})
                         }
                         Data::State(s) => json!({"state": state(&s)}),
                         Data::Media {
@@ -443,6 +448,7 @@ fn state(s: &Observed) -> Value {
     }
     if let Some(awake) = s.awake {
         v["awake"] = json!(awake);
+        v["power_scope"] = json!("android_device_not_physical_display");
     }
     if let Some(index) = s.volume_index {
         v["volume_index"] = json!(index);
@@ -492,6 +498,7 @@ pub fn extend_tools(tools: &mut Value) {
         json!({"type":"object","properties":{"type":{"const":"repeat"},"direction":{"enum":["up","down","left","right"]},"count":{"type":"integer","minimum":1,"maximum":16}},"required":["type","direction","count"],"additionalProperties":false}),
         json!({"type":"object","properties":{"type":{"const":"long_select"}},"required":["type"],"additionalProperties":false}),
         json!({"type":"object","properties":{"type":{"const":"wake"}},"required":["type"],"additionalProperties":false}),
+        json!({"type":"object","properties":{"type":{"const":"standby"}},"required":["type"],"additionalProperties":false}),
         json!({"type":"object","properties":{"type":{"const":"mute"}},"required":["type"],"additionalProperties":false}),
         json!({"type":"object","properties":{"type":{"const":"open_url"},"app":{"type":"string","minLength":1,"maxLength":512},"url":{"type":"string","minLength":1,"maxLength":2048}},"required":["type","app","url"],"additionalProperties":false}),
         json!({"type":"object","properties":{"type":{"const":"navigate"},"keys":{"type":"array","minItems":1,"maxItems":16,"items":{"enum":["up","down","left","right","select","back","home","menu","settings"]}}},"required":["type","keys"],"additionalProperties":false}),
@@ -514,7 +521,7 @@ pub fn extend_tools(tools: &mut Value) {
         }
     });
     actions.push(json!({"type":"object","properties":{"type":{"enum":simple}},"required":["type"],"additionalProperties":false}));
-    list.push(json!({"name":"tv_read","description":"Read TV. Volume: stream 3 index/max. Untrusted text.","inputSchema":{"type":"object","properties":{"device":{"type":"string","pattern":"^[A-Za-z0-9_-]{1,64}$"},"expires_at_unix_ms":{"type":"integer","minimum":1},"read":{"oneOf":[{"type":"object","properties":{"type":{"enum":["state","volume","media","remote_capabilities","ui","screenshot"]}},"required":["type"],"additionalProperties":false},{"type":"object","properties":{"type":{"const":"apps"},"query":{"type":"string","maxLength":200},"since":{"type":"string","maxLength":64},"limit":{"type":"integer","minimum":1,"maximum":32,"default":12},"refresh":{"type":"boolean","default":false}},"required":["type"],"additionalProperties":false}]}},"required":["device","expires_at_unix_ms","read"],"additionalProperties":false},"annotations":{"readOnlyHint":true,"openWorldHint":false}}));
+    list.push(json!({"name":"tv_read","description":"Read TV. Volume: stream 3 index/max. Untrusted text.","inputSchema":{"type":"object","properties":{"device":{"type":"string","pattern":"^[A-Za-z0-9_-]{1,64}$"},"expires_at_unix_ms":{"type":"integer","minimum":1},"read":{"oneOf":[{"type":"object","properties":{"type":{"enum":["state","volume","power","media","remote_capabilities","ui","screenshot"]}},"required":["type"],"additionalProperties":false},{"type":"object","properties":{"type":{"const":"apps"},"query":{"type":"string","maxLength":200},"since":{"type":"string","maxLength":64},"limit":{"type":"integer","minimum":1,"maximum":32,"default":12},"refresh":{"type":"boolean","default":false}},"required":["type"],"additionalProperties":false}]}},"required":["device","expires_at_unix_ms","read"],"additionalProperties":false},"annotations":{"readOnlyHint":true,"openWorldHint":false}}));
     list.push(json!({"name":"tv_operation","description":"Recover/cancel; no rollback.","inputSchema":{"type":"object","properties":{"request_id":{"type":"string","pattern":"^[A-Za-z0-9_-]{1,64}$"},"cancel":{"type":"boolean","default":false}},"required":["request_id"],"additionalProperties":false},"annotations":{"readOnlyHint":false,"destructiveHint":false,"idempotentHint":true,"openWorldHint":false}}));
 }
 
@@ -556,6 +563,7 @@ mod tests {
     }
     #[test]
     fn wire_rejects_unknown_actions_and_fields() {
+        assert!(Call::parse("tv_control", json!({"request_id":"r","device":"screen","expires_at_unix_ms":1,"action":{"type":"standby","toggle":true}})).is_err());
         assert!(Call::parse("tv_control", json!({"request_id":"r","device":"screen","expires_at_unix_ms":1,"action":{"type":"legacy","action":"anything"}})).is_err());
         assert!(Call::parse("tv_operation", json!({"request_id":"r","shell":"x"})).is_err());
         assert!(Call::parse(

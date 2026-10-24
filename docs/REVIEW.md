@@ -87,3 +87,18 @@ Offline tests use injected executables, clocks and loopback services. They do no
 qualify a real Jellyfin API, client, TV, macOS installation, physical playback,
 remote-key acceptance or speaker silence. Publishing, cross-platform CI and
 hardware acceptance are separate gates from local source integration.
+
+## Standby and fixture ownership (v0.4.8 source candidate)
+
+Standby uses only the dedicated Android sleep key after the documented platform
+and syntax qualification, never a power toggle. Its read-only power evidence and
+verified receipts describe Android wakefulness, not physical panel darkness,
+external audio silence or a universally supported TV behavior. Unsupported
+qualification remains explicit; ambiguous post-dispatch state remains uncertain
+and must not be replayed. Standby also invalidates old activation/text references,
+including when qualification rejects the platform. No live standby or sound
+qualification is implied by fixture success.
+
+Journey cleanup uses the private fixture's owned shutdown handshake instead of
+signalling stale saved process IDs or groups. The integrated terminal and runtime
+fixtures exercise this ownership boundary without touching a real TV or account.

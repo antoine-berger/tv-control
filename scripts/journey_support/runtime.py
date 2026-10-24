@@ -30,8 +30,10 @@ if '-L' in args:
             if not piece:raise EOFError()
             out+=piece
         return out
-    while True:
-        conn,_=server.accept()
+    server.settimeout(.05)
+    while not (root/'stop-adb-fixture').exists():
+        try:conn,_=server.accept()
+        except socket.timeout:continue
         with conn:
             try:request=exact(conn,int(exact(conn,4),16))
             except (EOFError,ValueError):continue
@@ -91,7 +93,7 @@ if sys.argv[1:2]==['_supervise']:
     data.update(supervisor_pid=os.getpid(),bridge_pid=bridge.pid,proxy_port=server.getsockname()[1]);write(path,data)
     conn=None
     try:
-        while not stopping and bridge.poll() is None:
+        while not stopping and not (root/'stop-fixture').exists() and bridge.poll() is None:
             readers=[server,bridge.stdout,bridge.stderr]+([conn] if conn else [])
             ready,_,_=select.select(readers,[],[],0.05)
             for source in ready:
@@ -120,6 +122,7 @@ if sys.argv[1:2]==['_supervise']:
             try:bridge.wait(timeout=3)
             except subprocess.TimeoutExpired:os.killpg(bridge.pid,signal.SIGKILL);bridge.wait(timeout=2)
         for pipe in [bridge.stdin,bridge.stdout,bridge.stderr]:pipe.close()
+        (root/f'supervisor-{os.getpid()}.stopped').touch(mode=0o600)
     sys.exit(0)
 args=sys.argv[1:];state=pathlib.Path(os.environ['TUNNEL_CLIENT_STATE_DIR']);path=state/'fixture-runtime.json'
 with (root/'tunnel-events.jsonl').open('a') as f:f.write(json.dumps({'args':args,'pid':os.getpid(),'admin_present':bool(os.environ.get('OPENAI_ADMIN_KEY'))})+'\n')
