@@ -149,3 +149,35 @@ only then does `wait()` reap it. A reaped leader or lost child ownership refuses
 all group signals rather than using a potentially recycled PGID. Seven explicit regressions (including real owned Python subprocesses) cover early launcher exit, ordinary exit, timeout, already-reaped
 leader, lost-child ownership, non-reaping exit observation and bounded live-child
 cleanup. No helper or text assertions were changed.
+
+### Diagnostic-only candidate after the first software runtime
+
+Run https://github.com/antoine-berger/tv-control/actions/runs/40074100060 verified
+SDK/image pins, host tests and APK builds, booted a software API31 AVD, then reached
+and failed the first `key-remap` fixture assertion. Standalone modern instrumentation
+returned its expected missing-token/refused response before that mode. That alone
+does not prove a connected UiAutomation session or successful ACTION_SET_TEXT.
+Normal insertion and later refusal cases were not reached. Cleanup passed; ordinary
+CI https://github.com/antoine-berger/tv-control/actions/runs/40074100040 passed.
+
+The next patch is diagnostic only: the test instrumentation emits fixed enums for
+its last stage (connection/idle/root/editor/remap/action/readback/cleanup), error
+category, and a synthetic-only comparison category. It never emits field contents,
+hierarchies, exception text or stacks. The host accepts only the exact allowlisted
+schema, refuses duplicates/missing/invalid fields and prints only validated enums.
+The synthetic comparison classifies the public fixture strings as expected-remap,
+unchanged-literal, empty or other; it does not reveal arbitrary text. Six host tests
+cover enum synchronization, success consistency, malformed outputs and non-echo.
+
+The existing fixture uses `Activity.dispatchKeyEvent`, not an OnKeyListener. An IME
+could consume a key before that post-IME path sees it. A custom owned EditText's
+public `onKeyPreIme` hook is a possible deterministic-fixture correction if the
+new stage evidence supports that hypothesis; ACTION_SET_TEXT does not generate
+key events. No such fixture change is included now, and the expected `Tqnyq`
+assertion is unchanged. No IME/accessibility settings are changed to force a pass.
+
+Diagnostic candidate builds locally. Shared helper DEX remains unchanged at
+`8a39a66562d2973a4462202a11add57ea14caaac75c06ce5defb30f08a34466c`;
+proof-only DEX is
+`3d0181b2bc79ae775828bd9dadd4ff11346ac4b6b8df3a7d6b5dd2e0e94e1556`.
+No diagnostic candidate has been published or run yet; renewed review is required.

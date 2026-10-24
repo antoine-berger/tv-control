@@ -15,11 +15,21 @@ import java.util.UUID;
 /** Test-only runner for a fresh owned emulator; never part of helper distribution. */
 public final class RuntimeProof extends NativeTextInstrumentation {
     private static final String ID = "org.tvcontrol.fixture:id/editor";
+    enum Stage { CONNECT_AUTOMATION, WAIT_IDLE, ROOT_LOOKUP, EDITOR_LOOKUP,
+        READ_EDITOR, REMAP_CHECK, CREATE_REQUEST, SERIALIZE_REQUEST, FOCUS_SWITCH,
+        CANCEL_MARKER, ENGINE_INVOKE, ENGINE_STATUS, READBACK_REFRESH, READBACK_CHECK,
+        REQUEST_CONSUMED, REPLAY_INVOKE, REPLAY_STATUS, REPLAY_READBACK, CLEANUP, DONE }
+    enum ErrorCode { NONE, ASSERTION, EXCEPTION }
+    enum SyntheticReadback { NOT_CHECKED, EXPECTED_REMAP, UNCHANGED_LITERAL, EMPTY, OTHER }
+    private Stage stage = Stage.CONNECT_AUTOMATION;
+    private SyntheticReadback syntheticReadback = SyntheticReadback.NOT_CHECKED;
     private UiAutomation automation;
     private AccessibilityNodeInfo editor(String id) {
+        stage = Stage.ROOT_LOOKUP;
         AccessibilityNodeInfo root = automation.getRootInActiveWindow();
         if (root == null) return null;
         try {
+            stage = Stage.EDITOR_LOOKUP;
             List<AccessibilityNodeInfo> nodes = root.findAccessibilityNodeInfosByViewId(id);
             if (nodes.size() == 1) return nodes.get(0);
             for (AccessibilityNodeInfo n : nodes) n.recycle();
@@ -36,15 +46,26 @@ public final class RuntimeProof extends NativeTextInstrumentation {
     @Override public void onStart() {
         Bundle result = new Bundle();
         result.putString("tv_native_runtime_proof", "failed");
+        ErrorCode error = ErrorCode.NONE;
         try {
             automation = connectForText();
             assertNotNull("automation", automation);
+            stage = Stage.WAIT_IDLE;
             automation.waitForIdle(200, 2000);
             testFixture();
+            stage = Stage.DONE;
             result.putString("tv_native_runtime_proof", "passed");
-        } catch (Exception | AssertionError ignored) {
-            // Fixed result only, no private UI contents or exception text.
-        } finally { finish(0, result); }
+        } catch (AssertionError ignored) {
+            error = ErrorCode.ASSERTION;
+        } catch (Exception ignored) {
+            error = ErrorCode.EXCEPTION;
+        } finally {
+            // Fixed enums only: never include UI text, exception messages or stacks.
+            result.putString("tv_native_runtime_stage", stage.name());
+            result.putString("tv_native_runtime_error", error.name());
+            result.putString("tv_native_runtime_readback", syntheticReadback.name());
+            finish(0, result);
+        }
     }
     private static void field(DataOutputStream out, String s) throws Exception {
         byte[] b = s.getBytes(StandardCharsets.UTF_8); out.writeInt(b.length); out.write(b);
@@ -54,13 +75,19 @@ public final class RuntimeProof extends NativeTextInstrumentation {
         boolean insertion = "normal".equals(mode);
         AccessibilityNodeInfo n = editor(ID);
         assertNotNull("fixture editor absent", n);
+        stage = Stage.READ_EDITOR;
         String before = n.getText() == null ? "" : n.getText().toString();
         if ("key-remap".equals(mode)) {
+            stage = Stage.REMAP_CHECK;
+            syntheticReadback = "Tqnyq".equals(before) ? SyntheticReadback.EXPECTED_REMAP
+                : "Tanya".equals(before) ? SyntheticReadback.UNCHANGED_LITERAL
+                : before.isEmpty() ? SyntheticReadback.EMPTY : SyntheticReadback.OTHER;
             assertEquals("Tqnyq", before);
             n.recycle();
             return;
         }
         String after = before + "Tanya é🙂%s'";
+        stage = Stage.CREATE_REQUEST;
         String token = UUID.randomUUID().toString().replace("-", "");
         File dir = new File(getTargetContext().getCacheDir().getCanonicalFile(), "tv-native-text-" + token);
         assertTrue("exclusive fixture directory", dir.mkdir());
@@ -68,6 +95,7 @@ public final class RuntimeProof extends NativeTextInstrumentation {
         assertTrue(dir.setReadable(true, true)); assertTrue(dir.setWritable(true, true)); assertTrue(dir.setExecutable(true, true));
         File request = new File(dir, "request");
         try {
+            stage = Stage.SERIALIZE_REQUEST;
             Rect bounds = new Rect(); n.getBoundsInScreen(bounds);
             try (DataOutputStream out = new DataOutputStream(new FileOutputStream(request))) {
                 out.writeInt(0x54564e31); out.writeLong(SystemClock.uptimeMillis() + 4000);
@@ -82,10 +110,14 @@ public final class RuntimeProof extends NativeTextInstrumentation {
             if ("focus".equals(mode)) {
                 AccessibilityNodeInfo other = editor("org.tvcontrol.fixture:id/other");
                 assertNotNull("other editor", other);
+                stage = Stage.FOCUS_SWITCH;
                 try { assertTrue(other.performAction(AccessibilityNodeInfo.ACTION_FOCUS)); }
                 finally { other.recycle(); }
             }
-            if ("cancel".equals(mode)) assertTrue(new File(dir, "cancel").createNewFile());
+            if ("cancel".equals(mode)) {
+                stage = Stage.CANCEL_MARKER;
+                assertTrue(new File(dir, "cancel").createNewFile());
+            }
             final String[] status = new String[1];
             TextEngine.ResultSink sink = new TextEngine.ResultSink() {
                 public void status(String result) {
@@ -93,23 +125,34 @@ public final class RuntimeProof extends NativeTextInstrumentation {
                     status[0] = result;
                 }
             };
+            stage = Stage.ENGINE_INVOKE;
             TextEngine.runOnce(getTargetContext().getCacheDir(), token,
                 new TextEngine.FocusSource() { public AccessibilityNodeInfo focused() { return inputFocus(automation); } }, sink);
+            stage = Stage.ENGINE_STATUS;
             assertEquals(insertion ? "verified" : "refused", status[0]);
+            stage = Stage.READBACK_REFRESH;
             assertTrue(n.refresh());
+            stage = Stage.READBACK_CHECK;
             assertEquals(insertion ? after : before, n.getText() == null ? "" : n.getText().toString());
+            stage = Stage.REQUEST_CONSUMED;
             assertFalse("request consumed", request.exists());
             status[0] = null;
+            stage = Stage.REPLAY_INVOKE;
             TextEngine.runOnce(getTargetContext().getCacheDir(), token,
                 new TextEngine.FocusSource() { public AccessibilityNodeInfo focused() { return inputFocus(automation); } }, sink);
+            stage = Stage.REPLAY_STATUS;
             assertEquals("refused", status[0]);
+            stage = Stage.REPLAY_READBACK;
             assertTrue(n.refresh());
             assertEquals(insertion ? after : before, n.getText() == null ? "" : n.getText().toString());
         } finally {
+            Stage previous = stage;
+            stage = Stage.CLEANUP;
             n.recycle();
             if (request.exists()) assertTrue(request.delete());
             File cancel = new File(dir, "cancel"); if (cancel.exists()) assertTrue(cancel.delete());
             assertTrue("owned cleanup", dir.delete());
+            stage = previous;
         }
     }
 }

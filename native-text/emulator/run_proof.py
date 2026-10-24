@@ -10,6 +10,7 @@ import tempfile
 import subprocess
 import time
 from process_group import leader_exited, stop_unreaped_group
+from proof_result import parse_proof_result
 
 MODES = ("key-remap", "normal", "hint", "password", "visible-password", "selection", "focus", "stale-window", "cancel")
 
@@ -143,8 +144,11 @@ def main():
                 shell("input", "text", "Tanya")
             result = shell("am", "instrument", "-w", "-e", "mode", mode,
                            "org.tvcontrol.nativehelper/org.tvcontrol.nativeinput.RuntimeProof", timeout=60)
-            if "tv_native_runtime_proof=passed" not in result or "INSTRUMENTATION_FAILED" in result:
-                raise RuntimeError("runtime fixture assertion failed: " + mode)
+            diagnostic = parse_proof_result(result)
+            if diagnostic["proof"] != "passed":
+                raise RuntimeError("runtime fixture assertion failed: " + mode
+                    + " stage=" + diagnostic["stage"] + " error=" + diagnostic["error"]
+                    + " synthetic_readback=" + diagnostic["readback"])
             if snapshot() != initial:
                 raise RuntimeError("runner changed IME/accessibility secure settings: " + mode)
             print("PASS runtime fixture:", mode, "; IME/accessibility secure settings unchanged")
