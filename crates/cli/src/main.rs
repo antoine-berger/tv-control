@@ -129,7 +129,7 @@ fn capabilities(cfg: &Config) -> Value {
                 "remote_media":if cfg.generic_adb_control {json!({"commands":["play","pause","stop","next","previous"],"routing":"system_global","qualification":"requires_sdk_and_input_help","evidence":"dispatch_only"})} else {json!(false)},"media":if cfg.generic_adb_control {json!({"commands":["pause","resume","next","previous"],"target":"session","qualification":"device_dependent","stop":false,"seek":false})} else {json!(false)},"wake":cfg.generic_adb_control,"standby":if cfg.generic_adb_control {json!("requires_api20_input_keyevent")} else {json!(false)},"mute":if cfg.generic_adb_control {json!("device_dependent")} else {json!(false)},"observe":true,"open_app":true,"pause":cfg.generic_adb_control || media_app.is_some(),"resume":cfg.generic_adb_control || media_app.is_some(),"navigate":cfg.generic_adb_control,"repeat":cfg.generic_adb_control,"long_select":if cfg.generic_adb_control {json!("requires_device_input_help")} else {json!(false)},"search":"native_or_explicit_launcher_dispatch","open_url":cfg.generic_adb_control,"ui":"device_dependent","type_text":if cfg.generic_adb_control {json!("focused_editable_ascii_accessibility_readback")} else {json!(false)},"set_volume":if cfg.generic_adb_control {json!("device_dependent")} else {json!(volume_max_index.is_some())},"adjust_volume":if cfg.generic_adb_control {json!("fresh_native_scale_required")} else {json!(false)},"set_volume_percent":if cfg.generic_adb_control {json!("fresh_native_scale_required")} else {json!(false)},"seek_relative":false,"select_audio_track":false,"select_subtitle_track":false,"resume_media":false},
                 "remote_key_acceptance":"app_and_device_dependent","remote_capabilities":"read_only_device_input_help","mute_scope":"android_music_stream_3_zero_not_external_audio","volume_unit":"android_music_stream_index_not_percent","volume_percent_unit":"fraction_of_native_index_scale_not_acoustic_loudness"}),
             tv_adapters::config::Device::Jellyfin {..}=>json!({"alias":alias,"adapter":"jellyfin","actions":{
-                "observe":true,"open_app":false,"pause":true,"resume":true,"set_volume":false,"mute":false,"resume_media":true,"media_read":true,"play_item":"client_capability_and_source_dependent","seek_media":"client_can_seek_and_source_dependent","seek_relative":"fresh_position_client_can_seek_and_source_dependent","select_audio_track":"fresh_client_command_and_source_dependent","select_subtitle_track":"fresh_client_command_and_source_dependent","adjust_volume":false,"set_volume_percent":false},"qualification":"requires_patched_server_and_compatible_client"})
+                "observe":true,"open_app":false,"pause":true,"resume":true,"set_volume":false,"mute":false,"resume_media":true,"media_read":true,"play_item":"client_capability_and_source_dependent","seek_media":"client_can_seek_and_source_dependent","seek_relative":"fresh_paused_position_client_can_seek_and_source_dependent","select_audio_track":"fresh_client_command_and_source_dependent","select_subtitle_track":"fresh_client_command_and_source_dependent","adjust_volume":false,"set_volume_percent":false},"qualification":"requires_patched_server_and_compatible_client"})
         }).collect::<Vec<_>>(),"apps":cfg.apps.keys().collect::<Vec<_>>(),"media":cfg.media.keys().collect::<Vec<_>>(),"workflows":cfg.workflows.keys().collect::<Vec<_>>()})
 }
 
@@ -329,6 +329,10 @@ mod capability_tests {
                 } else {
                     assert_eq!(actions["adjust_volume"], false);
                     assert_eq!(actions["set_volume_percent"], false);
+                    assert!(actions["seek_relative"]
+                        .as_str()
+                        .unwrap()
+                        .contains("paused"));
                     for action in [
                         "seek_relative",
                         "select_audio_track",

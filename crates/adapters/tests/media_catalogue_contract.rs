@@ -188,6 +188,7 @@ fn playback_preserves_unknown_capabilities_and_selected_indices() {
         panic!()
     };
     assert_eq!(p.position_ticks, None);
+    assert!(!p.capabilities.seek_relative);
     assert_eq!(p.can_seek, Some(false));
     assert_eq!(p.subtitle_index, Some(-1));
     assert_eq!(p.source_id.as_deref(), Some("source"));
@@ -212,4 +213,30 @@ fn missing_items_and_ambiguous_sessions_are_not_observed_successfully() {
         read(&mock, Read::Playback).unwrap_err().code,
         "jellyfin_session_not_found"
     );
+}
+
+#[test]
+fn relative_seek_capability_requires_paused_position_and_native_seek_support() {
+    for (session, available) in [
+        (
+            r#"[{"Id":"session","DeviceId":"example_device","UserId":"example_user","SupportsRemoteControl":true,"SupportsMediaControl":true,"NowPlayingItem":{"Id":"episode"},"PlayState":{"IsPaused":true,"PositionTicks":50000000,"CanSeek":true,"MediaSourceId":"source"}}]"#,
+            true,
+        ),
+        (
+            r#"[{"Id":"session","DeviceId":"example_device","UserId":"example_user","SupportsRemoteControl":true,"SupportsMediaControl":true,"NowPlayingItem":{"Id":"episode"},"PlayState":{"IsPaused":false,"PositionTicks":50000000,"CanSeek":true,"MediaSourceId":"source"}}]"#,
+            false,
+        ),
+        (
+            r#"[{"Id":"session","DeviceId":"example_device","UserId":"example_user","SupportsRemoteControl":true,"SupportsMediaControl":true,"NowPlayingItem":{"Id":"episode"},"PlayState":{"IsPaused":true,"PositionTicks":null,"CanSeek":true,"MediaSourceId":"source"}}]"#,
+            false,
+        ),
+    ] {
+        let mock = Mock::new(vec![VERSION, session]);
+        let Data::Playback(p) = read(&mock, Read::Playback).unwrap() else {
+            panic!()
+        };
+        assert!(p.capabilities.seek);
+        assert_eq!(p.capabilities.seek_relative, available);
+        assert_eq!(mock.paths.lock().unwrap().len(), 2);
+    }
 }

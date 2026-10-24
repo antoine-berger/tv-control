@@ -138,7 +138,7 @@ impl<D: DeviceControl, M: MediaCatalogue, S: StateStore, C: Clock> Service<D, M,
                 source_id,
                 position_ms,
             } => {
-                let plan =
+                let mut plan =
                     self.catalogue
                         .prepare(&req.device, item_id, source_id, *position_ms, ctx)?;
                 if &plan.item_id != item_id
@@ -155,6 +155,9 @@ impl<D: DeviceControl, M: MediaCatalogue, S: StateStore, C: Clock> Service<D, M,
                 {
                     return Err(Failure::before("seek_media_identity_mismatch"));
                 }
+                if matches!(req.action, Action::SeekRelative { .. }) {
+                    plan.require_paused = true;
+                }
                 Some(plan)
             }
             _ => None,
@@ -163,8 +166,10 @@ impl<D: DeviceControl, M: MediaCatalogue, S: StateStore, C: Clock> Service<D, M,
         // Even an already-satisfied no-op needs a live request before verification.
         ctx.check()?;
         if !matches!(
-            action,
-            Action::SelectAudioTrack { .. } | Action::SelectSubtitleTrack { .. }
+            req.action,
+            Action::SeekRelative { .. }
+                | Action::SelectAudioTrack { .. }
+                | Action::SelectSubtitleTrack { .. }
         ) && desired(&action, &before, plan.as_ref(), None)
         {
             return Ok((Status::Verified, before));
@@ -182,6 +187,24 @@ impl<D: DeviceControl, M: MediaCatalogue, S: StateStore, C: Clock> Service<D, M,
                 .map_err(|e| e.after_dispatch())?;
             // A read that completed after expiry must never become a success.
             ctx.check().map_err(|e| e.after_dispatch())?;
+            if let Action::SeekRelative { delta_ms, .. } = &req.action {
+                if plan.as_ref().is_some_and(|plan| {
+                    media_control::relative_verified(
+                        *delta_ms,
+                        &before,
+                        &observed,
+                        plan,
+                        self.policy.resume_position_tolerance_ms,
+                    )
+                }) {
+                    return Ok((Status::Verified, observed));
+                }
+                // Keep the immutable absolute target; no retry, extrapolation,
+                // delta recalculation, or pause/resume fallback is permitted.
+                ctx.wait(self.policy.verification_poll_ms)
+                    .map_err(|e| e.after_dispatch())?;
+                continue;
+            }
             if matches!(
                 action,
                 Action::Resume | Action::ResumeMedia { .. } | Action::PlayItem { .. }

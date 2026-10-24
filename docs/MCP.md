@@ -589,20 +589,41 @@ Configured Jellyfin API devices may expose these additional `tv_control` actions
 {"type":"select_subtitle_track","item_id":"active_item","source_id":"active_source","index":4}
 ```
 
-Fresh `tv_media_read` playback includes typed `capabilities` for seek, audio-track
-and subtitle-track selection. These describe current backend evidence, not user
+Fresh `tv_media_read` playback includes typed `capabilities` for absolute seek,
+paused-only `seek_relative`, audio-track and subtitle-track selection. These describe current backend evidence, not user
 authorization or universal app support. No API configuration means these controls
 are unavailable; there is no ADB, global key, UI or default-track fallback.
 
-Relative seek requires current item/source, a reported position, a positive source
-duration and fresh `CanSeek` plus `SupportsMediaControl`. It floors the reported
+Relative seek requires reported **paused** playback, current item/source, a
+reported position, a positive source duration and fresh `CanSeek` plus
+`SupportsMediaControl`. It floors the reported
 position to milliseconds, adds the nonzero signed `delta_ms` once under the device
 reservation, and validates the resulting absolute target. Overflow, negative
 targets and targets at or beyond duration are refused. The immutable absolute
 target is used throughout dispatch and verification, without further delta math.
 Allowed delta magnitude is at most 922337203685477 ms; this is an arithmetic bound,
-not a claim about usable media duration. Verification preserves playback state
-and uses the existing seek tolerance; it is not exact physical frame positioning.
+not a claim about usable media duration. Verification requires the same item/source
+and paused state, plus a strict displacement in the requested direction from the
+initial native position. An unchanged position or movement in the opposite
+direction cannot verify. When the requested delta magnitude is no larger than the
+configured seek tolerance, the observed position must equal the immutable target
+exactly; if client/keyframe precision cannot expose that target, the outcome stays
+unknown. Larger deltas allow the configured target tolerance, still excluding
+unchanged positions and the wrong direction. Native sub-millisecond fractions are
+not by themselves evidence of the requested millisecond displacement.
+
+Playing relative seek returns `unsupported` with
+`relative_seek_playing_unverifiable` before dispatch. The current observation
+contract has no rate/trajectory bound or correlated seek acknowledgement; natural
+playback progress near a target cannot establish that a seek was applied. There is
+no assumed 1x speed or implicit pause/resume. The prepared relative plan carries a
+paused precondition that the backend rechecks after metadata reads, immediately
+before dispatch; a newly playing session is refused before the POST. An external
+controller can still race the final read and command because the server exposes no
+atomic preconditioned seek endpoint. A successful paused receipt describes
+observed displacement and identity/state, not causality or physical frame proof.
+This restriction is specific to `seek_relative`; the existing absolute `seek_media`
+position-window contract is unchanged and does not establish command causality.
 
 Track selection requires an exact active item/source, one unambiguous stream index
 of the requested type in that source, and a freshly advertised client command

@@ -67,6 +67,8 @@ pub struct Playback {
 #[derive(Clone, Debug, PartialEq, Eq, Default)]
 pub struct ControlCapabilities {
     pub seek: bool,
+    /// Relative verification is currently available only for reported paused playback.
+    pub seek_relative: bool,
     pub select_audio_track: bool,
     pub select_subtitle_track: bool,
 }

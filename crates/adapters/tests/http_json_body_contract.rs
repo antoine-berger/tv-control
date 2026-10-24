@@ -1,7 +1,7 @@
 //! JSON commands remain bounded data in stdin, never curl arguments or config directives.
-use std::{
-    sync::{Arc, Mutex},
-    time::{SystemTime, UNIX_EPOCH},
+use std::sync::{
+    atomic::{AtomicU64, Ordering},
+    Arc, Mutex,
 };
 use tv_adapters::{
     config::Config,
@@ -33,13 +33,11 @@ fn request(body: Option<String>) -> HttpRequest {
 }
 fn with_http(test: impl FnOnce(&CurlHttp, &Capture, &Context<'_>)) {
     let mut cfg = Config::from_json(include_bytes!("../../../examples/config.json")).unwrap();
+    static NEXT: AtomicU64 = AtomicU64::new(0);
     let variable = format!(
         "TV_HTTP_BODY_FIXTURE_{}_{}",
         std::process::id(),
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
+        NEXT.fetch_add(1, Ordering::Relaxed)
     );
     cfg.servers.get_mut("library").unwrap().token_env = variable.clone();
     std::env::set_var(&variable, "fixture-token");

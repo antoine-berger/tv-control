@@ -108,8 +108,12 @@ Configured Jellyfin devices also accept these source-bound actions:
 Each line is a separate `action` object inside a normal request. Use fresh
 `media-read`/`tv_media_read` item and playback evidence for IDs and capabilities;
 these actions do not select a search result or create API access. Subtitle index
-`-1` explicitly requests off; null observations mean unknown. They preserve
-playing/paused state and do not issue play/resume. Their capability checks and
+`-1` explicitly requests off; null observations mean unknown. Relative seeking is
+paused-only: playing requests are unsupported before dispatch because natural
+progress cannot prove a seek. Paused verification requires displacement in the
+requested direction; a delta no larger than the tolerance requires exact target
+readback. Track changes preserve playing/paused state. No action issues implicit
+play/resume. Their capability checks and
 proof limits are described in [MCP](MCP.md#relative-seeking-and-source-bound-track-selection).
 
 Action availability depends on the [adapter](ADAPTERS.md). With the explicit generic

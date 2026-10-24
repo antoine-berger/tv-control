@@ -40,6 +40,9 @@ fn session(can_seek: bool, source: &str, types: &str) -> String {
 }
 
 fn apply(mock: &Mock, seek: bool) -> PortResult<()> {
+    apply_with_pause_precondition(mock, seek, false)
+}
+fn apply_with_pause_precondition(mock: &Mock, seek: bool, require_paused: bool) -> PortResult<()> {
     let cfg = Config::from_json(include_bytes!("../../../examples/config.json")).unwrap();
     let clock = SystemClock::default();
     let flag = CancelFlag::default();
@@ -60,6 +63,7 @@ fn apply(mock: &Mock, seek: bool) -> PortResult<()> {
         "media_screen",
         &action,
         Some(&MediaPlan {
+            require_paused,
             item_id: "episode".into(),
             source_id: Some("source".into()),
             media_kind: Some("video".into()),
@@ -191,4 +195,24 @@ fn new_controls_require_explicit_media_control_capability() {
             assert!(mock.sent.lock().unwrap().iter().all(|r| !r.mutating));
         }
     }
+}
+
+#[test]
+fn relative_paused_precondition_is_rechecked_against_the_fresh_dispatch_session() {
+    let mut session: serde_json::Value =
+        serde_json::from_str(&session(true, "source", "Video")).unwrap();
+    session[0]["PlayState"]["IsPaused"] = false.into();
+    let mock = Mock::new(vec![(200, VERSION.into()), (200, session.to_string())]);
+    assert_eq!(
+        apply_with_pause_precondition(&mock, true, true)
+            .unwrap_err()
+            .code,
+        "relative_seek_playing_unverifiable"
+    );
+    assert!(mock
+        .sent
+        .lock()
+        .unwrap()
+        .iter()
+        .all(|request| !request.mutating));
 }

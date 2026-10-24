@@ -107,6 +107,8 @@ pub const MEDIA_TICKS_PER_MILLISECOND: u64 = 10_000;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MediaPlan {
+    /// Recheck reported paused state immediately before dispatch; never pause implicitly.
+    pub require_paused: bool,
     pub item_id: String,
     pub source_id: Option<String>,
     pub media_kind: Option<String>,

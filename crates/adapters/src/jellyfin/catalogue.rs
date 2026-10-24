@@ -149,6 +149,7 @@ impl Jellyfin<'_> {
             return Err(Failure::before("media_position_out_of_range"));
         }
         Ok(MediaPlan {
+            require_paused: false,
             item_id: item.id,
             source_id: Some(source_id.into()),
             media_kind: Some(
@@ -200,6 +201,15 @@ impl Jellyfin<'_> {
                     && s.play_state
                         .as_ref()
                         .is_some_and(|p| p.can_seek == Some(true)),
+                seek_relative: s.supports_media_control == Some(true)
+                    && s.now_playing_item.is_some()
+                    && s.play_state.as_ref().is_some_and(|p| {
+                        p.can_seek == Some(true)
+                            && p.is_paused
+                            && p.position_ticks
+                                .is_some_and(|ticks| ticks <= i64::MAX as u64)
+                            && p.media_source_id.is_some()
+                    }),
                 select_audio_track: s.supports_media_control == Some(true)
                     && s.supported_commands
                         .iter()

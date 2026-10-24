@@ -59,6 +59,7 @@ impl MediaCatalogue for Catalogue {
         _: &Context<'_>,
     ) -> PortResult<MediaPlan> {
         Ok(MediaPlan {
+            require_paused: false,
             item_id: item_id.into(),
             source_id: Some(source_id.into()),
             media_kind: Some("video".into()),
@@ -67,6 +68,7 @@ impl MediaCatalogue for Catalogue {
     }
     fn resolve(&self, _: &str, _: &str, _: &Context<'_>) -> PortResult<MediaPlan> {
         Ok(MediaPlan {
+            require_paused: false,
             source_id: None,
             media_kind: None,
             item_id: "episode".into(),

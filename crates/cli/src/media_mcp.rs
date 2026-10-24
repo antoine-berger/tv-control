@@ -97,7 +97,7 @@ fn render(data: media::Data) -> Value {
         })).collect::<Vec<_>>()})
         }
         media::Data::Playback(p) => {
-            json!({"status":"observed","playback":{"item_id":p.item_id,"source_id":p.source_id,"position_ticks":p.position_ticks,"paused":p.paused,"can_seek":p.can_seek,"supports_media_control":p.supports_media_control,"audio_index":p.audio_index,"subtitle_index":p.subtitle_index,"client":p.client,"client_version":p.client_version,"supported_commands":p.supported_commands,"capabilities":{"seek":p.capabilities.seek,"select_audio_track":p.capabilities.select_audio_track,"select_subtitle_track":p.capabilities.select_subtitle_track}},"evidence":"client_reported_not_hardware_qualified"})
+            json!({"status":"observed","playback":{"item_id":p.item_id,"source_id":p.source_id,"position_ticks":p.position_ticks,"paused":p.paused,"can_seek":p.can_seek,"supports_media_control":p.supports_media_control,"audio_index":p.audio_index,"subtitle_index":p.subtitle_index,"client":p.client,"client_version":p.client_version,"supported_commands":p.supported_commands,"capabilities":{"seek":p.capabilities.seek,"seek_relative":p.capabilities.seek_relative,"select_audio_track":p.capabilities.select_audio_track,"select_subtitle_track":p.capabilities.select_subtitle_track}},"evidence":"client_reported_not_hardware_qualified"})
         }
     }
 }
@@ -170,6 +170,7 @@ mod tests {
             capabilities: media::ControlCapabilities::default(),
         }));
         assert!(value["playback"]["can_seek"].is_null());
+        assert_eq!(value["playback"]["capabilities"]["seek_relative"], false);
         assert_eq!(value["status"], "observed");
         assert_eq!(value["evidence"], "client_reported_not_hardware_qualified");
     }

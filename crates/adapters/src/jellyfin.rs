@@ -188,6 +188,7 @@ impl<'a> Jellyfin<'a> {
             return Err(Failure::before("resume_position_missing"));
         }
         Ok(MediaPlan {
+            require_paused: false,
             item_id: item.id,
             source_id: None,
             media_kind: None,
@@ -269,6 +270,9 @@ impl<'a> Jellyfin<'a> {
                         || p.media_source_id.as_ref() != Some(source_id)
                     {
                         return Err(Failure::before("seek_media_identity_mismatch"));
+                    }
+                    if plan.require_paused && !p.is_paused {
+                        return Err(Failure::unsupported("relative_seek_playing_unverifiable"));
                     }
                     if p.can_seek != Some(true) {
                         return Err(Failure::unsupported("seek_unsupported"));

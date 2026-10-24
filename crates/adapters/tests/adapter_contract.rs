@@ -94,6 +94,7 @@ fn jellyfin_204_only_means_dispatch() {
                 media: "series".into(),
             },
             Some(&MediaPlan {
+                require_paused: false,
                 source_id: None,
                 media_kind: None,
                 item_id: "episode".into(),

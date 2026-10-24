@@ -25,6 +25,7 @@ impl Clock for Time {
 struct Device {
     states: Mutex<VecDeque<Observed>>,
     applied: Mutex<Vec<Action>>,
+    pause_preconditions: Mutex<Vec<bool>>,
     cancel_after: Option<Arc<CancelFlag>>,
 }
 impl DeviceControl for Device {
@@ -36,8 +37,18 @@ impl DeviceControl for Device {
             s.front().unwrap().clone()
         })
     }
-    fn apply(&self, _: &str, a: &Action, _: Option<&MediaPlan>, _: &Context<'_>) -> PortResult<()> {
+    fn apply(
+        &self,
+        _: &str,
+        a: &Action,
+        plan: Option<&MediaPlan>,
+        _: &Context<'_>,
+    ) -> PortResult<()> {
         self.applied.lock().unwrap().push(a.clone());
+        self.pause_preconditions
+            .lock()
+            .unwrap()
+            .push(plan.is_some_and(|p| p.require_paused));
         if let Some(c) = &self.cancel_after {
             c.cancel();
         }
@@ -75,6 +86,7 @@ impl MediaCatalogue for Catalogue {
             return Err(Failure::before("media_position_out_of_range"));
         }
         Ok(MediaPlan {
+            require_paused: false,
             item_id: item.into(),
             source_id: Some(source.into()),
             media_kind: Some("video".into()),
@@ -128,6 +140,7 @@ fn service(states: Vec<Observed>) -> Service<Device, Catalogue, MemoryState, Tim
         devices: Device {
             states: Mutex::new(states.into()),
             applied: Mutex::new(vec![]),
+            pause_preconditions: Mutex::new(vec![]),
             cancel_after: None,
         },
         catalogue: Catalogue::default(),
@@ -291,4 +304,122 @@ fn cancel_after_dispatch_is_uncertain_and_never_replayed() {
     c.0.store(false, Ordering::Release);
     assert!(s.execute(req(audio(1)), &*c).cached);
     assert_eq!(s.devices.applied.lock().unwrap().len(), 1);
+}
+
+#[test]
+fn ignored_small_relative_seek_must_not_verify_unchanged_paused_position() {
+    for delta in [-50, 50] {
+        let s = service(vec![state(5000), state(5000)]);
+        let r = s.execute(req(seek(delta)), &CancelFlag::default());
+        assert_eq!(
+            r.status,
+            Status::OutcomeUnknown,
+            "delta={delta}: {}",
+            r.code
+        );
+        assert_eq!(s.devices.applied.lock().unwrap().len(), 1);
+    }
+}
+
+#[test]
+fn small_relative_seek_wrong_direction_never_verifies() {
+    for (delta, after) in [(-50, 5025), (50, 4975)] {
+        let s = service(vec![state(5000), state(after)]);
+        let r = s.execute(req(seek(delta)), &CancelFlag::default());
+        assert_eq!(
+            r.status,
+            Status::OutcomeUnknown,
+            "delta={delta}: {}",
+            r.code
+        );
+        assert_eq!(s.devices.applied.lock().unwrap().len(), 1);
+    }
+}
+
+#[test]
+fn natural_playing_progress_cannot_prove_relative_seek_and_dispatch_is_refused() {
+    for delta in [-50, 50] {
+        let playing = |position| Observed {
+            playback: Playback::Playing,
+            ..state(position)
+        };
+        let s = service(vec![playing(5000), playing(5010), playing(5020)]);
+        let r = s.execute(req(seek(delta)), &CancelFlag::default());
+        assert_eq!(r.status, Status::Unsupported, "delta={delta}: {}", r.code);
+        assert_eq!(r.code, "relative_seek_playing_unverifiable");
+        assert!(s.devices.applied.lock().unwrap().is_empty());
+    }
+}
+
+#[test]
+fn exact_small_paused_relative_seek_verifies_the_requested_displacement_once() {
+    for (delta, target) in [(-50, 4950), (50, 5050)] {
+        let s = service(vec![state(5000), state(target)]);
+        let r = s.execute(req(seek(delta)), &CancelFlag::default());
+        assert_eq!(r.status, Status::Verified, "delta={delta}: {}", r.code);
+        assert_eq!(
+            s.devices.pause_preconditions.lock().unwrap().as_slice(),
+            &[true]
+        );
+        assert_eq!(
+            s.devices.applied.lock().unwrap().as_slice(),
+            &[Action::SeekMedia {
+                item_id: "item".into(),
+                source_id: "source".into(),
+                position_ms: target,
+            }]
+        );
+    }
+}
+
+#[test]
+fn discarding_a_native_fraction_is_not_proof_of_the_requested_relative_displacement() {
+    for delta in [-1, 1] {
+        let mut before = state(5000);
+        before.position_ticks = Some(50_005_000); // 5000.5 ms, not an integral millisecond.
+        let s = service(vec![before, state(5000)]);
+        let r = s.execute(req(seek(delta)), &CancelFlag::default());
+        assert_eq!(
+            r.status,
+            Status::OutcomeUnknown,
+            "delta={delta}: {}",
+            r.code
+        );
+        assert_eq!(s.devices.applied.lock().unwrap().len(), 1);
+    }
+}
+
+#[test]
+fn relative_seek_cannot_verify_changed_pause_or_source_and_never_repairs() {
+    for after in [
+        Observed {
+            playback: Playback::Playing,
+            ..state(4950)
+        },
+        Observed {
+            media_source_id: Some("changed".into()),
+            ..state(4950)
+        },
+    ] {
+        let s = service(vec![state(5000), after]);
+        assert_eq!(
+            s.execute(req(seek(-50)), &CancelFlag::default()).status,
+            Status::OutcomeUnknown
+        );
+        assert_eq!(s.devices.applied.lock().unwrap().len(), 1);
+    }
+}
+
+#[test]
+fn native_fraction_can_verify_only_after_exact_resolved_target_is_observed() {
+    for (delta, target) in [(-50, 4950), (50, 5050)] {
+        let mut before = state(5000);
+        before.position_ticks = Some(50_005_000);
+        let s = service(vec![before, state(target)]);
+        assert_eq!(
+            s.execute(req(seek(delta)), &CancelFlag::default()).status,
+            Status::Verified
+        );
+        assert_eq!(s.devices.applied.lock().unwrap().len(), 1);
+    }
 }
