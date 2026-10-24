@@ -84,7 +84,32 @@ budget here.
 | Resume | `{"type":"resume"}` | Native playing state, or matching media with increasing position for position-based evidence |
 | Open app | `{"type":"open_app","app":"player"}` | Resolved installed app (or legacy configured app) is in the foreground |
 | Set volume | `{"type":"set_volume","index":5}` | Observed calibrated Android music stream index matches |
+| Relative volume | `{"type":"adjust_volume","delta":-2}` | Fresh native index plus delta matches; generic ADB grant required |
+| Native-scale percentage | `{"type":"set_volume_percent","percent":50}` | Observed index and scale match the calculated target; generic ADB grant required |
 | Resume media | `{"type":"resume_media","media":"series"}` | Matching item, expected seek range and two observations with increasing position |
+
+The relative-volume unit is one Android music stream index. Percentage is a
+fraction of the observed native index range, **not acoustic loudness**. For a
+zero-based scale with maximum `M`, the target is `(M * percent + 50) / 100` using
+integer division (nearest index, ties upward). Percent is 0–100. Relative targets
+outside the observed scale are rejected, not clamped. These actions never restore
+a previous level, infer an audio output identity, or toggle mute. See the
+[capability and concurrency limits](MCP.md#relative-and-percentage-volume).
+
+Configured Jellyfin devices also accept these source-bound actions:
+
+```json
+{"type":"seek_relative","item_id":"observed_item","source_id":"observed_source","delta_ms":-1000}
+{"type":"select_audio_track","item_id":"observed_item","source_id":"observed_source","index":1}
+{"type":"select_subtitle_track","item_id":"observed_item","source_id":"observed_source","index":-1}
+```
+
+Each line is a separate `action` object inside a normal request. Use fresh
+`media-read`/`tv_media_read` item and playback evidence for IDs and capabilities;
+these actions do not select a search result or create API access. Subtitle index
+`-1` explicitly requests off; null observations mean unknown. They preserve
+playing/paused state and do not issue play/resume. Their capability checks and
+proof limits are described in [MCP](MCP.md#relative-seeking-and-source-bound-track-selection).
 
 Action availability depends on the [adapter](ADAPTERS.md). With the explicit generic
 ADB grant, app selectors may be observed names, package IDs or exact discovered

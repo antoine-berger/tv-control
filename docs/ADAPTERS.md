@@ -7,7 +7,7 @@ and curl executables; neither executable, an ADB daemon nor a tunnel is bundled.
 | Backend | Implemented | Unavailable |
 | --- | --- | --- |
 | ADB | State reads, TV app launch, targeted media pause/play, calibrated or generic native-range music stream volume, generic music-stream mute | Discovery, pairing, connection setup, media catalogue or title selection |
-| Jellyfin HTTP via curl | Exact session selection, pause/unpause, configured series resume at saved position, postcondition reads, bounded catalog/episode/source/track metadata, explicit item/source playback and source-bound seek | App launch, volume, library mutation or credential creation |
+| Jellyfin HTTP via curl | Exact session selection, pause/unpause, configured series resume at saved position, postcondition reads, bounded catalog/episode/source/track metadata, explicit item/source playback, absolute/relative source-bound seek and client-capability-bound audio/subtitle selection | App launch, volume, library mutation or credential creation |
 | YouTube / YouTube Music | Generic ADB app launch and native media controls where supported | Search, lyrics, song/video mode, account navigation or a service-specific Cast adapter |
 | Cast / Android TV Remote v2 / UIAutomator | No implemented backend | These are extension possibilities, not working adapters |
 
@@ -31,6 +31,11 @@ must still match. `tv_read` with `read: {"type":"volume"}` exposes both
 music stream index. It is neither
 TV percent nor an external receiver's level, and need not match the number shown
 by a television.
+
+Generic relative and percentage volume use the same native music-stream evidence,
+with a freshly resolved absolute target and a range recheck before mutation. They
+require the existing generic grant and do not identify the physical output or
+implement restoration. See [relative volume semantics](MCP.md#relative-and-percentage-volume).
 
 Generic `mute` is separately available under the explicit generic ADB grant. It
 requires readable Android music stream 3 volume, sets that stream to zero, and
@@ -84,6 +89,15 @@ Some Android TV clients handle Pause/Unpause as toggles. The adapter checks curr
 state immediately before sending once and avoids a redundant command. A physical
 remote can still change state between that read and dispatch; there is no
 compare-and-set operation. Ambiguous commands are not automatically retried.
+
+Audio/subtitle selection uses the API's JSON `GeneralCommand` form:
+`POST /Sessions/{id}/Command`, with a closed command `Name` and string `Index`
+inside `Arguments`. The `/Command/{command}` shortcut does not convey the index.
+The bounded JSON body is escaped into curl's stdin configuration alongside the
+existing token; neither is put in process arguments or returned in diagnostics.
+Session `SupportedCommands` and media-control support must be fresh, in addition
+to exact item/source/track metadata. Null selected indices are unknown. See the
+[source-bound contract](MCP.md#relative-seeking-and-source-bound-track-selection).
 
 ### Credential handling
 

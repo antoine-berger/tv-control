@@ -544,11 +544,82 @@ qualification is claimed by fixture tests.
 Existing journals without source identity remain readable after upgrade; absent
 source fields are not written as new null keys. Journals containing non-null
 `media_source_id` (including Jellyfin observations saved in control receipts)
-require the updated reader. Upgrade/restart **all** CLI/bridge processes sharing
+require the updated reader. New relative/percentage volume intents and track-aware
+receipts also require the updated reader once written. Upgrade/restart **all** CLI/bridge processes sharing
 that journal before using this version with Jellyfin. Concurrent old/new readers
 and downgrade after writing source-aware receipts are not supported. Do not
 remove a journal to work around this: it contains no-replay evidence for uncertain
 commands. This change does not migrate credentials or change account access.
+
+### Relative and percentage volume
+
+With the existing explicit generic ADB grant, `tv_control` and CLI `execute` accept:
+
+```json
+{"type":"adjust_volume","delta":-2}
+{"type":"set_volume_percent","percent":50}
+```
+
+`delta` is signed native music-stream index steps; `percent` is an integer 0–100
+of the **native index scale**, not acoustic volume or an external receiver level.
+The application reads current index and maximum under the shared device journal
+reservation. It computes one absolute target, then verifies both index and scale.
+Percentage rounding is nearest index with ties upward: `(maximum * percent + 50)
+/ 100`. For example, 50 on a maximum of 17 targets index 9. Relative out-of-range
+targets are rejected without clamping or a write. Unknown, invalid or changing
+scales fail explicitly; configured calibration must still match.
+
+The adapter rechecks the range before a write. An already-satisfied target still
+requires a live deadline and cancellation check after observation. The operation
+ID identifies the original relative/percentage request: recovery returns the
+retained result and never recomputes a delta. Different parameters with the same
+ID conflict. Physical remotes and independently configured controllers remain
+outside this journal's exclusion. These actions do not identify the physical
+audio output, restore volume, unmute, or establish silence. They are simulated
+contracts until separately qualified on an authorized device/output.
+
+### Relative seeking and source-bound track selection
+
+Configured Jellyfin API devices may expose these additional `tv_control` actions:
+
+```json
+{"type":"seek_relative","item_id":"active_item","source_id":"active_source","delta_ms":-1000}
+{"type":"select_audio_track","item_id":"active_item","source_id":"active_source","index":1}
+{"type":"select_subtitle_track","item_id":"active_item","source_id":"active_source","index":4}
+```
+
+Fresh `tv_media_read` playback includes typed `capabilities` for seek, audio-track
+and subtitle-track selection. These describe current backend evidence, not user
+authorization or universal app support. No API configuration means these controls
+are unavailable; there is no ADB, global key, UI or default-track fallback.
+
+Relative seek requires current item/source, a reported position, a positive source
+duration and fresh `CanSeek` plus `SupportsMediaControl`. It floors the reported
+position to milliseconds, adds the nonzero signed `delta_ms` once under the device
+reservation, and validates the resulting absolute target. Overflow, negative
+targets and targets at or beyond duration are refused. The immutable absolute
+target is used throughout dispatch and verification, without further delta math.
+Allowed delta magnitude is at most 922337203685477 ms; this is an arithmetic bound,
+not a claim about usable media duration. Verification preserves playback state
+and uses the existing seek tolerance; it is not exact physical frame positioning.
+
+Track selection requires an exact active item/source, one unambiguous stream index
+of the requested type in that source, and a freshly advertised client command
+`SetAudioStreamIndex` or `SetSubtitleStreamIndex` with media-control support.
+Metadata alone never proves this capability. Audio indices are 0–2147483647;
+subtitle indices are -1–2147483647, with `-1` an explicit off request. Missing/null
+indices remain unknown, not off or a default selection. The adapter sends one
+typed JSON command and verifies the requested index, item/source and unchanged
+playing/paused state. It does not issue play/resume or alter account preferences.
+
+A 204 acknowledgement is dispatch evidence only. An ignored command, changed
+identity/state, cancellation or expiry after possible dispatch is uncertain; no
+repair, rollback or implicit retry follows. Receipt observations expose
+`audio_index` and `subtitle_index` when reported. Old journal receipts without
+these fields remain readable. As with source-aware receipts, all processes sharing
+a journal must use the updated reader before writing new track evidence; do not
+erase the journal to downgrade. No real Jellyfin/client or audio mutation
+qualification is claimed by fixture tests.
 
 ### Selected app details (read-only)
 

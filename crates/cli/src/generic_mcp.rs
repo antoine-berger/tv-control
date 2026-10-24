@@ -563,7 +563,7 @@ pub fn extend_tools(tools: &mut Value) {
         .iter_mut()
         .find(|t| t["name"] == "tv_control")
         .expect("control tool");
-    control["description"] = json!("Never retry outcome_unknown. Volume delta: native index; percent: native scale, rounded half up, not loudness. Mute: stream 3 zero, not speaker proof. Media: precise session from read media. Remote_media: system-global key, Android routes; dispatch only, no fallback. Search/URL/next/previous: dispatch only. Text: focused editable ref; ASCII except %/?, matching accessibility readback; mismatch unknown, no repair. Unique IDs.");
+    control["description"] = json!("Never retry outcome_unknown. Volume %: native scale, not loudness. Remote media: global. Text: layout dependent. Dispatch is not proof.");
     let actions = control["inputSchema"]["properties"]["action"]["oneOf"]
         .as_array_mut()
         .unwrap();
@@ -604,6 +604,7 @@ pub fn extend_tools(tools: &mut Value) {
         }
     });
     actions.push(json!({"type":"object","properties":{"type":{"enum":simple}},"required":["type"],"additionalProperties":false}));
+    crate::control_schema::compact(&mut control["inputSchema"]["properties"]["action"]);
     list.push(json!({"name":"tv_read","description":"Read TV. Volume: stream 3 index/max. Untrusted text.","inputSchema":{"type":"object","properties":{"device":{"type":"string","pattern":"^[A-Za-z0-9_-]{1,64}$"},"expires_at_unix_ms":{"type":"integer","minimum":1},"read":{"oneOf":[{"type":"object","properties":{"type":{"const":"app_details"},"app":{"type":"string","minLength":1,"maxLength":512}},"required":["type","app"],"additionalProperties":false},{"type":"object","properties":{"type":{"enum":["state","volume","power","media","remote_capabilities","inputs","ui","screenshot"]}},"required":["type"],"additionalProperties":false},{"type":"object","properties":{"type":{"const":"apps"},"query":{"type":"string","maxLength":200},"since":{"type":"string","maxLength":64},"limit":{"type":"integer","minimum":1,"maximum":32,"default":12},"refresh":{"type":"boolean","default":false}},"required":["type"],"additionalProperties":false}]}},"required":["device","expires_at_unix_ms","read"],"additionalProperties":false},"annotations":{"readOnlyHint":true,"openWorldHint":false}}));
     list.push(json!({"name":"tv_operation","description":"Recover/cancel; no rollback.","inputSchema":{"type":"object","properties":{"request_id":{"type":"string","pattern":"^[A-Za-z0-9_-]{1,64}$"},"cancel":{"type":"boolean","default":false}},"required":["request_id"],"additionalProperties":false},"annotations":{"readOnlyHint":false,"destructiveHint":false,"idempotentHint":true,"openWorldHint":false}}));
 }
@@ -788,8 +789,8 @@ mod tests {
                 json!({"jsonrpc":"2.0","id":1,"result":{"tools":[tool],"nextCursor":"999"}});
             assert!(
                 frame.to_string().len() < 4096,
-                "tool schema too large: {}",
-                tool["name"]
+                "tool schema too large: {} ({} bytes)",
+                tool["name"], frame.to_string().len()
             );
         }
     }
