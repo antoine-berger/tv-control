@@ -15,6 +15,9 @@ from urllib.parse import urlsplit
 from process_group import require_nonreaping_wait
 
 
+MAX_PROVENANCE_FILES = 32768
+
+
 @dataclass(frozen=True)
 class Runtime:
     mode: str
@@ -172,7 +175,7 @@ def verify_local_inputs(sdk, build, work, provenance, runtime):
     required = {"platform-tools/adb", "emulator/emulator", "licenses/android-sdk-license"}
     required.update(runtime.image + "/" + name for name in (
         "source.properties", "kernel-ranchu", "ramdisk.img", "system.img", "vendor.img", "userdata.img"))
-    if not isinstance(files, dict) or not required <= files.keys() or len(files) > 20000:
+    if not isinstance(files, dict) or not required <= files.keys() or len(files) > MAX_PROVENANCE_FILES:
         raise RuntimeError("SDK runtime file digests are missing or unbounded")
     for directory in (sdk / "platform-tools", sdk / "emulator", sdk / runtime.image):
         if any(str(path.relative_to(sdk)) not in files for path in directory.rglob("*") if path.is_file()):
