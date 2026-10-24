@@ -8,7 +8,7 @@ from proof_result import ALLOWED, STAGES, parse_proof_result, parse_activity_sta
 
 def response(proof="failed", stage="REMAP_CHECK", error="ASSERTION", readback="UNCHANGED_LITERAL"):
     return "\n".join("INSTRUMENTATION_RESULT: tv_native_runtime_" + key + "=" + value
-                     for key, value in dict(proof=proof, stage=stage, error=error, readback=readback, root="NOT_CHECKED", matches="NOT_CHECKED", report_ids="UNKNOWN", interactive="UNKNOWN", keyguard_locked="UNKNOWN").items())
+                     for key, value in dict(proof=proof, stage=stage, error=error, readback=readback, overlay="NOT_CHECKED", root="NOT_CHECKED", matches="NOT_CHECKED", report_ids="UNKNOWN", interactive="UNKNOWN", keyguard_locked="UNKNOWN").items())
 
 
 class ProofResultTests(unittest.TestCase):
@@ -57,7 +57,7 @@ class ProofResultTests(unittest.TestCase):
 
     def test_new_diagnostic_values_are_strictly_allowlisted(self):
         valid = response()
-        for key in ("root", "matches", "report_ids", "interactive", "keyguard_locked"):
+        for key in ("overlay", "root", "matches", "report_ids", "interactive", "keyguard_locked"):
             prefix = "tv_native_runtime_" + key + "="
             bad = re.sub(prefix + r"[^\n]+", prefix + "private", valid)
             with self.assertRaises(RuntimeError) as error:
@@ -66,7 +66,7 @@ class ProofResultTests(unittest.TestCase):
 
     def test_java_enum_definitions_match_host_allowlist(self):
         source = (Path(__file__).parent / "src/org/tvcontrol/nativeinput/RuntimeProof.java").read_text()
-        for java_name, key in (("Stage", "stage"), ("ErrorCode", "error"), ("SyntheticReadback", "readback"), ("RootCategory", "root"), ("MatchCount", "matches"), ("ObservedState", "interactive")):
+        for java_name, key in (("Stage", "stage"), ("ErrorCode", "error"), ("SyntheticReadback", "readback"), ("RootCategory", "root"), ("Overlay", "overlay"), ("MatchCount", "matches"), ("ObservedState", "interactive")):
             body = re.search(r"enum " + java_name + r" \{([^}]+)\}", source).group(1)
             actual = frozenset(item.strip() for item in body.split(","))
             self.assertEqual(actual, ALLOWED[key])

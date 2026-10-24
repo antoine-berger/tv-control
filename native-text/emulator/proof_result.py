@@ -4,7 +4,8 @@ ERRORS = frozenset(("NONE", "ASSERTION", "EXCEPTION"))
 READBACKS = frozenset(("NOT_CHECKED", "EXPECTED_REMAP", "UNCHANGED_LITERAL", "EMPTY", "OTHER"))
 ALLOWED = {"proof": frozenset(("passed", "failed")), "stage": STAGES, "error": ERRORS, "readback": READBACKS}
 
-ALLOWED.update(root=frozenset("NOT_CHECKED FIXTURE HELPER IME SYSTEM OTHER MISSING".split()),
+ALLOWED.update(overlay=frozenset("NOT_CHECKED ANR_DIALOG CRASH_DIALOG ERROR_DIALOG GENERIC_PROMPT UNKNOWN_SYSTEM NON_SYSTEM".split()),
+               root=frozenset("NOT_CHECKED FIXTURE HELPER IME SYSTEM OTHER MISSING".split()),
                matches=frozenset("NOT_CHECKED ZERO ONE MULTIPLE".split()))
 for key in ("report_ids", "interactive", "keyguard_locked"):
     ALLOWED[key] = frozenset(("UNKNOWN", "YES", "NO"))

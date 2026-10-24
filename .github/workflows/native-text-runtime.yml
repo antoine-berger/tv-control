@@ -45,6 +45,7 @@ jobs:
           python3 native-text/emulator/test_runtime_backend.py
           python3 native-text/emulator/test_process_group.py
           python3 native-text/emulator/test_proof_result.py
+          python3 native-text/emulator/test_owned_errors.py
           cargo test --manifest-path native-text/host/Cargo.toml --locked --offline
       - name: Build project-owned fixture and instrumentation APKs
         shell: bash

@@ -191,3 +191,34 @@ Unavailable observations remain UNKNOWN. These observations do not change select
 assertions, or helper behavior. Activity-manager launch output is reduced to a fixed
 category; FIXTURE_OK means a reported successful launch, not proof it stayed visible
 or did not subsequently crash. No launch category bypasses the existing assertions.
+
+### Bounded system-overlay / owned-error diagnosis
+
+The test runner now recognizes AOSP dialog resource IDs without reading labels or
+clicking: `aerr_wait` (ANR), `aerr_restart`/`aerr_app_info` (crash), ambiguous
+`aerr_close` (error dialog), and `alertTitle`/`button1` (generic prompt). Resource
+shape alone does **not** identify the affected app. Known source references:
+[AppErrorDialog](https://android.googlesource.com/platform/frameworks/base/+/refs/tags/android-12.1.0_r27/services/core/java/com/android/server/am/AppErrorDialog.java),
+[AppNotRespondingDialog](https://android.googlesource.com/platform/frameworks/base/+/refs/tags/android-12.1.0_r27/services/core/java/com/android/server/am/AppNotRespondingDialog.java).
+These are best-effort AOSP signatures, not a universal dialog detector.
+
+On failure only, after the exclusive fresh-owned-AVD gate, read at most 160 crash
+and 160 system log records (10 seconds each, existing 128 KiB output bound).
+AndroidRuntime/ActivityManager tag filters exclude other tags. Raw records are
+transient local parser input, never printed, uploaded, or saved as an artifact.
+The parser emits only exact owned package enums, allowlisted exception classes
+(other classes become OTHER_EXCEPTION), and at most eight known project source
+filename:line entries per crash. PID-bound Process records establish attribution;
+ANR attribution requires an exact owned-package ANR record. The tail may be
+truncated or unavailable; absence is not evidence of no crash/ANR. Events may
+precede the current overlay, so report overlay shape and owned events separately.
+No messages, system source frames, thread names, UI text, or arbitrary classes are
+returned. Fixture/proof DEX retain source/line debug metadata only (no locals);
+standalone helper compilation is unchanged. No setting changes, log clearing,
+dialog dismissal, selector fallback, action replay, or altered assertions.
+
+The existing pinned `system-images/android-31/default/x86_64` is already clean
+AOSP, with PlayStore disabled and no Google APIs/GMS image. A GMS-to-AOSP switch
+is therefore not an available explanation/fix. Software CPU/rendering pressure
+remains only a hypothesis until diagnostics establish it; resolution/RAM/backend
+changes would need a separately reviewed environment patch.

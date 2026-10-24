@@ -11,11 +11,11 @@ def run(args):
     subprocess.run([str(x) for x in args], check=True, timeout=120)
 
 
-def dex(java, tools, platform, sources, output):
+def dex(java, tools, platform, sources, output, source_lines=False):
     classes = output / "classes"
     classes.mkdir(parents=True)
     run([java, "-m", "jdk.compiler/com.sun.tools.javac.Main", "-source", "8", "-target", "8",
-         "-Xlint:-options", "-g:none", "-encoding", "UTF-8", "-bootclasspath", platform / "android.jar",
+         "-Xlint:-options", "-g:source,lines" if source_lines else "-g:none", "-encoding", "UTF-8", "-bootclasspath", platform / "android.jar",
          "-d", classes, *sources])
     run([java, "-cp", tools / "lib/d8.jar", "com.android.tools.r8.D8", "--release",
          "--min-api", "26", "--lib", platform / "android.jar", "--output", output,
@@ -52,7 +52,7 @@ def main():
             run([tools / "aapt2", "compile", "--dir", resources, "-o", resource])
             command.append(resource)
         run(command)
-        dex(args.java, tools, platform, sources + sorted(generated.rglob("*.java")), work / "dex")
+        dex(args.java, tools, platform, sources + sorted(generated.rglob("*.java")), work / "dex", source_lines=name in ("fixture", "proof"))
         data = (work / "dex/classes.dex").read_bytes()
         with zipfile.ZipFile(unsigned, "a") as archive:
             entry = zipfile.ZipInfo("classes.dex", date_time=(1980, 1, 1, 0, 0, 0))

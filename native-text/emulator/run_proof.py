@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Run fixture proof on an exclusively owned fresh API31 AVD; never a real device."""
 import argparse
+import json
 import os
 from pathlib import Path
 import signal
@@ -9,6 +10,7 @@ import threading
 import tempfile
 import subprocess
 import time
+from owned_errors import summarize_owned_errors
 from process_group import leader_exited, stop_unreaped_group
 from proof_result import parse_proof_result, parse_activity_start
 
@@ -152,6 +154,7 @@ def main():
                 raise RuntimeError("runtime fixture assertion failed: " + mode
                     + " stage=" + diagnostic["stage"] + " error=" + diagnostic["error"]
                     + " synthetic_readback=" + diagnostic["readback"]
+                    + " overlay=" + diagnostic["overlay"]
                     + " launch=" + launch + " root=" + diagnostic["root"]
                     + " matches=" + diagnostic["matches"] + " report_ids=" + diagnostic["report_ids"]
                     + " interactive=" + diagnostic["interactive"]
@@ -160,6 +163,18 @@ def main():
                 raise RuntimeError("runner changed IME/accessibility secure settings: " + mode)
             print("PASS runtime fixture:", mode, "; IME/accessibility secure settings unchanged")
         print("PASS modern helper entrypoint; all proof modes passed on owned API31 only")
+    except (subprocess.SubprocessError, RuntimeError, UnicodeError):
+        # Also handles a crashed instrumentation process or absent result protocol.
+        # This is after the exclusive owned-AVD gate, before owned cleanup.
+        try:
+            crash = shell("logcat", "-b", "crash", "-d", "-t", "160", "-v", "brief", "AndroidRuntime:E", "*:S", timeout=10)
+            system = shell("logcat", "-b", "system", "-d", "-t", "160", "-v", "brief", "ActivityManager:E", "*:S", timeout=10)
+            errors = summarize_owned_errors(crash, system)
+            del crash, system
+        except (subprocess.SubprocessError, RuntimeError, UnicodeError):
+            errors = {"collection": "UNAVAILABLE", "crashes": [], "anrs": []}
+        print("Owned error metadata:", json.dumps(errors, sort_keys=True), flush=True)
+        raise
     finally:
         # Uninstall only our owned packages; terminate only our emulator process/target.
         for package in ("org.tvcontrol.fixture", "org.tvcontrol.nativehelper"):

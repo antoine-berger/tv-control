@@ -26,6 +26,8 @@ public final class RuntimeProof extends NativeTextInstrumentation {
     enum ErrorCode { NONE, ASSERTION, EXCEPTION }
     enum SyntheticReadback { NOT_CHECKED, EXPECTED_REMAP, UNCHANGED_LITERAL, EMPTY, OTHER }
     enum RootCategory { NOT_CHECKED, FIXTURE, HELPER, IME, SYSTEM, OTHER, MISSING }
+    enum Overlay { NOT_CHECKED, ANR_DIALOG, CRASH_DIALOG, ERROR_DIALOG, GENERIC_PROMPT, UNKNOWN_SYSTEM, NON_SYSTEM }
+    private Overlay overlay = Overlay.NOT_CHECKED;
     enum MatchCount { NOT_CHECKED, ZERO, ONE, MULTIPLE }
     enum ObservedState { UNKNOWN, YES, NO }
     private RootCategory rootCategory = RootCategory.NOT_CHECKED;
@@ -57,12 +59,28 @@ public final class RuntimeProof extends NativeTextInstrumentation {
     private Stage stage = Stage.CONNECT_AUTOMATION;
     private SyntheticReadback syntheticReadback = SyntheticReadback.NOT_CHECKED;
     private UiAutomation automation;
+    private static boolean hasId(AccessibilityNodeInfo root, String id) {
+        List<AccessibilityNodeInfo> nodes = root.findAccessibilityNodeInfosByViewId(id);
+        boolean found = !nodes.isEmpty();
+        for (AccessibilityNodeInfo node : nodes) node.recycle();
+        return found;
+    }
+    private static Overlay classifyOverlay(AccessibilityNodeInfo root, RootCategory category) {
+        if (category != RootCategory.SYSTEM) return Overlay.NON_SYSTEM;
+        // Known AOSP resource IDs only; do not read labels or dismiss anything.
+        if (hasId(root, "android:id/aerr_wait")) return Overlay.ANR_DIALOG;
+        if (hasId(root, "android:id/aerr_restart") || hasId(root, "android:id/aerr_app_info")) return Overlay.CRASH_DIALOG;
+        if (hasId(root, "android:id/aerr_close")) return Overlay.ERROR_DIALOG;
+        if (hasId(root, "android:id/alertTitle") || hasId(root, "android:id/button1")) return Overlay.GENERIC_PROMPT;
+        return Overlay.UNKNOWN_SYSTEM;
+    }
     private AccessibilityNodeInfo editor(String id) {
         stage = Stage.ROOT_LOOKUP;
         AccessibilityNodeInfo root = automation.getRootInActiveWindow();
         if (root == null) { rootCategory = RootCategory.MISSING; return null; }
         try {
             rootCategory = category(root.getPackageName());
+            overlay = classifyOverlay(root, rootCategory);
             stage = Stage.EDITOR_LOOKUP;
             List<AccessibilityNodeInfo> nodes = root.findAccessibilityNodeInfosByViewId(id);
             matches = nodes.isEmpty() ? MatchCount.ZERO : nodes.size() == 1 ? MatchCount.ONE : MatchCount.MULTIPLE;
@@ -100,6 +118,7 @@ public final class RuntimeProof extends NativeTextInstrumentation {
             result.putString("tv_native_runtime_stage", stage.name());
             result.putString("tv_native_runtime_error", error.name());
             result.putString("tv_native_runtime_readback", syntheticReadback.name());
+            result.putString("tv_native_runtime_overlay", overlay.name());
             result.putString("tv_native_runtime_root", rootCategory.name());
             result.putString("tv_native_runtime_matches", matches.name());
             result.putString("tv_native_runtime_report_ids", reportIds.name());
