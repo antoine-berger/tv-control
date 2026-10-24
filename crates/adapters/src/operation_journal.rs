@@ -75,6 +75,8 @@ enum IntentWire {
     Standby,
     Mute,
     SetVolume { index: u16 },
+    AdjustVolume { delta: i16 },
+    SetVolumePercent { percent: u8 },
     Pause,
     Resume,
     Media { session: String, command: String },
@@ -100,6 +102,8 @@ impl From<&Intent> for IntentWire {
             Intent::Standby => Self::Standby,
             Intent::Mute => Self::Mute,
             Intent::SetVolume { index } => Self::SetVolume { index: *index },
+            Intent::AdjustVolume { delta } => Self::AdjustVolume { delta: *delta },
+            Intent::SetVolumePercent { percent } => Self::SetVolumePercent { percent: *percent },
             Intent::Pause => Self::Pause,
             Intent::Resume => Self::Resume,
             Intent::Media { session, command } => Self::Media {

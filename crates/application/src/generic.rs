@@ -1,4 +1,5 @@
 //! Generic TV ports and deterministic orchestration, independent of transport.
+mod volume;
 use crate::{Cancellation, Context};
 use tv_domain::{generic::*, Observed, PortResult};
 
@@ -32,6 +33,20 @@ pub trait Device: Send + Sync {
     }
     fn media(&self, _device: &str, _ctx: &Context<'_>) -> PortResult<Vec<MediaSession>> {
         Err(tv_domain::Failure::unsupported("unsupported"))
+    }
+    /// Set a resolved absolute native index only if the fresh native scale still
+    /// matches the one used to calculate it. Unsupported by default; never emulate
+    /// this capability with repeated volume keys or an implicit mute restoration.
+    fn set_volume_target(
+        &self,
+        _device: &str,
+        _index: u16,
+        _expected_max_index: u16,
+        _ctx: &Context<'_>,
+    ) -> PortResult<()> {
+        Err(tv_domain::Failure::unsupported(
+            "relative_volume_unsupported",
+        ))
     }
     fn ui(&self, device: &str, ctx: &Context<'_>) -> PortResult<UiSnapshot>;
     fn remote_capabilities(
@@ -237,9 +252,15 @@ impl<D: Device, C: Clock> Service<D, C> {
         if !before.connected {
             return Err(Failure::before("device_not_ready"));
         }
-        let explicit_component =
-            matches!(&request.intent, Intent::OpenApp { app } if app.contains('/'));
-        if !explicit_component && desired(&request.intent, resolved.as_ref(), &before) {
+        // The journal owns the original intent and device exclusion before this
+        // fresh sample. Resolve once; polling and replay never recalculate a delta.
+        let volume_target = volume::Target::resolve(&request.intent, &before)?;
+        let absolute_volume = volume_target
+            .as_ref()
+            .map(|t| Intent::SetVolume { index: t.index });
+        let intent = absolute_volume.as_ref().unwrap_or(&request.intent);
+        let explicit_component = matches!(intent, Intent::OpenApp { app } if app.contains('/'));
+        if !explicit_component && desired(intent, resolved.as_ref(), &before) {
             reply.status = Status::Verified;
             reply.code = "state_verified".into();
             reply.observed = Some(before);
@@ -247,29 +268,38 @@ impl<D: Device, C: Clock> Service<D, C> {
         }
         // A pre-dispatch sample cannot describe an uncertain mutation.
         reply.observed = None;
-        self.device
-            .apply(&request.device, &request.intent, resolved.as_ref(), ctx)?;
+        ctx.check()?;
+        if let Some(target) = &volume_target {
+            self.device
+                .set_volume_target(&request.device, target.index, target.max_index, ctx)?;
+        } else {
+            self.device
+                .apply(&request.device, intent, resolved.as_ref(), ctx)?;
+        }
         loop {
             ctx.check().map_err(|e| e.after_dispatch())?;
             let observed = self
                 .device
-                .observe_for(&request.device, &request.intent, ctx)
+                .observe_for(&request.device, intent, ctx)
                 .map_err(|e| e.after_dispatch())?;
             ctx.check().map_err(|e| e.after_dispatch())?;
             reply.observed = Some(diagnostic_state(&observed));
-            if request.intent == Intent::Standby
-                && (!observed.connected || observed.awake.is_none())
-            {
+            if let Some(target) = &volume_target {
+                target
+                    .check_scale(&observed)
+                    .map_err(|e| e.after_dispatch())?;
+            }
+            if *intent == Intent::Standby && (!observed.connected || observed.awake.is_none()) {
                 return Err(Failure::uncertain("standby_unverified"));
             }
-            if request.intent == Intent::Wake && observed.awake.is_none() {
+            if *intent == Intent::Wake && observed.awake.is_none() {
                 reply.status = Status::Observed;
                 reply.code = "wake_dispatched_unverified".into();
                 reply.observed = Some(observed);
                 return Ok(());
             }
             if matches!(
-                request.intent,
+                intent,
                 Intent::Navigate { .. }
                     | Intent::RemoteMedia { .. }
                     | Intent::LongSelect
@@ -287,7 +317,7 @@ impl<D: Device, C: Clock> Service<D, C> {
                 reply.observed = Some(observed);
                 return Ok(());
             }
-            if desired(&request.intent, resolved.as_ref(), &observed) {
+            if desired(intent, resolved.as_ref(), &observed) {
                 reply.status = if explicit_component {
                     Status::Observed
                 } else {
@@ -514,6 +544,8 @@ fn valid_intent(intent: &Intent) -> bool {
         Intent::Activate { reference } => valid_text(reference, 200),
         Intent::TypeText { reference, text } => valid_text(reference, 200) && valid_text(text, 500),
         Intent::SetVolume { index } => *index <= 1000,
+        Intent::AdjustVolume { delta } => (-1000..=1000).contains(delta),
+        Intent::SetVolumePercent { percent } => *percent <= 100,
         Intent::Wake
         | Intent::Standby
         | Intent::Mute

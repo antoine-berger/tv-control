@@ -480,3 +480,39 @@ fn abandoned_standby_is_never_replayed_and_conflicts_with_wake() {
         Reservation::Conflict
     ));
 }
+
+#[test]
+fn relative_volume_identity_and_unknown_receipt_survive_restart() {
+    for (intent, changed) in [
+        (
+            Intent::AdjustVolume { delta: -3 },
+            Intent::AdjustVolume { delta: -2 },
+        ),
+        (
+            Intent::SetVolumePercent { percent: 33 },
+            Intent::SetVolumePercent { percent: 34 },
+        ),
+    ] {
+        let t = Temp::new();
+        let j = t.journal(4);
+        let mut r = request("relative");
+        r.intent = intent;
+        assert!(matches!(
+            j.reserve(&r, "tv", 100).unwrap(),
+            Reservation::Acquired
+        ));
+        j.finish(&r, &reply("relative", Status::OutcomeUnknown), 200)
+            .unwrap();
+        drop(j);
+        let j = t.journal(4);
+        r.expires_at_unix_ms = 9000;
+        assert!(
+            matches!(j.reserve(&r, "tv", 300).unwrap(), Reservation::Existing(Operation::Complete(v)) if v.status == Status::OutcomeUnknown)
+        );
+        r.intent = changed;
+        assert!(matches!(
+            j.reserve(&r, "tv", 300).unwrap(),
+            Reservation::Conflict
+        ));
+    }
+}

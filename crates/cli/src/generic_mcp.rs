@@ -28,6 +28,12 @@ enum Action {
     SetVolume {
         index: u16,
     },
+    AdjustVolume {
+        delta: i16,
+    },
+    SetVolumePercent {
+        percent: u8,
+    },
     Pause {},
     Resume {},
     Media {
@@ -148,6 +154,8 @@ pub fn routes_generic(config: &tv_adapters::config::Config, name: &str, args: &V
         action,
         Some(
             "mute"
+                | "adjust_volume"
+                | "set_volume_percent"
                 | "wake"
                 | "standby"
                 | "navigate"
@@ -264,6 +272,10 @@ impl Call {
                         Action::Standby {} => Intent::Standby,
                         Action::Mute {} => Intent::Mute,
                         Action::SetVolume { index } => Intent::SetVolume { index },
+                        Action::AdjustVolume { delta } => Intent::AdjustVolume { delta },
+                        Action::SetVolumePercent { percent } => {
+                            Intent::SetVolumePercent { percent }
+                        }
                         Action::Pause {} => Intent::Pause,
                         Action::Resume {} => Intent::Resume,
                         Action::Media { session, command } => Intent::Media {
@@ -551,7 +563,7 @@ pub fn extend_tools(tools: &mut Value) {
         .iter_mut()
         .find(|t| t["name"] == "tv_control")
         .expect("control tool");
-    control["description"] = json!("Never retry outcome_unknown. Native volume index, not %. Mute: stream 3 zero, not speaker proof. Media: precise session from read media. Remote_media: system-global key, Android routes; dispatch only, no fallback. Search/URL/next/previous: dispatch only. Text: focused editable ref; ASCII except %/?, matching accessibility readback; mismatch unknown, no repair. Unique IDs.");
+    control["description"] = json!("Never retry outcome_unknown. Volume delta: native index; percent: native scale, rounded half up, not loudness. Mute: stream 3 zero, not speaker proof. Media: precise session from read media. Remote_media: system-global key, Android routes; dispatch only, no fallback. Search/URL/next/previous: dispatch only. Text: focused editable ref; ASCII except %/?, matching accessibility readback; mismatch unknown, no repair. Unique IDs.");
     let actions = control["inputSchema"]["properties"]["action"]["oneOf"]
         .as_array_mut()
         .unwrap();
@@ -561,6 +573,8 @@ pub fn extend_tools(tools: &mut Value) {
         }
     }
     actions.extend([
+        json!({"type":"object","properties":{"type":{"const":"adjust_volume"},"delta":{"type":"integer","minimum":-1000,"maximum":1000}},"required":["type","delta"],"additionalProperties":false}),
+        json!({"type":"object","properties":{"type":{"const":"set_volume_percent"},"percent":{"type":"integer","minimum":0,"maximum":100}},"required":["type","percent"],"additionalProperties":false}),
         json!({"type":"object","properties":{"type":{"const":"remote_media"},"command":{"enum":["play","pause","stop","next","previous"]}},"required":["type","command"],"additionalProperties":false}),
         json!({"type":"object","properties":{"type":{"const":"media"},"session":{"type":"string","maxLength":384},"command":{"enum":["pause","resume","next","previous"]}},"required":["type","session","command"],"additionalProperties":false}),
         json!({"type":"object","properties":{"type":{"const":"type_text"},"reference":{"type":"string","minLength":1,"maxLength":200},"text":{"type":"string","minLength":1,"maxLength":500}},"required":["type","reference","text"],"additionalProperties":false}),
@@ -709,6 +723,33 @@ mod tests {
         assert!(
             matches!(call, Call::Execute(Request { intent: Intent::Navigate { keys }, .. }) if keys == vec![Key::Left;16])
         );
+    }
+    #[test]
+    fn volume_wire_keeps_relative_native_units_and_closed_parameters() {
+        for (action, expected) in [
+            (
+                json!({"type":"adjust_volume","delta":-3}),
+                Intent::AdjustVolume { delta: -3 },
+            ),
+            (
+                json!({"type":"set_volume_percent","percent":33}),
+                Intent::SetVolumePercent { percent: 33 },
+            ),
+        ] {
+            let call = Call::parse("tv_control", json!({"request_id":"r","device":"screen","expires_at_unix_ms":2000,"action":action})).unwrap();
+            assert!(matches!(call, Call::Execute(Request { intent, .. }) if intent == expected));
+        }
+        for action in [
+            json!({"type":"adjust_volume","delta":32768}),
+            json!({"type":"adjust_volume","delta":-32769}),
+            json!({"type":"adjust_volume","delta":1,"restore_mute":true}),
+            json!({"type":"set_volume_percent","percent":256}),
+            json!({"type":"set_volume_percent","percent":-1}),
+            json!({"type":"set_volume_percent","percent":1.5}),
+            json!({"type":"set_volume_percent","percent":20,"index":20}),
+        ] {
+            assert!(Call::parse("tv_control", json!({"request_id":"r","device":"screen","expires_at_unix_ms":2000,"action":action})).is_err());
+        }
     }
     #[test]
     fn wire_rejects_unknown_actions_and_fields() {

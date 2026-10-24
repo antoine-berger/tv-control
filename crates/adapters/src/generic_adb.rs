@@ -392,6 +392,43 @@ impl Device for GenericAdb {
             standby_key_supported: keyevent_help && android_sdk.is_some_and(|sdk| sdk >= 20),
         })
     }
+    fn set_volume_target(
+        &self,
+        alias: &str,
+        index: u16,
+        expected_max_index: u16,
+        ctx: &Context<'_>,
+    ) -> PortResult<()> {
+        self.authorized(alias)?;
+        ctx.check()?;
+        let absolute = Intent::SetVolume { index };
+        let state = self.observe_for(alias, &absolute, ctx)?;
+        ctx.check()?;
+        if state.volume_max_index != Some(expected_max_index) {
+            return Err(Failure::before("volume_scale_changed"));
+        }
+        // A volume overlay can change the UI, including an uncertain dispatch.
+        self.views
+            .lock()
+            .map_err(|_| Failure::before("adapter_state_unavailable"))?
+            .remove(alias);
+        self.shell(
+            alias,
+            &[
+                "cmd",
+                "media_session",
+                "volume",
+                "--stream",
+                "3",
+                "--set",
+                &index.to_string(),
+            ],
+            &[],
+            true,
+            ctx,
+        )?;
+        Ok(())
+    }
     fn apply(
         &self,
         alias: &str,
@@ -411,6 +448,9 @@ impl Device for GenericAdb {
         }
         match intent {
             Intent::Legacy { .. } => Err(Failure::unsupported("unsupported")),
+            Intent::AdjustVolume { .. } | Intent::SetVolumePercent { .. } => {
+                Err(Failure::unsupported("volume_target_unresolved"))
+            }
             Intent::OpenApp { .. } => self.launch(
                 alias,
                 app.ok_or(Failure::before("app_not_resolved"))?,

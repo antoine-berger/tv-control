@@ -692,3 +692,6 @@ fn app_details_require_exact_fresh_unambiguous_discovered_identity() {
     assert_eq!(service.read(expired, &Never).unwrap_err().code, "expired");
     assert_eq!(device.reads.load(Ordering::SeqCst), 4);
 }
+
+#[path = "generic_contract/volume.rs"]
+mod volume;

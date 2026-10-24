@@ -144,3 +144,107 @@ fn volume_discovery_keeps_explicit_calibration_guard() {
         .iter()
         .all(|call| !call.mutating));
 }
+
+#[test]
+fn guarded_volume_target_checks_current_scale_and_dispatches_only_absolute_index() {
+    let clock = TestClock::default();
+    let flag = CancelFlag::default();
+    let (adb, process, _) = adapter(true, &[VERSION, "[V] volume is 8 in range [0..15]", ""]);
+    adb.set_volume_target("screen", 5, 15, &ctx(&clock, &flag))
+        .unwrap();
+    let calls = process.calls.lock().unwrap();
+    assert_eq!(calls.len(), 3);
+    assert!(calls[2].mutating);
+    assert_eq!(
+        calls[2].args.last().unwrap(),
+        "'cmd' 'media_session' 'volume' '--stream' '3' '--set' '5'"
+    );
+    drop(calls);
+    let (adb, process, _) = adapter(true, &[VERSION, "[V] volume is 8 in range [0..31]"]);
+    let failure = adb
+        .set_volume_target("screen", 5, 15, &ctx(&clock, &flag))
+        .unwrap_err();
+    assert_eq!(failure.code, "volume_scale_changed");
+    assert!(process
+        .calls
+        .lock()
+        .unwrap()
+        .iter()
+        .all(|call| !call.mutating));
+}
+#[test]
+fn unresolved_relative_intents_cannot_be_sent_directly_to_adapter() {
+    for intent in [
+        Intent::AdjustVolume { delta: 1 },
+        Intent::SetVolumePercent { percent: 20 },
+    ] {
+        let (adb, process, _) = adapter(true, &[]);
+        let clock = TestClock::default();
+        let flag = CancelFlag::default();
+        let failure = adb
+            .apply("screen", &intent, None, &ctx(&clock, &flag))
+            .unwrap_err();
+        assert_eq!(failure.code, "volume_target_unresolved");
+        assert_eq!(failure.status(), tv_domain::Status::Unsupported);
+        assert!(process.calls.lock().unwrap().is_empty());
+    }
+}
+#[test]
+fn relative_volume_observation_uses_native_range_without_foreground_or_media() {
+    for intent in [
+        Intent::AdjustVolume { delta: -1 },
+        Intent::SetVolumePercent { percent: 50 },
+    ] {
+        let (adb, process, _) = adapter(true, &[VERSION, "[V] volume is 8 in range [0..15]"]);
+        let clock = TestClock::default();
+        let flag = CancelFlag::default();
+        let state = adb
+            .observe_for("screen", &intent, &ctx(&clock, &flag))
+            .unwrap();
+        assert_eq!(state.volume_index, Some(8));
+        assert_eq!(state.volume_max_index, Some(15));
+        let calls = process.calls.lock().unwrap();
+        assert_eq!(calls.len(), 2);
+        assert!(calls.iter().all(|call| !call.mutating));
+    }
+}
+
+#[test]
+fn resolved_volume_consumes_ui_refs_even_when_dispatch_is_uncertain() {
+    let (adb, process, _) = adapter(true, &[VERSION, UI, "[V] volume is 8 in range [0..15]"]);
+    process
+        .replies
+        .lock()
+        .unwrap()
+        .push_back(Err(Failure::uncertain("transport_lost")));
+    let clock = TestClock::default();
+    let flag = CancelFlag::default();
+    let view = adb.ui("screen", &ctx(&clock, &flag)).unwrap();
+    let error = adb
+        .set_volume_target("screen", 5, 15, &ctx(&clock, &flag))
+        .unwrap_err();
+    assert_eq!(error.status(), tv_domain::Status::OutcomeUnknown);
+    assert_eq!(
+        adb.apply(
+            "screen",
+            &Intent::Activate {
+                reference: view.elements[0].reference.clone()
+            },
+            None,
+            &ctx(&clock, &flag)
+        )
+        .unwrap_err()
+        .code,
+        "ui_reference_unknown"
+    );
+    assert_eq!(
+        process
+            .calls
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|call| call.mutating)
+            .count(),
+        1
+    );
+}

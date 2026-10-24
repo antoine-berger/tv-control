@@ -61,6 +61,14 @@ pub enum Intent {
     SetVolume {
         index: u16,
     },
+    /// Adjust the zero-based native index; never a loudness percentage or mute toggle.
+    AdjustVolume {
+        delta: i16,
+    },
+    /// Percentage of the fresh zero-based native index scale, rounded half up.
+    SetVolumePercent {
+        percent: u8,
+    },
     Pause,
     Resume,
     Media {

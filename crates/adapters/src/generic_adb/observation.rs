@@ -34,7 +34,13 @@ impl GenericAdb {
                 ..Observed::default()
             });
         }
-        if matches!(intent, Intent::Mute | Intent::SetVolume { .. }) {
+        if matches!(
+            intent,
+            Intent::Mute
+                | Intent::SetVolume { .. }
+                | Intent::AdjustVolume { .. }
+                | Intent::SetVolumePercent { .. }
+        ) {
             // No app/session or configured volume scale is needed to lower to zero.
             // A valid native zero-based range is required before any mutation.
             let raw = self.shell(
