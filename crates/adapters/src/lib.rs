@@ -65,6 +65,9 @@ impl DeviceControl for Router {
     }
 }
 impl MediaCatalogue for Router {
+    fn validate_track(&self, device: &str, action: &Action, ctx: &Context<'_>) -> PortResult<()> {
+        jellyfin::Jellyfin::new(&self.config, &*self.http).validate_track(device, action, ctx)
+    }
     fn prepare(
         &self,
         device: &str,

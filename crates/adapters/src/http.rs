@@ -11,6 +11,8 @@ pub struct HttpRequest {
     pub method: &'static str,
     pub path: String,
     pub mutating: bool,
+    /// Adapter-owned bounded JSON; transported through curl's configuration stdin.
+    pub json_body: Option<String>,
 }
 pub struct HttpResponse {
     pub status: u16,
@@ -39,13 +41,28 @@ impl Http for CurlHttp {
         }
         let token = std::env::var(&server.token_env)
             .map_err(|_| Failure::before("missing_secret_reference"))?;
-        let input = curl_config(
+        let mut input = curl_config(
             server,
             request.method,
             &request.path,
             &token,
             ctx.remaining_ms(),
         )?;
+        if let Some(body) = request.json_body {
+            if request.method != "POST" || !request.mutating || body.len() > 4096 {
+                return Err(Failure::before("invalid_http_body"));
+            }
+            serde_json::from_str::<serde_json::Value>(&body)
+                .map_err(|_| Failure::before("invalid_http_body"))?;
+            // curl config quoted strings require their own escaping, independently of JSON.
+            let escaped = body.replace('\\', "\\\\").replace('"', "\\\"");
+            if escaped.contains(['\r', '\n', '\0']) {
+                return Err(Failure::before("invalid_http_body"));
+            }
+            input.push_str(&format!(
+                "header = \"Content-Type: application/json\"\ndata = \"{escaped}\"\n"
+            ));
+        }
         let output = self.process.run(
             Invocation {
                 program: self.config.executables.curl.clone(),

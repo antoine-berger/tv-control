@@ -1,4 +1,5 @@
 mod catalogue;
+mod tracks;
 use crate::{
     config::{Config, Device},
     http::{encode, Http, HttpRequest},
@@ -90,6 +91,7 @@ impl<'a> Jellyfin<'a> {
                 method: "GET",
                 path,
                 mutating: false,
+                json_body: None,
             },
             ctx,
         )?;
@@ -147,7 +149,12 @@ impl<'a> Jellyfin<'a> {
                 .play_state
                 .as_ref()
                 .and_then(|p| p.media_source_id.clone()),
-            position_ticks: session.play_state.and_then(|p| p.position_ticks),
+            position_ticks: session.play_state.as_ref().and_then(|p| p.position_ticks),
+            audio_index: session
+                .play_state
+                .as_ref()
+                .and_then(|p| p.audio_stream_index),
+            subtitle_index: session.play_state.and_then(|p| p.subtitle_stream_index),
             volume_index: None,
             volume_max_index: None,
         })
@@ -194,6 +201,12 @@ impl<'a> Jellyfin<'a> {
         plan: Option<&MediaPlan>,
         ctx: &Context<'_>,
     ) -> PortResult<()> {
+        if matches!(
+            action,
+            Action::SelectAudioTrack { .. } | Action::SelectSubtitleTrack { .. }
+        ) {
+            return self.apply_track(alias, action, ctx);
+        }
         if !matches!(
             action,
             Action::Pause
@@ -295,6 +308,7 @@ impl<'a> Jellyfin<'a> {
                 method: "POST",
                 path,
                 mutating: true,
+                json_body: None,
             },
             ctx,
         )?;

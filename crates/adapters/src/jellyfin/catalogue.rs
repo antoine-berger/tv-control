@@ -195,6 +195,20 @@ impl Jellyfin<'_> {
             {
                 return Err(Failure::before("jellyfin_invalid_playback_metadata"));
             }
+            let capabilities = media::ControlCapabilities {
+                seek: s.supports_media_control == Some(true)
+                    && s.play_state
+                        .as_ref()
+                        .is_some_and(|p| p.can_seek == Some(true)),
+                select_audio_track: s.supports_media_control == Some(true)
+                    && s.supported_commands
+                        .iter()
+                        .any(|c| c == "SetAudioStreamIndex"),
+                select_subtitle_track: s.supports_media_control == Some(true)
+                    && s.supported_commands
+                        .iter()
+                        .any(|c| c == "SetSubtitleStreamIndex"),
+            };
             let p = s.play_state;
             return Ok(media::Data::Playback(media::Playback {
                 item_id: s.now_playing_item.map(|i| i.id),
@@ -208,6 +222,7 @@ impl Jellyfin<'_> {
                 client: s.client,
                 client_version: s.application_version,
                 supported_commands: s.supported_commands,
+                capabilities,
             }));
         }
         let (server, user, _) = self.device(alias)?;

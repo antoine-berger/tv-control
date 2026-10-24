@@ -284,5 +284,5 @@ pub struct Reply {
 pub enum Operation {
     Missing,
     Running,
-    Complete(Reply),
+    Complete(Box<Reply>),
 }

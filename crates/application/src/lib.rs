@@ -55,6 +55,14 @@ pub trait DeviceControl: Send + Sync {
     ) -> PortResult<()>;
 }
 pub trait MediaCatalogue: Send + Sync {
+    fn validate_track(
+        &self,
+        _device: &str,
+        _action: &Action,
+        _ctx: &Context<'_>,
+    ) -> PortResult<()> {
+        Err(Failure::unsupported("track_selection_unsupported"))
+    }
     fn prepare(
         &self,
         _device: &str,
@@ -107,7 +115,16 @@ impl<D: DeviceControl, M: MediaCatalogue, S: StateStore, C: Clock> Service<D, M,
         if !before.connected {
             return Err(Failure::before("device_not_ready"));
         }
-        let plan = match &req.action {
+        // Resolve relative position once, after the operation acquired device exclusion.
+        let action = media_control::resolve(&req.action, &before)?;
+        if matches!(
+            action,
+            Action::SelectAudioTrack { .. } | Action::SelectSubtitleTrack { .. }
+        ) {
+            media_control::check_identity(&action, &before)?;
+            self.catalogue.validate_track(&req.device, &action, ctx)?;
+        }
+        let plan = match &action {
             Action::ResumeMedia { media } => {
                 Some(self.catalogue.resolve(&req.device, media, ctx)?)
             }
@@ -131,7 +148,7 @@ impl<D: DeviceControl, M: MediaCatalogue, S: StateStore, C: Clock> Service<D, M,
                 {
                     return Err(Failure::before("media_plan_identity_mismatch"));
                 }
-                if matches!(req.action, Action::SeekMedia { .. })
+                if matches!(action, Action::SeekMedia { .. })
                     && (before.media_id.as_ref() != Some(item_id)
                         || before.media_source_id.as_ref() != Some(source_id)
                         || !matches!(before.playback, Playback::Paused | Playback::Playing))
@@ -145,13 +162,17 @@ impl<D: DeviceControl, M: MediaCatalogue, S: StateStore, C: Clock> Service<D, M,
         // Catalogue reads can consume the remaining budget or observe cancellation.
         // Even an already-satisfied no-op needs a live request before verification.
         ctx.check()?;
-        if desired(&req.action, &before, plan.as_ref(), None) {
+        if !matches!(
+            action,
+            Action::SelectAudioTrack { .. } | Action::SelectSubtitleTrack { .. }
+        ) && desired(&action, &before, plan.as_ref(), None)
+        {
             return Ok((Status::Verified, before));
         }
         ctx.check()?;
         let dispatch_started = self.clock.monotonic_ms();
         self.devices
-            .apply(&req.device, &req.action, plan.as_ref(), ctx)?;
+            .apply(&req.device, &action, plan.as_ref(), ctx)?;
         let mut previous = None;
         loop {
             ctx.check().map_err(|e| e.after_dispatch())?;
@@ -162,7 +183,7 @@ impl<D: DeviceControl, M: MediaCatalogue, S: StateStore, C: Clock> Service<D, M,
             // A read that completed after expiry must never become a success.
             ctx.check().map_err(|e| e.after_dispatch())?;
             if matches!(
-                req.action,
+                action,
                 Action::Resume | Action::ResumeMedia { .. } | Action::PlayItem { .. }
             ) && observed.playback == Playback::Playing
                 && observed.playback_evidence == PlaybackEvidence::PositionProgressRequired
@@ -173,7 +194,7 @@ impl<D: DeviceControl, M: MediaCatalogue, S: StateStore, C: Clock> Service<D, M,
             if let Some(plan) = plan.as_ref() {
                 if observed.media_id.as_ref() == Some(&plan.item_id) {
                     if let Some(position) = observed.position_ticks {
-                        let elapsed = if matches!(req.action, Action::SeekMedia { .. })
+                        let elapsed = if matches!(action, Action::SeekMedia { .. })
                             && before.playback == Playback::Paused
                         {
                             0
@@ -190,7 +211,7 @@ impl<D: DeviceControl, M: MediaCatalogue, S: StateStore, C: Clock> Service<D, M,
                             .saturating_add(elapsed.saturating_mul(MEDIA_TICKS_PER_MILLISECOND))
                             .saturating_add(tolerance);
                         if position < lower || position > upper {
-                            if matches!(req.action, Action::ResumeMedia { .. }) {
+                            if matches!(action, Action::ResumeMedia { .. }) {
                                 return Err(Failure::uncertain("resume_position_not_confirmed"));
                             }
                             previous = Some(observed);
@@ -201,15 +222,19 @@ impl<D: DeviceControl, M: MediaCatalogue, S: StateStore, C: Clock> Service<D, M,
                     }
                 }
             }
-            if matches!(req.action, Action::SeekMedia { .. })
-                && observed.playback != before.playback
+            if matches!(
+                action,
+                Action::SeekMedia { .. }
+                    | Action::SelectAudioTrack { .. }
+                    | Action::SelectSubtitleTrack { .. }
+            ) && observed.playback != before.playback
             {
                 previous = Some(observed);
                 ctx.wait(self.policy.verification_poll_ms)
                     .map_err(|e| e.after_dispatch())?;
                 continue;
             }
-            if desired(&req.action, &observed, plan.as_ref(), previous.as_ref()) {
+            if desired(&action, &observed, plan.as_ref(), previous.as_ref()) {
                 return Ok((Status::Verified, observed));
             }
             previous = Some(observed);
@@ -232,23 +257,8 @@ impl<D: DeviceControl, M: MediaCatalogue, S: StateStore, C: Clock> Control for S
         if !identifier(&req.id) || !identifier(&req.device) {
             return receipt;
         }
-        if let Action::PlayItem {
-            item_id,
-            source_id,
-            position_ms,
-        }
-        | Action::SeekMedia {
-            item_id,
-            source_id,
-            position_ms,
-        } = &req.action
-        {
-            if !media::media_id(item_id)
-                || !media::media_id(source_id)
-                || *position_ms > i64::MAX as u64 / MEDIA_TICKS_PER_MILLISECOND
-            {
-                return receipt;
-            }
+        if !media_control::valid(&req.action) {
+            return receipt;
         }
         let now = self.clock.unix_ms();
         if req.expires_at_unix_ms <= now {
@@ -335,6 +345,27 @@ fn desired(
         }
         Action::OpenApp { app } => observed.active_app.as_ref() == Some(app),
         Action::SetVolume { index } => observed.volume_index == Some(*index),
+        Action::SelectAudioTrack {
+            item_id,
+            source_id,
+            index,
+        } => {
+            observed.media_id.as_ref() == Some(item_id)
+                && observed.media_source_id.as_ref() == Some(source_id)
+                && observed.audio_index == i32::try_from(*index).ok()
+                && matches!(observed.playback, Playback::Playing | Playback::Paused)
+        }
+        Action::SelectSubtitleTrack {
+            item_id,
+            source_id,
+            index,
+        } => {
+            observed.media_id.as_ref() == Some(item_id)
+                && observed.media_source_id.as_ref() == Some(source_id)
+                && observed.subtitle_index == Some(*index)
+                && matches!(observed.playback, Playback::Playing | Playback::Paused)
+        }
+        Action::SeekRelative { .. } => false, // Must be resolved exactly once before dispatch.
         Action::SeekMedia { .. } => {
             let Some(plan) = plan else {
                 return false;
@@ -384,3 +415,5 @@ pub mod onboarding;
 pub mod generic;
 
 pub mod media;
+
+mod media_control;

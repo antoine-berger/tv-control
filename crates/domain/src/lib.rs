@@ -24,6 +24,23 @@ pub enum Action {
         source_id: String,
         position_ms: u64,
     },
+    /// Resolve once from a fresh, device-locked position; never replay a delta.
+    SeekRelative {
+        item_id: String,
+        source_id: String,
+        delta_ms: i64,
+    },
+    SelectAudioTrack {
+        item_id: String,
+        source_id: String,
+        index: u32,
+    },
+    /// -1 explicitly disables subtitles. None in an observation means unknown.
+    SelectSubtitleTrack {
+        item_id: String,
+        source_id: String,
+        index: i32,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -55,6 +72,9 @@ pub struct Observed {
     pub media_id: Option<String>,
     pub media_source_id: Option<String>,
     pub position_ticks: Option<u64>,
+    /// Client-reported indices for the current item/source; not physical output proof.
+    pub audio_index: Option<i32>,
+    pub subtitle_index: Option<i32>,
     pub volume_index: Option<u16>,
     pub volume_max_index: Option<u16>,
 }
@@ -69,6 +89,8 @@ impl Default for Observed {
             media_id: None,
             media_source_id: None,
             position_ticks: None,
+            audio_index: None,
+            subtitle_index: None,
             volume_index: None,
             volume_max_index: None,
         }

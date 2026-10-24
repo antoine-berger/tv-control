@@ -170,6 +170,10 @@ struct StateWire {
     media_source_id: Option<String>,
     position_ticks: Option<u64>,
     #[serde(default)]
+    audio_index: Option<i32>,
+    #[serde(default)]
+    subtitle_index: Option<i32>,
+    #[serde(default)]
     awake: Option<bool>,
     volume_index: Option<u16>,
     #[serde(default)]
@@ -222,6 +226,8 @@ impl From<&Reply> for ReplyWire {
                 media_id: o.media_id.clone(),
                 media_source_id: o.media_source_id.clone(),
                 position_ticks: o.position_ticks,
+                audio_index: o.audio_index,
+                subtitle_index: o.subtitle_index,
                 awake: o.awake,
                 volume_index: o.volume_index,
                 volume_max_index: o.volume_max_index,
@@ -293,6 +299,8 @@ impl ReplyWire {
                     media_id: s.media_id.clone(),
                     media_source_id: s.media_source_id.clone(),
                     position_ticks: s.position_ticks,
+                    audio_index: s.audio_index,
+                    subtitle_index: s.subtitle_index,
                     awake: s.awake,
                     volume_index: s.volume_index,
                     volume_max_index: s.volume_max_index,
@@ -606,7 +614,7 @@ impl Journal for OperationJournal {
                     return Ok(Reservation::Conflict);
                 }
                 return Ok(Reservation::Existing(match &e.reply {
-                    Some(r) => Operation::Complete(r.decode()?),
+                    Some(r) => Operation::Complete(Box::new(r.decode()?)),
                     None => Operation::Running,
                 }));
             }
@@ -701,7 +709,7 @@ impl Journal for OperationJournal {
             None => Ok(Operation::Missing),
             Some(e) => match &e.reply {
                 None => Ok(Operation::Running),
-                Some(r) => Ok(Operation::Complete(r.decode()?)),
+                Some(r) => Ok(Operation::Complete(Box::new(r.decode()?))),
             },
         })
     }
@@ -714,7 +722,7 @@ impl Journal for OperationJournal {
                 return Ok(Operation::Missing);
             };
             if let Some(r) = &e.reply {
-                return Ok(Operation::Complete(r.decode()?));
+                return Ok(Operation::Complete(Box::new(r.decode()?)));
             }
             let lease = open_at(&self.directory, &self.lease_name(id), false, false)?;
             lease

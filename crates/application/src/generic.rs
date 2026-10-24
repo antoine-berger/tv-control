@@ -463,7 +463,7 @@ impl<D: Device, C: Clock> Control for Service<D, C> {
             Ok(Reservation::Acquired) => {}
             Ok(Reservation::Existing(Operation::Complete(mut r))) => {
                 r.cached = true;
-                return r;
+                return *r;
             }
             Ok(Reservation::Existing(_) | Reservation::Busy) => {
                 reply.status = Status::Busy;
@@ -741,6 +741,33 @@ impl crate::Control for LegacyGuard {
                 position_ms,
             } => format!(
                 "seek_media:{}:{item_id}:{}:{source_id}:{position_ms}",
+                item_id.len(),
+                source_id.len()
+            ),
+            tv_domain::Action::SeekRelative {
+                item_id,
+                source_id,
+                delta_ms,
+            } => format!(
+                "seek_relative:{}:{item_id}:{}:{source_id}:{delta_ms}",
+                item_id.len(),
+                source_id.len()
+            ),
+            tv_domain::Action::SelectAudioTrack {
+                item_id,
+                source_id,
+                index,
+            } => format!(
+                "select_audio_track:{}:{item_id}:{}:{source_id}:{index}",
+                item_id.len(),
+                source_id.len()
+            ),
+            tv_domain::Action::SelectSubtitleTrack {
+                item_id,
+                source_id,
+                index,
+            } => format!(
+                "select_subtitle_track:{}:{item_id}:{}:{source_id}:{index}",
                 item_id.len(),
                 source_id.len()
             ),

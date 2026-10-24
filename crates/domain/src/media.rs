@@ -61,6 +61,14 @@ pub struct Playback {
     pub client: Option<String>,
     pub client_version: Option<String>,
     pub supported_commands: Vec<String>,
+    pub capabilities: ControlCapabilities,
+}
+/// Effective advertised backend capabilities, not permission or verified effects.
+#[derive(Clone, Debug, PartialEq, Eq, Default)]
+pub struct ControlCapabilities {
+    pub seek: bool,
+    pub select_audio_track: bool,
+    pub select_subtitle_track: bool,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Data {

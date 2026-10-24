@@ -34,6 +34,21 @@ pub enum WireAction {
         source_id: String,
         position_ms: u64,
     },
+    SeekRelative {
+        item_id: String,
+        source_id: String,
+        delta_ms: i64,
+    },
+    SelectAudioTrack {
+        item_id: String,
+        source_id: String,
+        index: u32,
+    },
+    SelectSubtitleTrack {
+        item_id: String,
+        source_id: String,
+        index: i32,
+    },
 }
 impl From<WireRequest> for Request {
     fn from(r: WireRequest) -> Self {
@@ -66,6 +81,33 @@ impl From<WireRequest> for Request {
                     source_id,
                     position_ms,
                 },
+                WireAction::SeekRelative {
+                    item_id,
+                    source_id,
+                    delta_ms,
+                } => Action::SeekRelative {
+                    item_id,
+                    source_id,
+                    delta_ms,
+                },
+                WireAction::SelectAudioTrack {
+                    item_id,
+                    source_id,
+                    index,
+                } => Action::SelectAudioTrack {
+                    item_id,
+                    source_id,
+                    index,
+                },
+                WireAction::SelectSubtitleTrack {
+                    item_id,
+                    source_id,
+                    index,
+                } => Action::SelectSubtitleTrack {
+                    item_id,
+                    source_id,
+                    index,
+                },
             },
         }
     }
@@ -79,5 +121,5 @@ pub fn receipt(r: &Receipt) -> serde_json::Value {
         "observed":r.observed.as_ref().map(|s|json!({"connected":s.connected,"active_app":s.active_app,
             "playback_evidence":match s.playback_evidence {PlaybackEvidence::NativeState=>"native_state",PlaybackEvidence::PositionProgressRequired=>"position_progress_required"},"playback": match s.playback {
             Playback::Unknown=>"unknown",Playback::Stopped=>"stopped",Playback::Paused=>"paused",Playback::Playing=>"playing",Playback::Buffering=>"buffering"},
-            "media_id":s.media_id,"media_source_id":s.media_source_id,"position_ticks":s.position_ticks,"volume_index":s.volume_index}))})
+            "media_id":s.media_id,"media_source_id":s.media_source_id,"position_ticks":s.position_ticks,"audio_index":s.audio_index,"subtitle_index":s.subtitle_index,"volume_index":s.volume_index}))})
 }

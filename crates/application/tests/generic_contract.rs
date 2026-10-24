@@ -117,7 +117,7 @@ impl Journal for Memory {
                 Reservation::Existing(
                     reply
                         .clone()
-                        .map(Operation::Complete)
+                        .map(|r| Operation::Complete(Box::new(r)))
                         .unwrap_or(Operation::Running),
                 )
             });
@@ -140,7 +140,7 @@ impl Journal for Memory {
             .get(id)
             .map(|(_, r)| {
                 r.clone()
-                    .map(Operation::Complete)
+                    .map(|r| Operation::Complete(Box::new(r)))
                     .unwrap_or(Operation::Running)
             })
             .unwrap_or(Operation::Missing))

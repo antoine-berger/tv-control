@@ -469,10 +469,7 @@ fn abandoned_standby_is_never_replayed_and_conflicts_with_wake() {
     let journal = temp.journal(4);
     assert!(matches!(
         journal.reserve(&request, "tv", 200).unwrap(),
-        Reservation::Existing(Operation::Complete(Reply {
-            status: Status::OutcomeUnknown,
-            ..
-        }))
+        Reservation::Existing(Operation::Complete(r)) if r.status == Status::OutcomeUnknown
     ));
     request.intent = Intent::Wake;
     assert!(matches!(

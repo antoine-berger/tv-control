@@ -180,7 +180,7 @@ fn cross_package_launch_is_unknown_with_bounded_durable_evidence_not_redirect_su
     use tv_application::generic::Journal;
     assert_eq!(
         reopened.get("launch").unwrap(),
-        Operation::Complete(r.clone())
+        Operation::Complete(Box::new(r.clone()))
     );
     let mut retry = request();
     retry.expires_at_unix_ms = 1200;
