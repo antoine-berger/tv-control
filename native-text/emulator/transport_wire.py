@@ -17,16 +17,19 @@ class TransportFault(Exception):
 
 class PrivateAppend:
     def __init__(self, text):
-        encoded = units = None
-        if isinstance(text, str):
-            try:
-                encoded = text.encode('utf-8', errors='strict')
-                units = len(text.encode('utf-16-be', errors='strict')) // 2
-            except UnicodeError:
-                pass
-        if encoded is None or units is None:
+        # Bound before encoding/allocation, and do not execute caller-defined
+        # str-subclass encode/length hooks with private text.
+        if type(text) is not str:
             raise TransportFault('INVALID_FRAME')
-        if not encoded or len(encoded) > 2048 or units > 256:
+        if not text or len(text) > 256:
+            raise TransportFault('LIMIT_EXCEEDED')
+        if any(0xD800 <= ord(value) <= 0xDFFF for value in text):
+            raise TransportFault('INVALID_FRAME')
+        units = sum(2 if ord(value) > 0xFFFF else 1 for value in text)
+        if units > 256:
+            raise TransportFault('LIMIT_EXCEEDED')
+        encoded = text.encode('utf-8', errors='strict')
+        if len(encoded) > 2048:
             raise TransportFault('LIMIT_EXCEEDED')
         self._bytes = encoded
 
