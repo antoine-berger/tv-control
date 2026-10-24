@@ -9,12 +9,12 @@ import java.util.concurrent.atomic.AtomicReference;
 
 /** Ephemeral shell client. Payload travels only in borrowed binary stdio. */
 public final class LabSocketClient {
-    private static final class ForwardState {
+    static final class ForwardState {
         LabProtocol.Opcode phase;
         LabReplies.Reference reference;
         boolean referenceSent;
     }
-    private static final class Forwarder implements Runnable {
+    static final class Forwarder implements Runnable {
         final LabPipeIo input;
         final LabSocketChannel channel;
         final LabDeadline deadline;
@@ -33,7 +33,6 @@ public final class LabSocketClient {
                     if(read.kind==LabPipeIo.Kind.EOF)throw new LabProtocol.Fault(LabProtocol.Reason.CANCELLED);
                     byte[] bytes=read.bytes();LabProtocol.Command command=LabProtocol.decode(bytes,budget);
                     synchronized(state) {
-                        if(stop.get())return;
                         if(command.opcode==LabProtocol.Opcode.OBSERVE) {
                             if(state.phase!=null)throw new LabProtocol.Fault(LabProtocol.Reason.INVALID_FRAME);
                         } else if(command.opcode==LabProtocol.Opcode.COMMIT) {
@@ -43,6 +42,10 @@ public final class LabSocketClient {
                                 throw new LabProtocol.Fault(LabProtocol.Reason.INVALID_FRAME);
                         } else if(state.phase==LabProtocol.Opcode.CANCEL)
                             throw new LabProtocol.Fault(LabProtocol.Reason.INVALID_FRAME);
+                        // A fully decoded invalid frame must not disappear when
+                        // server EOF concurrently asks this watcher to stop.
+                        if(stop.get())throw new LabProtocol.Fault(command.opcode==LabProtocol.Opcode.CANCEL
+                                ? LabProtocol.Reason.CANCELLED : LabProtocol.Reason.TRANSPORT_LOST);
                         // State is published only after this complete write succeeds.
                         channel.writeFrame(bytes,deadline.after(2000));state.phase=command.opcode;
                     }

@@ -207,10 +207,31 @@ public final class SocketClientTest {
         for(Thread thread:Thread.getAllStackTraces().keySet())if(thread.getName().equals("native-lab-stdin"))thread.join(1000);
         noWriter();noBorrowedClose();
     }
+    private static void decodedLateFrameCannotBeHiddenByStop(int mode)throws Exception {
+        reset();IssuedEditor.Clock clock=()->android.os.SystemClock.uptimeMillis();long until=clock.nowMillis()+15000;
+        LabClientConnection connection=new LabClientConnection(INSTANCE,10001,clock,until);
+        LabSocketChannel channel=connection.open();LabPipeIo input=new LabPipeIo(FileDescriptor.in,clock,until);input.prepare();
+        byte[] ref=reference();Os.append(FileDescriptor.in,mode==2?commit(ref):frame(mode==1?3:1));
+        LabSocketClient.ForwardState state=new LabSocketClient.ForwardState();
+        state.phase=mode==1?LabProtocol.Opcode.COMMIT:LabProtocol.Opcode.OBSERVE;
+        if(mode==2){state.reference=LabReplies.parseReference(ref);state.referenceSent=true;}
+        LabSocketClient.Forwarder forwarder=new LabSocketClient.Forwarder(input,channel,new LabDeadline(clock,until),state);
+        Thread thread=new Thread(forwarder,"owned-fake-forwarder");
+        synchronized(state) {
+            thread.start();long end=System.nanoTime()+TimeUnit.SECONDS.toNanos(1);
+            while(thread.getState()!=Thread.State.BLOCKED && System.nanoTime()<end)Thread.yield();
+            check(thread.getState()==Thread.State.BLOCKED);forwarder.stop.set(true);
+        }
+        thread.join(1000);check(!thread.isAlive());
+        check(forwarder.failure.get()==(mode==0?LabProtocol.Reason.INVALID_FRAME
+                :mode==1?LabProtocol.Reason.CANCELLED:LabProtocol.Reason.TRANSPORT_LOST));
+        check(Os.output(Os.connected).length==0);input.stop();connection.close();noBorrowedClose();
+    }
     public static void main(String[] args)throws Exception {
         clientPositive(false);clientPositive(true);
         commitKeepsInputOpen(false,false);commitKeepsInputOpen(true,false);commitKeepsInputOpen(false,true);
         admissionAndProtocolFailures();replyFailures();pipeBoundaries();stopCannotCloseReusedFd();clientUnjoinedWriterIsNotClean();
+        decodedLateFrameCannotBeHiddenByStop(0);decodedLateFrameCannotBeHiddenByStop(1);decodedLateFrameCannotBeHiddenByStop(2);
         System.out.println("PASS private client host checks: "+checks);
     }
 }
