@@ -17,7 +17,7 @@ public final class WrapperLifecycleTest {
     }
     static class Life implements NativePendingRequest.Lifecycle {
         int closes; boolean closed,gate=true,cleanup=true,closeThrows,proofThrows,resultThrows,terminalThrows,failedThrows,badStatus,badReason,lateCancelReason;
-        String status="refused",reason="REF_UNKNOWN";
+        String status="refused",reason="REF_UNKNOWN",overrideReason;
         public boolean beforeEntry() { Instrumentation.events.add("gate"); return gate; }
         public void result(String value) {
             Instrumentation.events.add("result");
@@ -42,7 +42,7 @@ public final class WrapperLifecycleTest {
             if(terminalThrows) throw new IllegalStateException("fixture-private-value");
             return badStatus ? "fixture-private-value" : status;
         }
-        public String terminalReason() { return badReason ? "fixture-private-value" : lateCancelReason ? "CANCELLED" : reason; }
+        public String terminalReason() { return badReason ? "fixture-private-value" : overrideReason!=null ? overrideReason : lateCancelReason ? "CANCELLED" : reason; }
     }
     static final class Harness extends NativeTextInstrumentation {
         final Life life; boolean throwIngress,allow=true,dropToken;
@@ -108,6 +108,15 @@ public final class WrapperLifecycleTest {
         for(String bad:new String[]{"fixture-private-value",null}) {
             reset(); TextEngine.status=bad; Harness wrapper=new Harness(new Life()); launch(wrapper);
             outcome(wrapper,"uncertain","VERIFIED","YES");
+        }
+        reset(); TextEngine.status="refused"; Harness engineRefused=new Harness(new Life()); launch(engineRefused);
+        outcome(engineRefused,"refused","VERIFIED","YES");
+        check("ENGINE_REFUSED".equals(engineRefused.result.getString("tv_native_reason_v1")));
+        for(String reason:new String[]{"CANCELLED","TRANSPORT_LOST","DEADLINE","INVALID_FRAME","ENGINE_UNCERTAIN"}) {
+            reset(); TextEngine.status="refused"; Harness wrapper=new Harness(new Life());
+            wrapper.life.overrideReason=reason; launch(wrapper);
+            outcome(wrapper,"uncertain","VERIFIED","YES");
+            check(reason.equals(wrapper.result.getString("tv_native_reason_v1")));
         }
         reset(); NativeTextInstrumentation legacy=new NativeTextInstrumentation();
         legacy.onCreate(new Bundle()); legacy.onStart();

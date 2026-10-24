@@ -116,6 +116,11 @@ final class NativePendingRequest {
         if ("verified".equals(transportStatus)
                 && (!entered || !reported || !"verified".equals(engineStatus))) markUncertain(Reason.TRANSPORT_LOST);
         if ("verified".equals(engineStatus) && "refused".equals(transportStatus)) markUncertain(Reason.TRANSPORT_LOST);
+        if (entered && "refused".equals(transportStatus)
+                && (!"refused".equals(engineStatus) || reason != Reason.ENGINE_REFUSED))
+            markUncertain(reason == Reason.NONE ? Reason.TRANSPORT_LOST : reason);
+        if (entered && reason != Reason.NONE && reason != Reason.ENGINE_REFUSED)
+            markUncertain(reason);
         if ("verified".equals(transportStatus) && reason != Reason.NONE) markUncertain(reason);
         if ("uncertain".equals(transportStatus) && reason == Reason.NONE) reason = Reason.ENGINE_UNCERTAIN;
         cache = null; token = null; lifecycle = null;
