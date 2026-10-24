@@ -45,6 +45,14 @@ class Wire(unittest.TestCase):
         self.assertEqual(repr(value), '<PrivateAppend>')
         self.assertEqual(repr(PrivateRef(b'e' * 16, b'r' * 16, 1)), '<PrivateRef>')
 
+    def test_unbounded_or_overridden_text_is_rejected_before_encoding(self):
+        class Sentinel(str):
+            def encode(self, *args, **kwargs):
+                raise AssertionError('private encode hook must not run')
+        for text in [Sentinel('x' * 100000), Sentinel('small'), 'x' * 100000]:
+            with self.assertRaises(TransportFault):
+                PrivateAppend(text)
+
     def test_per_connection_frame_and_byte_budgets_are_not_reset(self):
         encoder = InputFrames()
         for _ in range(6):

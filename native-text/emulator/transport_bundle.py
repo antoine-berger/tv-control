@@ -67,6 +67,13 @@ class Instrumentation:
                 raise TransportFault('INVALID_BUNDLE')
             if self._result[CLEANUP] == 'NOT_APPLICABLE':
                 raise TransportFault('INVALID_BUNDLE')
+            if self._result[ENTERED] == 'YES' and not self.ready:
+                raise TransportFault('INVALID_BUNDLE')
+            if self._result[CLEANUP] == 'UNVERIFIED' and self._result[TEXT] != 'uncertain':
+                raise TransportFault('INVALID_BUNDLE')
+            if (self._result[ENTERED] == 'YES' and self._result[TEXT] == 'refused'
+                    and self._result[REASON] != 'ENGINE_REFUSED'):
+                raise TransportFault('INVALID_BUNDLE')
             if self._result[TEXT] == 'verified' and (self._result[ENTERED] != 'YES'
                                                     or self._result[REASON] != 'NONE'
                                                     or self._result[CLEANUP] != 'VERIFIED'):

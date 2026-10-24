@@ -82,6 +82,23 @@ class Bundle(unittest.TestCase):
                 parser = Instrumentation(PUBLIC_INSTANCE)
                 parser.feed(ready() + final(**change))
 
+    def test_entry_requires_ready_and_refusal_cannot_hide_late_failure(self):
+        invalid = [final(),
+                   ready() + final(**{TEXT: 'refused', REASON: 'TRANSPORT_LOST'}),
+                   ready() + final(**{TEXT: 'refused', REASON: 'CANCELLED'}),
+                   ready() + final(**{TEXT: 'refused', REASON: 'ENGINE_REFUSED', CLEANUP: 'UNVERIFIED'})]
+        for message in invalid:
+            with self.assertRaises(TransportFault):
+                parser = Instrumentation(PUBLIC_INSTANCE)
+                parser.feed(message)
+                parser.eof()
+        engine_refusal = Instrumentation(PUBLIC_INSTANCE)
+        engine_refusal.feed(ready() + final(**{TEXT: 'refused', REASON: 'ENGINE_REFUSED'}))
+        engine_refusal.eof()
+        early = Instrumentation(PUBLIC_INSTANCE)
+        early.feed(final(**{TEXT: 'refused', ENTERED: 'NO', REASON: 'POLICY_DENIED'}))
+        early.eof()
+
     def test_byte_and_line_limits_precede_raw_output_retention(self):
         for message in [b'x' * 8193, b'x' * 513, b'INSTRUMENTATION_RESULT: unknown=SECRET\n']:
             with self.assertRaises(TransportFault) as error:
