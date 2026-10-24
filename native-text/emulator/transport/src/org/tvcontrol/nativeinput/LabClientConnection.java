@@ -34,7 +34,9 @@ final class LabClientConnection {
             openAttempted=true;
             socket=new LocalSocket(); // Public constructor only creates its Java impl, not an FD.
             bindAttempted=true;
-            socket.bind(new LocalSocketAddress("tv.native.lab.client."+instance,LocalSocketAddress.Namespace.ABSTRACT));
+            try {
+                socket.bind(new LocalSocketAddress("tv.native.lab.client."+instance,LocalSocketAddress.Namespace.ABSTRACT));
+            } catch(java.io.IOException error) {throw LabNativeSocketFailure.fromBindOrConnect(error);}
             if (socket.getFileDescriptor()==null) { allocationUnknown=true; throw new LabProtocol.Fault(LabProtocol.Reason.TRANSPORT_LOST); }
             channel=new LabSocketChannel(socket,deadline); // Explicit sole-close ownership transfer.
             if (closeClaimed.get()) { channel.close(); throw new LabProtocol.Fault(LabProtocol.Reason.TRANSPORT_LOST); }

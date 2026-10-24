@@ -78,3 +78,32 @@ metadata commands, 38 lsof calls, 68 queries), beyond a 5000 ms accept window bu
 inside 15000 ms. These are injected costs, not measured runtime latencies and
 not proof of the cause of any real CONNECT/TRANSPORT_LOST failure. Permissions,
 startup failures and other connection failures remain possible.
+
+## Conservative native bind/connect permission classification
+
+Only the immediate catches around LocalSocket.bind and LocalSocket.connect use
+LabNativeSocketFailure. A structured ErrnoException remains prior evidence. The
+message fallback requires the exact IOException class, no cause, and exact equality
+with one of the two current public Os.strerror(EACCES/EPERM) constants. It never
+uses contains, trimming, case conversion, raw error hashes or a literal English
+permission label. Null, empty/unavailable constants, nonmatches and exceptions
+remain TRANSPORT_LOST, which leaves the operation unknown and never authorizes a
+retry. Generic connection/read/cleanup handlers do not parse messages.
+
+A positive match produces only the existing POLICY_DENIED stop signal. This is
+conservative secondary evidence in the pinned API31 lab, not authentication of
+an errno, proof of a particular SELinux rule, or proof that the full environment
+has a particular permission. Same-UID interference is outside the lab model.
+Neither a negative comparison nor missing evidence proves permission was granted.
+No raw message is retained, emitted, logged or hashed; the original operation,
+cleanup, deadlines, route and no-retry behavior are unchanged.
+
+The [Android12 LocalSocket JNI](https://raw.githubusercontent.com/aosp-mirror/platform_frameworks_base/android-12.0.0_r1/core/jni/android_net_LocalSocketImpl.cpp)
+bind/connect failure paths use jniThrowIOException. The separately verified
+[JNIHelp.c](https://android.googlesource.com/platform/libnativehelper/+/refs/heads/android12-release/JNIHelp.c)
+snapshot SHA256 a17e1f26404d6252c3041e2629d6195b47d90562d8524f8fa821b6c46c10c879
+uses platformStrError and the String-only IOException constructor. Android12
+[Bionic strerror](https://raw.githubusercontent.com/aosp-mirror/platform_bionic/android-12.0.0_r1/libc/bionic/strerror.cpp)
+and strerror_r share the error-string lookup. [Os.strerror](https://developer.android.com/reference/android/system/Os#strerror(int))
+is public since API21. These facts justify the narrowly scoped stop classifier;
+they do not justify general exception-message parsing or a permissions fallback.

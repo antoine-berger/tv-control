@@ -80,7 +80,9 @@ final class LabSocketChannel {
             if (connectAttempted || admissionAttempted || instance == null || !instance.matches("[0-9a-f]{32}"))
                 throw new LabProtocol.Fault(LabProtocol.Reason.INVALID_FRAME);
             connectAttempted=true;
-            socket.connect(new LocalSocketAddress("tv.native.lab."+instance,LocalSocketAddress.Namespace.ABSTRACT));
+            try {
+                socket.connect(new LocalSocketAddress("tv.native.lab."+instance,LocalSocketAddress.Namespace.ABSTRACT));
+            } catch(java.io.IOException error) {throw LabNativeSocketFailure.fromBindOrConnect(error);}
             deadline.remaining(deadline.absolute(),1);
         } catch (LabProtocol.Fault error) { failed=true; throw error; }
         catch (Throwable error) { failed=true; throw LabDeadline.fault(error,LabProtocol.Reason.TRANSPORT_LOST); }

@@ -56,12 +56,19 @@ public final class Os {
             readAdvanceAfter,readAdvance,writeAdvance;
         public boolean closed,listener,eof=true,blocked,ignoreFlags,nullCredentials,closeThrows;
         public int readErrno,writeErrno,fcntlErrno;
+        public String readIoMessage,closeIoMessage;
         public byte[] input=new byte[0]; public final ByteArrayOutputStream output=new ByteArrayOutputStream();
     }
     public static final IdentityHashMap<FileDescriptor,State> states=new IdentityHashMap<FileDescriptor,State>();
     public static int nextNumeric=5,directCloses; public static boolean ignoreAllFlagSets;
     public static java.util.function.IntConsumer advance;
     public static Runnable pollHook;
+    public static String accessText="Permission denied",operationText="Operation not permitted";
+    public static int strerrorCalls; public static boolean strerrorThrows;
+    public static String strerror(int code) {
+        strerrorCalls++;if(strerrorThrows)throw new IllegalStateException("private fake failure");
+        return code==OsConstants.EACCES?accessText:code==OsConstants.EPERM?operationText:null;
+    }
     public static FileDescriptor create() {
         FileDescriptor fd=new FileDescriptor(); State state=new State(); state.numeric=nextNumeric++;
         states.put(fd,state); return fd;
@@ -93,6 +100,7 @@ public final class Os {
     }
     public static int read(FileDescriptor fd,byte[] bytes,int offset,int length) throws ErrnoException,InterruptedIOException {
         State state=state(fd); state.reads++;
+        if(state.readIoMessage!=null)throw new InterruptedIOException(state.readIoMessage);
         if(state.closed)throw new ErrnoException("fixed",9);
         if(state.readErrno!=0) { int error=state.readErrno;state.readErrno=0;throw new ErrnoException("fixed",error); }
         if(state.position==state.input.length)return 0;
@@ -111,7 +119,7 @@ public final class Os {
     public static void close(FileDescriptor fd) { directCloses++;throw new AssertionError("borrowed FD closed directly"); }
     public static void closeFromSocket(FileDescriptor fd) throws IOException {
         State state=state(fd);state.closes++;
-        if(state.closeThrows)throw new IOException("fixed close failure"); state.closed=true;
+        if(state.closeThrows)throw new IOException(state.closeIoMessage==null?"fixed close failure":state.closeIoMessage); state.closed=true;
     }
 }
 ''',
@@ -122,6 +130,7 @@ import android.system.*;
 public class LocalSocket {
     public static int constructors,binds,connects,lazyCloseAllocations,bindErrno,connectErrno;
     public static boolean bindNoFd;
+    public static String bindIoMessage,connectIoMessage;
     public static String lastBind,lastConnect;
     private FileDescriptor fd; private boolean created;
     public int closeCalls;
@@ -135,12 +144,14 @@ public class LocalSocket {
         binds++;lastBind=address.name;
         if(address.namespace!=LocalSocketAddress.Namespace.ABSTRACT)throw new AssertionError("wrong namespace");
         if(!bindNoFd) { created=true;fd=Os.create();Os.state(fd).uid=10001; }
+        if(bindIoMessage!=null)throw new IOException(bindIoMessage);
         if(bindErrno!=0)throw new ErrnoException("fixed",bindErrno).rethrowAsIOException();
     }
     public void connect(LocalSocketAddress address) throws IOException {
         connects++;lastConnect=address.name;
         if(address.namespace!=LocalSocketAddress.Namespace.ABSTRACT || (Os.state(fd).flags&OsConstants.O_NONBLOCK)==0)
             throw new AssertionError("connect was not nonblocking/abstract");
+        if(connectIoMessage!=null)throw new IOException(connectIoMessage);
         if(connectErrno!=0)throw new ErrnoException("fixed",connectErrno).rethrowAsIOException();
     }
     public Credentials getPeerCredentials() throws IOException {
@@ -201,14 +212,19 @@ def main():
             sources.append(target)
         core = root / "src/org/tvcontrol/nativeinput"
         sources += [core / name for name in ("LabProtocol.java", "EditorBinding.java", "IssuedEditor.java",
-                                             "LabDeadline.java", "LabSocketChannel.java", "LabSocketServer.java", "LabClientConnection.java")]
+                                             "LabDeadline.java", "LabNativeSocketFailure.java", "LabSocketChannel.java", "LabSocketServer.java", "LabClientConnection.java")]
         sources.append(root / "tests/SocketIoTest.java")
+        sources.append(root / "tests/NativeSocketFailureTest.java")
         command([args.java,"-m","jdk.compiler/com.sun.tools.javac.Main","-encoding","UTF-8",
                  "-source","8","-target","8","-Xlint:-options","-d",work,*sources],env,30)
         result = command([args.java,"-cp",work,"org.tvcontrol.nativeinput.SocketIoTest"],env,10)
         if not re.fullmatch(r"PASS public socket owner host checks: [0-9]+\n", result):
             raise RuntimeError("invalid socket-owner host result")
         print(result.strip())
+        classification = command([args.java,"-cp",work,"org.tvcontrol.nativeinput.NativeSocketFailureTest"],env,10)
+        if not re.fullmatch(r"PASS contextual native socket failure host checks: [0-9]+\n", classification):
+            raise RuntimeError("invalid contextual socket failure result")
+        print(classification.strip())
 
 
 if __name__ == "__main__":

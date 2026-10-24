@@ -42,6 +42,7 @@ public final class Os {
     public static volatile java.util.function.Consumer<FileDescriptor> pollEach;
     public static java.util.function.IntConsumer advance;
     public static int getuid(){return uid;}public static int geteuid(){return euid;}
+    public static String strerror(int code){return code==OsConstants.EACCES?"Permission denied":code==OsConstants.EPERM?"Operation not permitted":null;}
     public static synchronized FileDescriptor create(){FileDescriptor fd=new FileDescriptor();states.put(fd,new State());return fd;}
     public static synchronized State state(FileDescriptor fd){State s=states.get(fd);if(s==null)throw new AssertionError("unknown fake FD");return s;}
     public static synchronized void reset(){
@@ -151,7 +152,7 @@ def main():
             sources.append(target)
         core = root / "src/org/tvcontrol/nativeinput"
         sources += [core / name for name in ("LabProtocol.java", "EditorBinding.java", "IssuedEditor.java",
-                                             "LabReplies.java", "LabDeadline.java", "LabSocketChannel.java",
+                                             "LabReplies.java", "LabDeadline.java", "LabNativeSocketFailure.java", "LabSocketChannel.java",
                                              "LabClientConnection.java", "LabPipeIo.java", "LabClientDiagnostic.java", "LabSocketClient.java")]
         sources.append(root / "tests/SocketClientTest.java")
         sources.append(root / "tests/ClientDiagnosticTest.java")
