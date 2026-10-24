@@ -1,0 +1,128 @@
+package org.tvcontrol.nativeinput;
+
+import android.os.SystemClock;
+import android.system.Os;
+import java.io.FileDescriptor;
+import java.util.Arrays;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
+
+/** Ephemeral shell client. Payload travels only in borrowed binary stdio. */
+public final class LabSocketClient {
+    private static final class ForwardState {
+        LabProtocol.Opcode phase;
+        LabReplies.Reference reference;
+        boolean referenceSent;
+    }
+    private static final class Forwarder implements Runnable {
+        final LabPipeIo input;
+        final LabSocketChannel channel;
+        final LabDeadline deadline;
+        final ForwardState state;
+        final AtomicBoolean stop=new AtomicBoolean();
+        final AtomicReference<LabProtocol.Reason> failure=new AtomicReference<LabProtocol.Reason>();
+        Forwarder(LabPipeIo source,LabSocketChannel target,LabDeadline clock,ForwardState shared) {
+            input=source;channel=target;deadline=clock;state=shared;
+        }
+        public void run() {
+            LabProtocol.InputBudget budget=new LabProtocol.InputBudget();
+            try {
+                while(!stop.get()) {
+                    LabPipeIo.FrameRead read=input.readFrame(deadline.absolute(),()->stop.get());
+                    if(read.kind==LabPipeIo.Kind.STOP)return;
+                    if(read.kind==LabPipeIo.Kind.EOF)throw new LabProtocol.Fault(LabProtocol.Reason.CANCELLED);
+                    byte[] bytes=read.bytes();LabProtocol.Command command=LabProtocol.decode(bytes,budget);
+                    synchronized(state) {
+                        if(stop.get())return;
+                        if(command.opcode==LabProtocol.Opcode.OBSERVE) {
+                            if(state.phase!=null)throw new LabProtocol.Fault(LabProtocol.Reason.INVALID_FRAME);
+                        } else if(command.opcode==LabProtocol.Opcode.COMMIT) {
+                            if(state.phase!=LabProtocol.Opcode.OBSERVE || !state.referenceSent
+                                    || !Arrays.equals(command.epoch(),state.reference.epoch())
+                                    || !Arrays.equals(command.reference(),state.reference.reference()))
+                                throw new LabProtocol.Fault(LabProtocol.Reason.INVALID_FRAME);
+                        } else if(state.phase==LabProtocol.Opcode.CANCEL)
+                            throw new LabProtocol.Fault(LabProtocol.Reason.INVALID_FRAME);
+                        // State is published only after this complete write succeeds.
+                        channel.writeFrame(bytes,deadline.after(2000));state.phase=command.opcode;
+                    }
+                }
+            } catch(LabProtocol.Fault error){failure.compareAndSet(null,error.reason);channel.abortIo();}
+            catch(Throwable error){failure.compareAndSet(null,LabProtocol.Reason.TRANSPORT_LOST);channel.abortIo();}
+        }
+        boolean stopAndJoin(Thread thread) {
+            stop.set(true);
+            if(thread==null)return true;
+            try {
+                thread.join(250);
+                if(thread.isAlive()){thread.interrupt();thread.join(250);}
+                return !thread.isAlive();
+            } catch(InterruptedException error){Thread.currentThread().interrupt();return false;}
+        }
+    }
+    static int helperUid(String value) throws LabProtocol.Fault {
+        if(value==null || !value.matches("[1-9][0-9]{0,9}"))throw new LabProtocol.Fault(LabProtocol.Reason.PEER_UNKNOWN);
+        try {
+            int uid=Integer.parseInt(value);
+            if(uid==2000)throw new LabProtocol.Fault(LabProtocol.Reason.PEER_UNKNOWN);
+            return uid;
+        } catch(NumberFormatException error){throw new LabProtocol.Fault(LabProtocol.Reason.PEER_UNKNOWN);}
+    }
+    static int run(String[] args) {
+        LabClientConnection connection=null;LabPipeIo input=null,output=null;
+        LabSocketChannel channel=null;Forwarder forwarder=null;Thread writer=null;
+        boolean serverEof=false,clean=true;int result=1;
+        try {
+            if(args==null || args.length!=2 || args[0]==null || !args[0].matches("[0-9a-f]{32}"))
+                throw new LabProtocol.Fault(LabProtocol.Reason.INVALID_FRAME);
+            int helper=helperUid(args[1]);
+            if(Os.getuid()!=2000 || Os.geteuid()!=2000)throw new LabProtocol.Fault(LabProtocol.Reason.POLICY_DENIED);
+            IssuedEditor.Clock clock=()->SystemClock.uptimeMillis();
+            long until=Math.addExact(clock.nowMillis(),IssuedEditor.MAX_INSTANCE_MILLIS);
+            LabDeadline deadline=new LabDeadline(clock,until);
+            connection=new LabClientConnection(args[0],helper,clock,until);
+            channel=connection.open(); // Mutual kernel UID admission precedes any payload read.
+            input=new LabPipeIo(FileDescriptor.in,clock,until);output=new LabPipeIo(FileDescriptor.out,clock,until);
+            input.prepare();output.prepare();ForwardState state=new ForwardState();
+            forwarder=new Forwarder(input,channel,deadline,state);
+            writer=new Thread(forwarder,"native-lab-stdin");writer.setDaemon(true);writer.start();
+            for(;;) {
+                LabSocketChannel.FrameRead read=channel.readFrame(until,null);
+                if(read.kind==LabSocketChannel.Kind.EOF) {
+                    synchronized(state){if(state.phase==null)throw new LabProtocol.Fault(LabProtocol.Reason.TRANSPORT_LOST);}
+                    serverEof=true;break;
+                }
+                if(read.kind!=LabSocketChannel.Kind.DATA)throw new LabProtocol.Fault(LabProtocol.Reason.TRANSPORT_LOST);
+                byte[] bytes=read.bytes();LabReplies.Reference reference=LabReplies.parseReference(bytes);
+                synchronized(state) {
+                    if(state.phase!=LabProtocol.Opcode.OBSERVE || state.reference!=null)
+                        throw new LabProtocol.Fault(LabProtocol.Reason.INVALID_FRAME);
+                    if(reference.expires<=clock.nowMillis() || reference.expires>until)
+                        throw new LabProtocol.Fault(LabProtocol.Reason.REF_EXPIRED);
+                    state.reference=reference;output.writeFrame(bytes,deadline.after(2000));state.referenceSent=true;
+                }
+            }
+        } catch(Throwable ignored) {serverEof=false;}
+        finally {
+            if(forwarder!=null && !forwarder.stopAndJoin(writer))clean=false;
+            if(input!=null)try{input.stop();}catch(LabProtocol.Fault error){clean=false;}
+            if(connection!=null)try{connection.close();}catch(LabProtocol.Fault error){clean=false;}
+            if(connection!=null && !connection.cleanupVerified())clean=false;
+            if(input!=null && !input.cleanupVerified())clean=false;
+            boolean noFailure=forwarder!=null && forwarder.failure.get()==null;
+            if(serverEof && noFailure && clean && output!=null) {
+                try {
+                    IssuedEditor.Clock clock=()->SystemClock.uptimeMillis();
+                    // The pipe retains the original absolute budget; this cannot extend it.
+                    output.writeFrame(LabReplies.channelClosed(),Math.addExact(clock.nowMillis(),2000));result=0;
+                } catch(Throwable ignored){result=1;}
+            }
+            if(output!=null)try{output.stop();}catch(LabProtocol.Fault error){clean=false;}
+            if(output!=null && !output.cleanupVerified())clean=false;
+            if(!clean)result=2;
+        }
+        return result;
+    }
+    public static void main(String[] args){System.exit(run(args));}
+    private LabSocketClient(){}
+}
