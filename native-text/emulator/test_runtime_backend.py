@@ -5,6 +5,7 @@ import io
 from pathlib import Path
 import unittest
 from run_proof import drain_bounded_log, select_acceleration
+from runtime_environment import Runtime, avd_config
 
 
 class RuntimeBackendTests(unittest.TestCase):
@@ -31,15 +32,14 @@ class RuntimeBackendTests(unittest.TestCase):
             self.assertEqual(output.getvalue(), data)
 
     def test_only_three_owned_installs_receive_bounded_setup_budget(self):
-        tree = ast.parse((Path(__file__).resolve().parent / "run_proof.py").read_text())
+        tree = ast.parse((Path(__file__).resolve().parent / "owned_proof.py").read_text())
         installs = []
         for call in ast.walk(tree):
             if not isinstance(call, ast.Call) or not isinstance(call.func, ast.Name):
                 continue
-            if call.func.id != "command" or not call.args or not isinstance(call.args[0], ast.List):
+            if call.func.id != "target" or not call.args:
                 continue
-            if not any(isinstance(value, ast.Constant) and value.value == "install"
-                       for value in call.args[0].elts):
+            if not isinstance(call.args[0], ast.Constant) or call.args[0].value != "install":
                 continue
             installs.append(call)
             timeout = [item.value for item in call.keywords if item.arg == "timeout"]
@@ -49,9 +49,7 @@ class RuntimeBackendTests(unittest.TestCase):
         self.assertEqual(len(installs), 3)
 
     def test_small_owned_display_preserves_environment_constraints(self):
-        source = (Path(__file__).resolve().parent / "run_proof.py").read_text()
-        literals = {node.value for node in ast.walk(ast.parse(source))
-                    if isinstance(node, ast.Constant) and isinstance(node.value, str)}
+        literals = set(avd_config(Runtime("ci-linux", "x86_64", "x86_64", "off", 900)).splitlines())
         for value in ("hw.lcd.width=480", "hw.lcd.height=800", "hw.lcd.density=160",
                       "hw.ramSize=1536", "hw.cpu.ncore=2",
                       "image.sysdir.1=system-images/android-31/default/x86_64/",
@@ -65,8 +63,9 @@ class RuntimeBackendTests(unittest.TestCase):
         runner = (root / "run_proof.py").read_text()
         workflow = (root.parent.parent / ".github/workflows/native-text-runtime.yml").read_text()
         self.assertIn('"-no-audio"', runner)
-        self.assertIn('"-accel", acceleration', runner)
-        self.assertIn('refusing any existing ADB target/session', runner)
+        self.assertIn('"-accel", runtime.acceleration', runner)
+        owned = (root / "owned_runtime.py").read_text()
+        self.assertIn('private ADB unexpectedly contains an existing target', owned)
         self.assertIn('contents: read', workflow)
         self.assertIn('persist-credentials: false', workflow)
         for forbidden in ('sudo ', 'chmod ', 'setfacl ', 'usermod ', 'secrets.'):

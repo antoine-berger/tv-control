@@ -82,7 +82,7 @@ with tempfile.TemporaryDirectory(prefix="native-readiness-test-") as tmp:
 # No text/action/selection access in readiness; negative fixtures remain eligible.
 for forbidden in ("getText(", "performAction(", "isPassword(", "getHintText(", "getTextSelection"):
     assert forbidden not in predicate
-runner = (root / "run_proof.py").read_text()
+runner = (root / "owned_proof.py").read_text()
 assert runner.index('"mode", "ready"') < runner.index('shell("input", "text", "Tanya")')
 assert runner.count('shell("input", "text", "Tanya")') == 1
 assert 'if readiness["proof"] != "passed"' in runner

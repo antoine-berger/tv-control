@@ -3,8 +3,8 @@
 **The first reviewed workflow was published and stopped safely at its KVM access
 preflight; no Android runtime ran. This software-backend correction awaits renewed
 review before publication. All generated APKs are emulator-only test artifacts,
-not user-installable releases. No user TV/Mac is
-addressed, discovered, installed on, or controlled.**
+not user-installable releases. The separate Darwin candidate below requires an
+explicitly selected private local lab; no user's TV is addressed or controlled.**
 
 ## Modern architecture
 
@@ -278,3 +278,90 @@ state is deliberately not used to infer ownership from incidental activity names
 No diagnostics change readiness, mutation policy, settings, or cleanup. Existing
 engine/readiness/host-instrumentation deadlines are unchanged; only failure-time
 read-only diagnosis receives this additional independent 10-second bound.
+
+## Darwin ARM64 candidate: review before runtime
+
+This candidate adds `--mode ci-linux` and `--mode darwin-local`; mode selection is
+mandatory. Darwin requires a native ARM64 host, the official emulator's successful
+HVF acceleration check, no software/Rosetta fallback, a private SDK/lab, and
+pre-existing licensed SDK and reviewed APK build receipts. It does not download
+tools, accept terms, change security settings, create startup services, or install
+anything on a TV. The fixture assertions and shared text engine are unchanged.
+
+The provisioning receipt records official Google archive URLs, published checksum
+algorithm/value and size, locally computed SHA256, destination, and extracted-file
+digests. SDK metadata currently publishes SHA1 for runtime archives; the local
+SHA256 is not presented as an independently published pin. Runtime files and exact
+AOSP API31/default/arm64 ABI are rechecked, including boot images and libraries.
+Repository revision and archive `source.properties` revision remain separate
+evidence: an official archive can contain different recorded revisions. No file
+is rewritten to make them agree. The existing stable SDK license file must be
+present, nonempty, owned and matched by the receipt; preview packages and analytics
+opt-in are refused. The receipt is trusted local configuration, not a security
+boundary against another process deliberately replacing both it and the SDK.
+
+After independent review and explicit operator selection, a local invocation is:
+
+```sh
+python3.14 native-text/emulator/build_runtime.py \
+  --sdk "$LAB/sdk" --java "$JAVA_HOME/bin/java" --out "$LAB/build-1"
+python3.14 native-text/emulator/run_proof.py --mode darwin-local \
+  --sdk "$LAB/sdk" --build "$LAB/build-1" \
+  --provenance "$LAB/provision_receipt.json" --work "$LAB/run-1"
+```
+
+`LAB` must be an owned private directory; `run-1` must not exist. The build writes
+an APK digest receipt. Host Python needs `waitid`/`WNOWAIT`; a Python without them
+fails before starting SDK executables. SDK and build paths cannot escape the lab,
+SDK-root symlinks and control characters in paths are refused, and runtime
+provenance hashing is bounded to 90 seconds. The host needs at least 8 GiB RAM
+and 8 GiB free storage. The AVD retains the 1536 MiB/two-core, low-resolution
+configuration. Audio input/output, host cameras, snapshots, metrics and emulator
+window are disabled; these are owned-AVD settings, not changes to a user's TV.
+
+ADB runs as a directly owned foreground child with a fresh loopback smart-socket
+port, a console/transport pair selected from available documented emulator ports,
+and a private home/key/tmp/AVD environment. USB, mDNS auto-connect and emulator
+auto-scanning are disabled. Every client invocation names the private host/port
+and exact emulator serial. Read-only listener-PID, server-version and target-list
+checks precede dispatch; another target or unknown ownership fails closed. The
+emulator receives the same `ANDROID_ADB_SERVER_PORT` and socket environment.
+Ports are reserved until launch; the unavoidable bind handoff is followed by
+ownership checks before fixture installs or input.
+
+The SDK ADB client can still auto-start/restart after a server check/use race; no
+documented no-autostart client option is assumed. A missing owned foreground
+server stops dispatch. Cleanup checks for leftover private ports and SDK processes
+and fails explicitly instead of killing a PID found by scanning. Other independently
+configured ADB servers remain outside this runner's exclusion; choosing a console
+pair above the default scan range avoids that default scan, not every possible
+custom scanner.
+
+All subprocess groups, including commands that exit normally, retain their direct
+leader until the last group signal. On Darwin, EPERM is accepted only with fresh
+non-reaping exit observations around public libproc proof that the group is exactly
+that retained zombie; a bounded read-only interval handles termination becoming
+waitable just after the denied signal. No denied signal is repeated and other
+permission errors, unknown/incomplete membership and lost ownership remain errors.
+See Apple's [libproc implementation](https://github.com/apple-oss-distributions/xnu/blob/main/libsyscall/wrappers/libproc/libproc.c)
+and the project-owned process-group tests. No enumerated PID is signalled.
+
+An absolute runtime deadline covers fixture commands; cancellation or timeout does
+not replay a mutation. SDK log draining uses nonblocking reads and a stop event,
+so an inherited open pipe cannot hang teardown. A local `runtime-receipt.json`
+records fixed phase/error categories and cleanup verification. A leftover listener,
+SDK process, unresolved group error or log-drain failure prevents success. The
+existing primary failure remains chained to cleanup errors. Logs/work data stay
+private and no artifacts are uploaded. This candidate has host/mock test evidence;
+no Darwin AVD boot, Android text mutation or OEM behavior is claimed yet.
+
+Pure host checks (no SDK, ADB or AVD launch):
+
+```sh
+python3.14 -W error::ResourceWarning native-text/emulator/test_process_group.py
+python3.14 -W error::ResourceWarning native-text/emulator/test_owned_runtime.py
+python3.14 -W error::ResourceWarning native-text/emulator/test_runtime_environment.py
+python3.14 -W error::ResourceWarning native-text/emulator/test_runtime_backend.py
+python3.14 -W error::ResourceWarning native-text/emulator/test_proof_result.py
+python3.14 -W error::ResourceWarning native-text/emulator/test_owned_errors.py
+```

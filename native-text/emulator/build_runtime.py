@@ -2,6 +2,7 @@
 """Build owned fixture/helper/proof APKs; no Gradle/download/device actions."""
 import argparse
 import hashlib
+import json
 from pathlib import Path
 import subprocess
 import zipfile
@@ -71,6 +72,10 @@ def main():
         modern = sorted((root.parent / "modern/src").rglob("*.java"))
         apk("helper", root.parent / "modern/AndroidManifest.xml", shared + modern)
         apk("proof", root / "ProofManifest.xml", shared + modern + sorted((root / "src").rglob("*.java")))
+        (args.out / "build-receipt.json").write_text(json.dumps({
+            "schema": 1, "artifacts": {
+                name: hashlib.sha256((args.out / name).read_bytes()).hexdigest()
+                for name in ("fixture.apk", "helper.apk", "proof.apk")}}, indent=2) + "\n")
     finally:
         if key.exists():
             key.unlink()

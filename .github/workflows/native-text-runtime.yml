@@ -43,6 +43,8 @@ jobs:
           python3 native-text/tests/test_focus_guards.py --java "$JAVA_HOME_21_X64/bin/java"
           python3 native-text/tests/protocol_decoder.py --java "$JAVA_HOME_21_X64/bin/java"
           python3 native-text/emulator/test_runtime_backend.py
+          python3 native-text/emulator/test_runtime_environment.py
+          python3 native-text/emulator/test_owned_runtime.py
           python3 native-text/emulator/test_process_group.py
           python3 native-text/emulator/test_proof_result.py
           python3 native-text/emulator/test_owned_errors.py
@@ -60,7 +62,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          python3 native-text/emulator/run_proof.py \
+          python3 native-text/emulator/run_proof.py --mode ci-linux \
             --sdk "$RUNNER_TEMP/native-runtime-sdk" \
             --build "$RUNNER_TEMP/native-runtime-build" \
             --work "$RUNNER_TEMP/native-runtime-avd" \
