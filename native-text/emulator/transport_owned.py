@@ -9,7 +9,7 @@ from pathlib import Path
 from owned_runtime import owns_listener, remaining
 from process_group import leader_exited
 from runtime_environment import LAB_COMPONENT, LAB_PACKAGE, sha256, verify_lab_build
-from transport_host import Host
+from transport_host import Host, Outcome
 from transport_pipes import PipedChild
 from transport_wire import TransportFault
 
@@ -21,6 +21,15 @@ BASE = r'/data/app/[A-Za-z0-9_/=+.~\-]+/base\.apk'
 class StageCleanupUnverified(TransportFault):
     def __init__(self):
         super().__init__('CLEANUP_UNVERIFIED')
+        self.transport_outcome = None
+        self.stage_cleanup_verified = False
+
+
+class TransportUnqualified(TransportFault):
+    def __init__(self, outcome):
+        super().__init__(outcome.reason)
+        self.transport_outcome = outcome.public()
+        self.stage_cleanup_verified = False
 
 
 @dataclass(frozen=True)
@@ -188,6 +197,7 @@ def connectivity(ready, pins, deadline):
     launcher = OwnedLauncher(ready, pins)
     result = None
     operation_deadline = None
+    failure = None
     try:
         launcher.prepare(deadline)
         # Staging has its own bounded budget. Host guard receives its nonrenewed
@@ -196,10 +206,23 @@ def connectivity(ready, pins, deadline):
         host = Host(launcher, deadline=operation_deadline)
         result = host.probe_connectivity()
         if result.status != 'CONNECTED' or not result.qualified:
-            raise TransportFault(getattr(result, 'reason', 'CLEANUP_UNVERIFIED'))
+            raise TransportUnqualified(result)
+    except TransportUnqualified as error:
+        failure = error
+        raise
     finally:
         # Local teardown may exceed work deadline but can never retroactively
         # qualify its result; it is containment, not remote cleanup evidence.
-        launcher.close_stage(time.monotonic() + 5)
-    remaining(operation_deadline)
+        try:
+            launcher.close_stage(time.monotonic() + 5)
+        except StageCleanupUnverified as error:
+            error.transport_outcome = result.public() if result is not None else None
+            raise
+        if failure is not None:
+            failure.stage_cleanup_verified = True
+    if time.monotonic() >= operation_deadline:
+        failure = TransportUnqualified(Outcome('UNKNOWN', 'HOST_DEADLINE', result.server_cleanup,
+                                               result.client_cleanup, result.local_cleanup, False))
+        failure.stage_cleanup_verified = True
+        raise failure
     return result
