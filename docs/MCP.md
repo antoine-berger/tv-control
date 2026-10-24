@@ -185,4 +185,6 @@ Use `tv_control` with `action: {"type":"wake"}` and the normal device, expiry an
 
 The controller reads native power state, not a foreground activity. `verified` requires an observed awake state (also returned as `state.awake: true`); an already-awake device is a no-op. Unknown vendor power formats return `wake_dispatched_unverified`, not proof of wake. A connection failure before dispatch returns `wake_transport_unavailable`; a failure after dispatch remains `outcome_unknown`. Recover the same operation rather than sending another key.
 
+The internal power-state dump has a separate 1 MiB limit, so verbose vendor diagnostics do not consume the ordinary text-response budget. Dumps exceeding that limit fail without accepting a truncated state: before dispatch no wake key is sent; after dispatch the outcome remains unknown. Ordinary MCP text limits are unchanged.
+
 ADB must remain reachable during standby. Deep sleep, powered-off devices, or a sleeping network interface may require the physical remote. This action does not add Wake-on-LAN, change power/network settings, or establish new device access. Hardware support must be tested separately.

@@ -36,10 +36,16 @@ if command[:3]==['cmd','package','query-activities']:
             print(f'  Activity #{i}:\n    ActivityInfo:\n      name={package}.Main\n      packageName={package}\n      labelRes=0x0 nonLocalizedLabel={label} icon=0x0\n      ApplicationInfo:\n        packageName={package}')
 elif command==['dumpsys','power']:
     if state.get('offline'): sys.exit(1)
-    print('mWakefulness='+state.get('power','Asleep'))
+    dump='POWER MANAGER (dumpsys power)\n  mWakefulness='+state.get('power','Asleep')+'\n  mIsPowered=false\n'
+    # Synthetic vendor diagnostic history, not just the one state line consumed.
+    history='  10-24 03:00:00.000 lastWakefulness=Asleep, displayId=0, reason=fixture\n'
+    size=state.get('power_dump_bytes',len(dump))
+    dump+=(history*((max(0,size-len(dump))+len(history)-1)//len(history)))[:max(0,size-len(dump))]
+    sys.stdout.write(dump)
 elif command==['input','keyevent','224']:
     state['wakes']=state.get('wakes',0)+1
     if state.get('fail_after_wake'): state['offline']=True
+    if 'power_dump_bytes_after_wake' in state: state['power_dump_bytes']=state['power_dump_bytes_after_wake']
     if state.get('power')!='VendorUnknown': state['power']='Awake'
     state_path.write_text(json.dumps(state))
 elif command==['dumpsys','activity','activities']:
@@ -152,6 +158,38 @@ class GenericMcp(unittest.TestCase):
         self.assertEqual(result['status'],'failed')
         self.assertEqual(result['code'],'wake_transport_unavailable')
         self.assertNotIn('wakes',json.loads(path.read_text()))
+    def test_wake_large_power_dumps_ignore_text_budget(self):
+        for budget in (4096,65536):
+            with self.subTest(text_budget=budget):
+                self.close_process()
+                cfg=json.loads(self.config.read_text());cfg['preferences']['max_output_bytes']=budget;self.config.write_text(json.dumps(cfg))
+                path=self.root/'state.json';state=json.loads(path.read_text());state.update(power='Asleep',wakes=0,power_dump_bytes=256*1024);path.write_text(json.dumps(state))
+                self.start()
+                identity='large_power_'+str(budget)
+                result=self.control(identity,{'type':'wake'})['structuredContent']
+                self.assertEqual(result['status'],'verified',result)
+                self.assertTrue(result['state']['awake'])
+                self.close_process();self.start()
+                self.assertTrue(self.control(identity,{'type':'wake'})['structuredContent']['cached'])
+                self.assertEqual(self.control('already_awake_'+str(budget),{'type':'wake'})['structuredContent']['status'],'verified')
+                self.assertEqual(json.loads(path.read_text())['wakes'],1)
+                self.rpc('ping',{})
+    def test_wake_oversized_power_dump_never_dispatches(self):
+        path=self.root/'state.json';state=json.loads(path.read_text());state['power_dump_bytes']=1024*1024+1;path.write_text(json.dumps(state))
+        result=self.control('oversized_power',{'type':'wake'})['structuredContent']
+        self.assertEqual(result['status'],'failed')
+        self.assertEqual(result['code'],'adb_output_limit')
+        self.assertNotIn('wakes',json.loads(path.read_text()))
+        self.rpc('ping',{})
+    def test_wake_oversized_postcondition_stays_unknown_without_second_key(self):
+        path=self.root/'state.json';state=json.loads(path.read_text());state['power_dump_bytes_after_wake']=1024*1024+1;path.write_text(json.dumps(state))
+        result=self.control('oversized_after',{'type':'wake'})['structuredContent']
+        self.assertEqual(result['status'],'outcome_unknown')
+        self.assertEqual(result['code'],'adb_output_limit')
+        self.close_process();self.start()
+        self.assertTrue(self.control('oversized_after',{'type':'wake'})['structuredContent']['cached'])
+        self.assertEqual(json.loads(path.read_text())['wakes'],1)
+        self.rpc('ping',{})
     def test_wake_lost_observation_stays_unknown_without_second_key(self):
         path=self.root/'state.json';state=json.loads(path.read_text());state['fail_after_wake']=True;path.write_text(json.dumps(state))
         result=self.control('lost',{'type':'wake'})['structuredContent']

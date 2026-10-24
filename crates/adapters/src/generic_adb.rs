@@ -32,6 +32,9 @@ const MAX_APPS: usize = 256;
 const MAX_UI_NODES: usize = 1024;
 const MAX_UI_ELEMENTS: usize = 64;
 const REFERENCE_TTL_MS: u64 = 30_000;
+// Power dumps contain vendor diagnostic histories, not just the current state.
+// Keep this internal read separate from the ordinary text/MCP response budget.
+const MAX_POWER_DUMP_BYTES: usize = 1024 * 1024;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 struct ExecutableStamp {
@@ -484,7 +487,17 @@ impl Device for GenericAdb {
         if *intent == Intent::Wake {
             // No foreground activity or media session is required while asleep.
             let raw = self
-                .shell(alias, &["dumpsys", "power"], &[], false, ctx)
+                .shell_bytes(
+                    alias,
+                    &["dumpsys", "power"],
+                    &[],
+                    false,
+                    MAX_POWER_DUMP_BYTES,
+                    ctx,
+                )
+                .and_then(|raw| {
+                    String::from_utf8(raw).map_err(|_| Failure::before("adb_read_failed"))
+                })
                 .map_err(|e| {
                     if e.code == "adb_read_failed" {
                         Failure::before("wake_transport_unavailable")

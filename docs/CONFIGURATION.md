@@ -132,7 +132,7 @@ Every preference is explicit; there are no installation-specific defaults.
 | `max_budget_ms` | Maximum remaining request budget, 1–10,000 ms |
 | `verification_poll_ms` | Wait between verification reads, 1–500 ms |
 | `process_poll_ms` | Subprocess and stdio polling interval, 1–50 ms |
-| `max_output_bytes` | Bounded subprocess I/O and ordinary serialized MCP text output, 4,096 bytes–1 MiB; the example uses 65,536 bytes. Explicit screenshots alone use a fixed 12 MiB image frame cap (8 MiB PNG maximum) |
+| `max_output_bytes` | Ordinary subprocess/text reads and serialized MCP text output, 4,096 bytes–1 MiB; the example uses 65,536 bytes. Generic ADB internal reads have operation-specific bounds, including 1 MiB for wake power-state dumps. Explicit screenshots alone use a fixed 12 MiB image frame cap (8 MiB PNG maximum) |
 | `max_frame_bytes` | Incoming request/frame limit, 1,024–65,536 bytes |
 | `max_inflight` | Concurrent MCP control calls, 1–8 |
 | `dedup_entries` | In-memory request entries, 1–4,096 |
