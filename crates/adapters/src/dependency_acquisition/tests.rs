@@ -388,3 +388,59 @@ fn homebrew_has_distinct_consent_and_no_tunnel_credentials() {
         .env
         .contains_key(&OsString::from("TV_CONTROL_TUNNEL_KEY")));
 }
+
+#[test]
+fn dependency_lock_releases_at_owner_end_while_duplicate_remains_open() {
+    let d = Directory::new();
+    let path = d.0.join("dependency.lock");
+    write_new(&path, &[], false).unwrap();
+    let owner = DependencyLock::acquire(private_file(&path, false).unwrap()).unwrap();
+    let duplicate = owner.0.try_clone().unwrap();
+    // A failed acquisition owns only its newly opened File, never this lock.
+    for _ in 0..2 {
+        assert!(matches!(
+            DependencyLock::acquire(private_file(&path, false).unwrap()),
+            Err("tunnel_dependency_locked")
+        ));
+    }
+    drop(owner);
+    let next = DependencyLock::acquire(private_file(&path, false).unwrap()).unwrap();
+    assert_eq!(
+        duplicate.metadata().unwrap().ino(),
+        next.0.metadata().unwrap().ino()
+    );
+    drop(next);
+    drop(duplicate);
+}
+#[test]
+fn dependency_lock_releases_on_success_and_early_error_with_live_duplicate() {
+    for fail_early in [false, true] {
+        let d = Directory::new();
+        let path = d.0.join("dependency.lock");
+        write_new(&path, &[], false).unwrap();
+        let mut duplicate = None;
+        let result = (|| -> Result<(), &'static str> {
+            let owner = DependencyLock::acquire(private_file(&path, false).unwrap())?;
+            duplicate = Some(owner.0.try_clone().unwrap());
+            if fail_early {
+                return Err("fixture_early_error");
+            }
+            Ok(())
+        })();
+        assert_eq!(
+            result,
+            if fail_early {
+                Err("fixture_early_error")
+            } else {
+                Ok(())
+            }
+        );
+        let next = DependencyLock::acquire(private_file(&path, false).unwrap()).unwrap();
+        assert_eq!(
+            duplicate.as_ref().unwrap().metadata().unwrap().ino(),
+            next.0.metadata().unwrap().ino()
+        );
+        drop(next);
+        drop(duplicate);
+    }
+}
