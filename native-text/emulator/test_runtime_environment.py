@@ -157,6 +157,44 @@ class RuntimeEnvironmentTests(unittest.TestCase):
                 self.verify()
         self.assertFalse(self.work.exists())
 
+    def test_oversized_file_manifest_fails_before_runtime_tree_or_digest_reads(self):
+        files = self.metadata["files"]
+        files.update({f"unused/{index}": "0" * 64 for index in range(32769 - len(files))})
+        self.save()
+        with patch.object(Path, "rglob", side_effect=AssertionError("runtime tree must not be traversed")), \
+                patch("runtime_environment.sha256", side_effect=AssertionError("digest must not be read")):
+            with self.assertRaisesRegex(RuntimeError, "file digests are missing or unbounded"):
+                self.verify()
+        self.assertFalse(self.work.exists())
+
+    def test_manifest_count_at_limit_still_requires_valid_digest_syntax(self):
+        files = self.metadata["files"]
+        # Reach syntax validation without materializing thousands of fake SDK files.
+        # The first digest is invalid, so validation must fail before hashing it.
+        files["platform-tools/adb"] = "not-a-digest"
+        files.update({f"unused/{index}": "0" * 64 for index in range(32768 - len(files))})
+        self.save()
+        with patch("runtime_environment.sha256", side_effect=AssertionError("digest must not be read")):
+            with self.assertRaisesRegex(RuntimeError, "file digest has invalid syntax"):
+                self.verify()
+        self.assertFalse(self.work.exists())
+
+    def test_receipt_byte_bound_remains_before_json_parsing(self):
+        self.receipt.write_text(" " * (4 * 1024 * 1024 + 1))
+        with patch("runtime_environment.json.loads", side_effect=AssertionError("JSON must not be parsed")):
+            with self.assertRaisesRegex(RuntimeError, "receipt exceeds bound"):
+                self.verify()
+        self.assertFalse(self.work.exists())
+
+    def test_package_count_remains_bounded_before_runtime_tree_or_digest_reads(self):
+        self.metadata["packages"] *= 11  # 33 entries, beyond the unchanged limit of 32.
+        self.save()
+        with patch.object(Path, "rglob", side_effect=AssertionError("runtime tree must not be traversed")), \
+                patch("runtime_environment.sha256", side_effect=AssertionError("digest must not be read")):
+            with self.assertRaisesRegex(RuntimeError, "package set is absent or unbounded"):
+                self.verify()
+        self.assertFalse(self.work.exists())
+
 
 if __name__ == "__main__":
     unittest.main()
