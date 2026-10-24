@@ -18,6 +18,11 @@ BASE = r'/data/app/[A-Za-z0-9_/=+.~\-]+/base\.apk'
 
 
 
+class StageCleanupUnverified(TransportFault):
+    def __init__(self):
+        super().__init__('CLEANUP_UNVERIFIED')
+
+
 @dataclass(frozen=True)
 class Pins:
     apk: Path
@@ -71,6 +76,7 @@ class OwnedLauncher:
         self.channels = []
         self.user = self.uid = self.base = self.directory = self.owner_path = None
         self.directory_created = False
+        self.directory_attempted = False
 
     def _read(self, *words, deadline):
         return self.ready.adb.target('shell', '-n', *words, deadline=deadline,
@@ -116,6 +122,9 @@ class OwnedLauncher:
         self._hash(self.base, self.pins.apk_hash, deadline)
         self.directory = '/data/local/tmp/tv-native-lab.' + secrets.token_hex(16)
         self.owner_path = self.directory + '/client-owner.sh'
+        # target may raise after successful remote dispatch (e.g. its postguard).
+        # A failed return does not prove mkdir had no effect or confer ownership.
+        self.directory_attempted = True
         self._read('mkdir', '-m', '700', self.directory, deadline=deadline)
         self.directory_created = True
         self.ready.adb.target('push', str(self.pins.owner), self.owner_path,
@@ -157,12 +166,21 @@ class OwnedLauncher:
         return tuple(self.channels)
 
     def close_stage(self, deadline):
-        if not self.directory_created:
+        if not self.directory_attempted:
             return
-        self.ready.guard(deadline)
-        self._read('rm', self.owner_path, deadline=deadline)
-        self._read('rmdir', self.directory, deadline=deadline)
-        self.directory_created = False
+        if not self.directory_created:
+            # Never delete a path whose creation/ownership was not acknowledged.
+            raise StageCleanupUnverified()
+        failed = False
+        try:
+            self.ready.guard(deadline)
+            self._read('rm', self.owner_path, deadline=deadline)
+            self._read('rmdir', self.directory, deadline=deadline)
+        except BaseException:
+            failed = True
+        if failed:
+            raise StageCleanupUnverified()
+        self.directory_created = self.directory_attempted = False
 
 
 def connectivity(ready, pins, deadline):

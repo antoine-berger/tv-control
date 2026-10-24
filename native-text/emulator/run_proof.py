@@ -19,7 +19,7 @@ from owned_runtime import (Ports, PrivateAdb, command as run_command, isolated_e
                            owns_listener, port_closed, sdk_processes)
 from process_group import leader_exited, require_nonreaping_wait, stop_unreaped_group
 from runtime_environment import avd_config, select_runtime, verify_local_inputs
-from transport_owned import Pins, ReadyAvd, connectivity
+from transport_owned import Pins, ReadyAvd, StageCleanupUnverified, connectivity
 
 
 def select_acceleration(kvm_usable, allow_software):
@@ -237,7 +237,7 @@ def main():
         raise
     finally:
         primary_error = sys.exc_info()[1]
-        failures = []
+        failures = ["lab-stage-cleanup"] if isinstance(primary_error, StageCleanupUnverified) else []
         if owned_ready:
             for package in reversed(owned_packages):
                 try:

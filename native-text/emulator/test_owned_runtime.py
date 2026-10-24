@@ -244,6 +244,21 @@ class MainCleanupTests(unittest.TestCase):
         self.assertFalse(receipt["cleanup_verified"])
         self.assertIn("owned-package-cleanup", receipt["cleanup_failures"])
 
+    def test_uncertain_lab_stage_propagates_to_final_runtime_cleanup_receipt(self):
+        self.args.scenario = "lab-connectivity"
+        fake = SimpleNamespace(pid=456, stdout=io.BytesIO(b""))
+        with patch.object(run_proof, "clean_source", return_value="a" * 40), \
+             patch.object(run_proof.Pins, "load", return_value=SimpleNamespace(apk=self.build / "lab-helper.apk")), \
+             patch.object(run_proof, "connectivity", side_effect=run_proof.StageCleanupUnverified), \
+             patch.object(run_proof.subprocess, "Popen", return_value=fake), \
+             patch.object(run_proof, "stop_unreaped_group"), patch.object(run_proof, "drain_bounded_log"):
+            with self.assertRaisesRegex(RuntimeError, "cleanup unverified: lab-stage-cleanup"):
+                run_proof.main()
+        receipt = json.loads((self.work / "runtime-receipt.json").read_text())
+        self.assertFalse(receipt["proof_completed"])
+        self.assertFalse(receipt["cleanup_verified"])
+        self.assertIn("lab-stage-cleanup", receipt["cleanup_failures"])
+
     def test_remaining_listener_is_explicit_failure_without_unowned_pid_signals(self):
         with patch.object(self.fake_adb, "start", side_effect=RuntimeError("fixture startup failed")), \
              patch.object(run_proof, "port_closed", return_value=False), \

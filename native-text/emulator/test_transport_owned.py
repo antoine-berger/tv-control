@@ -8,7 +8,7 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
-from transport_owned import COMPONENT, PACKAGE, OwnedLauncher, Pins, ReadyAvd, connectivity
+from transport_owned import COMPONENT, PACKAGE, OwnedLauncher, Pins, ReadyAvd, StageCleanupUnverified, connectivity
 from transport_wire import TransportFault
 from runtime_environment import verify_lab_build
 
@@ -35,6 +35,7 @@ class FakeAdb:
         self.calls = []
         self.user, self.uid, self.base = 0, 10001, BASE
         self.shared = False
+        self.mkdir_created = self.mkdir_error = False
         self.apk_hash, self.owner_hash = 'a' * 64, 'b' * 64
     def guard(self, deadline, require_device=False):
         if deadline <= time.monotonic():
@@ -58,7 +59,12 @@ class FakeAdb:
             return digest + '  ' + words[2] + '\n'
         if words[0] == 'getprop':
             return {'ro.kernel.qemu': '1\n', 'ro.build.version.sdk': '31\n', 'ro.product.cpu.abi': 'arm64-v8a\n'}[words[1]]
-        if words[0] in ('mkdir', 'rm', 'rmdir'):
+        if words[0] == 'mkdir':
+            self.mkdir_created = True
+            if self.mkdir_error:
+                raise RuntimeError('synthetic postguard failure after remote mkdir')
+            return ''
+        if words[0] in ('rm', 'rmdir'):
             return ''
         raise AssertionError('unexpected fake command')
 
@@ -83,6 +89,26 @@ class Adapter(unittest.TestCase):
         self.assertEqual([words[2] for words, _ in self.adb.calls if words[0] == 'shell'][-2:], ['rm', 'rmdir'])
         with self.assertRaises(TransportFault):
             self.launcher.prepare(self.deadline)
+
+    def test_uncertain_mkdir_never_claims_cleanup_or_deletes_unproven_path(self):
+        self.adb.mkdir_error = True
+        with self.assertRaisesRegex(RuntimeError, 'postguard'):
+            self.launcher.prepare(self.deadline)
+        self.assertTrue(self.adb.mkdir_created)
+        self.assertTrue(self.launcher.directory_attempted)
+        self.assertFalse(self.launcher.directory_created)
+        with self.assertRaises(StageCleanupUnverified):
+            self.launcher.close_stage(self.deadline)
+        self.assertFalse(any(words[2] in ('rm', 'rmdir') for words, _ in self.adb.calls if words[0] == 'shell'))
+        self.assertFalse(any(words[0] == 'push' for words, _ in self.adb.calls))
+
+    def test_stage_cleanup_failure_is_explicit_and_sticky(self):
+        self.launcher.prepare(self.deadline)
+        with patch.object(self.ready, 'guard', side_effect=RuntimeError('synthetic late identity failure')):
+            with self.assertRaises(StageCleanupUnverified):
+                self.launcher.close_stage(self.deadline)
+        self.assertTrue(self.launcher.directory_attempted)
+        self.assertTrue(self.launcher.directory_created)
 
     def test_fresh_user_uid_path_hash_and_local_owner_changes_refuse_before_spawn(self):
         for changed in ('user', 'uid', 'base', 'apk_hash', 'owner_hash', 'shared', 'local_owner'):
