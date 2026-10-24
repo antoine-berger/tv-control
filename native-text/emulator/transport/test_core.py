@@ -20,7 +20,7 @@ def main():
     with tempfile.TemporaryDirectory(prefix="lab-transport-core-") as directory:
         work = Path(directory)
         core = root / "src/org/tvcontrol/nativeinput"
-        sources = [core / name for name in ("LabProtocol.java", "EditorBinding.java", "IssuedEditor.java")]
+        sources = [core / name for name in ("LabProtocol.java", "EditorBinding.java", "IssuedEditor.java", "LabReplies.java")]
         sources += [root / "tests/TransportCoreTest.java"]
         command([args.java, "-m", "jdk.compiler/com.sun.tools.javac.Main", "-encoding", "UTF-8",
                  "-source", "8", "-target", "8", "-Xlint:-options", "-d", work, *sources], env, 30)

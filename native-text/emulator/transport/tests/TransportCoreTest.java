@@ -200,8 +200,31 @@ public final class TransportCoreTest {
         fault(LabProtocol.Reason.REF_CONSUMED, () -> operation.markEngineEntered());
         check(!finish(operation,true).engineEntered);
     }
+    static void replies() throws Exception {
+        Clock clock=new Clock(); IssuedEditor operation=operation(clock,8,15100);
+        IssuedEditor.Lease lease=operation.issue(binding("seed"),100);
+        byte[] frame=LabReplies.reference(lease);check(frame.length==50);
+        LabReplies.Reference reply=LabReplies.parseReference(frame);
+        check(reply.expires==4100);check(Arrays.equals(reply.epoch(),lease.epoch()));
+        check(Arrays.equals(reply.reference(),lease.reference()));
+        reply.epoch()[0]=99;reply.reference()[0]=99;
+        check(Arrays.equals(reply.reference(),lease.reference()));
+        check(!reply.toString().contains("seed"));
+        byte[] closed=LabReplies.channelClosed();check(closed.length==11&&closed[9]==(byte)0x82&&closed[10]==1);
+        for(int size=0;size<frame.length;size++){
+            final byte[] partial=Arrays.copyOf(frame,size);
+            fault(LabProtocol.Reason.INVALID_FRAME,()->LabReplies.parseReference(partial));
+        }
+        for(int offset:new int[]{3,4,8,9}){
+            byte[] bad=frame.clone();bad[offset]=(byte)255;
+            fault(LabProtocol.Reason.INVALID_FRAME,()->LabReplies.parseReference(bad));
+        }
+        byte[] zeroExpiry=frame.clone();Arrays.fill(zeroExpiry,42,50,(byte)0);
+        fault(LabProtocol.Reason.INVALID_FRAME,()->LabReplies.parseReference(zeroExpiry));
+        fault(LabProtocol.Reason.INVALID_FRAME,()->LabReplies.parseReference(Arrays.copyOf(frame,51)));
+    }
     public static void main(String[] args) throws Exception {
-        codec(); references(); effects(); admissionAndRace();
+        codec(); references(); effects(); admissionAndRace(); replies();
         System.out.println("PASS lab pure transport core checks: "+checks);
     }
 }
