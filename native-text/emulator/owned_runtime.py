@@ -108,15 +108,27 @@ def isolated_environment(sdk, work, server_port, console_port, inherited=None):
                 ADB_VENDOR_KEYS=str(home / "empty-vendor-keys"))
 
 
-def host_query(port, query, limit=4096):
-    with socket.create_connection(("127.0.0.1", port), timeout=1) as sock:
-        sock.settimeout(1)
+def remaining(deadline, maximum=None):
+    """An absolute deadline is never renewed by another byte or preflight step."""
+    value = deadline - time.monotonic()
+    if value <= 0:
+        raise RuntimeError("owned runtime absolute deadline exceeded")
+    return value if maximum is None else min(maximum, value)
+
+
+def host_query(port, query, limit=4096, *, deadline=None):
+    deadline = time.monotonic() + 1 if deadline is None else deadline
+    with socket.create_connection(("127.0.0.1", port), timeout=remaining(deadline, 1)) as sock:
         request = query.encode("ascii")
+        sock.settimeout(remaining(deadline, 1))
         sock.sendall(f"{len(request):04x}".encode("ascii") + request)
+        remaining(deadline)
         def exact(count):
             result = b""
             while len(result) < count:
+                sock.settimeout(remaining(deadline, 1))
                 data = sock.recv(count - len(result))
+                remaining(deadline)
                 if not data:
                     raise RuntimeError("private ADB response closed")
                 result += data
@@ -132,21 +144,26 @@ def host_query(port, query, limit=4096):
         return exact(size).decode("ascii", errors="strict")
 
 
-def owns_listener(pid, port, env):
+def owns_listener(pid, port, env, *, deadline=None):
     """Read-only ownership proof; never trust a version-compatible foreign daemon."""
+    deadline = time.monotonic() + 3 if deadline is None else deadline
+    remaining(deadline)
     if sys.platform == "darwin":
         try:
             output = command(["/usr/sbin/lsof", "-nP", "-a", "-p", str(pid),
-                              f"-iTCP:{port}", "-sTCP:LISTEN", "-Fpn"], env, timeout=3)
+                              f"-iTCP:{port}", "-sTCP:LISTEN", "-Fpn"], env, timeout=remaining(deadline, 3))
         except subprocess.CalledProcessError:
             return False
+        remaining(deadline)
         return owned_loopback_listener(output, pid, port)
     if sys.platform == "linux":
+        remaining(deadline)
         root = Path(f"/proc/{pid}")
         inodes = {os.readlink(path)[8:-1] for path in (root / "fd").iterdir()
                   if os.readlink(path).startswith("socket:[")}
         wanted = f"0100007F:{port:04X}"
         rows = (root / "net/tcp").read_text().splitlines()[1:]
+        remaining(deadline)
         return any((parts := row.split())[1] == wanted and parts[3] == "0A"
                    and parts[9] in inodes for row in rows)
     raise RuntimeError("listener ownership proof unavailable on this platform")
@@ -239,7 +256,7 @@ class PrivateAdb:
             if leader_exited(self.process):
                 raise RuntimeError("owned foreground ADB exited before readiness")
             try:
-                self.guard()
+                self.guard(deadline=until)
                 break
             except (OSError, RuntimeError):
                 if time.monotonic() >= until:
@@ -265,29 +282,37 @@ class PrivateAdb:
             diagnostic["process"] = {"state": "ownership_unknown"}
         self.startup_diagnostic = diagnostic
 
-    def guard(self):
+    def guard(self, deadline=None, *, require_device=False):
+        deadline = time.monotonic() + 7 if deadline is None else deadline
+        remaining(deadline)
         if self.process is None or leader_exited(self.process):
             raise RuntimeError("owned foreground ADB is not live; no client dispatch")
         if os.fstat(self.log.fileno()).st_size > OUTPUT_LIMIT:
             raise RuntimeError("private ADB diagnostics exceeded bound")
-        if not owns_listener(self.process.pid, self.ports.adb_port, self.env):
+        if not owns_listener(self.process.pid, self.ports.adb_port, self.env, deadline=deadline):
             raise RuntimeError("private ADB listener is not owned and loopback-only")
-        version = host_query(self.ports.adb_port, "host:version", limit=4)
+        version = host_query(self.ports.adb_port, "host:version", limit=4, deadline=deadline)
         if not re.fullmatch(r"[0-9a-fA-F]{4}", version) or int(version, 16) != self.protocol:
             raise RuntimeError("private ADB version differs; no client dispatch")
         if leader_exited(self.process):
             raise RuntimeError("owned foreground ADB stopped during guard")
-        listing = host_query(self.ports.adb_port, "host:devices")
+        listing = host_query(self.ports.adb_port, "host:devices", deadline=deadline)
+        if require_device and listing != self.serial + "\tdevice\n":
+            raise RuntimeError("private ADB target is not the unique ready owned emulator")
         for row in listing.splitlines():
             columns = row.split("\t")
             if len(columns) != 2 or columns[0] != self.serial or columns[1] not in ("device", "offline", "unauthorized"):
                 raise RuntimeError("private ADB contains an unexpected target; no client dispatch")
 
-    def target(self, *words, timeout=30, cleanup=False):
+        remaining(deadline)
+
+    def target(self, *words, timeout=30, cleanup=False, deadline=None):
         until = time.monotonic() + timeout
+        if deadline is not None:
+            until = min(until, deadline)
         if self.deadline is not None and not cleanup:
             until = min(until, self.deadline)
-        self.guard()
+        self.guard(deadline=until)
         remaining = until - time.monotonic()
         if remaining <= 0:
             raise RuntimeError("target deadline expired during preflight; no client dispatch")
@@ -295,7 +320,7 @@ class PrivateAdb:
         # race in the SDK client remains possible; postchecks must not hide it.
         result = command([self.adb, "-H", "127.0.0.1", "-P", str(self.ports.adb_port),
                           "-s", self.serial, *words], self.env, remaining)
-        self.guard()
+        self.guard(deadline=until)
         return result
 
     def close(self):
