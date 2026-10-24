@@ -101,7 +101,7 @@ def main():
     (args.work / "proof.ini").write_text("avd.ini.encoding=UTF-8\npath=" + str(avd) + "\ntarget=android-31\n")
     (avd / "config.ini").write_text("\n".join([
         "AvdId=proof", "abi.type=x86_64", "hw.cpu.arch=x86_64", "hw.cpu.ncore=2",
-        "hw.ramSize=1536", "hw.lcd.width=1080", "hw.lcd.height=1920", "hw.lcd.density=420",
+        "hw.ramSize=1536", "hw.lcd.width=480", "hw.lcd.height=800", "hw.lcd.density=160",
         "hw.keyboard=yes", "hw.gpu.enabled=yes", "hw.gpu.mode=swiftshader_indirect",
         "disk.dataPartition.size=2G", "image.sysdir.1=system-images/android-31/default/x86_64/",
         "tag.id=default", "tag.display=Default", "PlayStore.enabled=false", ""]))

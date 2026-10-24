@@ -48,6 +48,18 @@ class RuntimeBackendTests(unittest.TestCase):
             self.assertEqual(timeout[0].value, 120)
         self.assertEqual(len(installs), 3)
 
+    def test_small_owned_display_preserves_environment_constraints(self):
+        source = (Path(__file__).resolve().parent / "run_proof.py").read_text()
+        literals = {node.value for node in ast.walk(ast.parse(source))
+                    if isinstance(node, ast.Constant) and isinstance(node.value, str)}
+        for value in ("hw.lcd.width=480", "hw.lcd.height=800", "hw.lcd.density=160",
+                      "hw.ramSize=1536", "hw.cpu.ncore=2",
+                      "image.sysdir.1=system-images/android-31/default/x86_64/",
+                      "hw.gpu.mode=swiftshader_indirect", "PlayStore.enabled=false"):
+            self.assertIn(value, literals)
+        self.assertNotIn("hw.lcd.width=1080", literals)
+        self.assertNotIn("hw.lcd.height=1920", literals)
+
     def test_audio_and_security_boundaries_remain_in_source(self):
         root = Path(__file__).resolve().parent
         runner = (root / "run_proof.py").read_text()

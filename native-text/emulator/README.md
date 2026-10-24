@@ -243,3 +243,17 @@ single input invocation and then all original post-input assertions unchanged.
 IME/accessibility secure settings are compared again after readiness. No promise
 is made that readiness prevents the fixture losing focus afterward; that must still
 fail the original proof rather than trigger mutation replay.
+
+### Environment-only low-rendering-workload experiment
+
+After the read-only readiness gate observed an ANR-shaped system overlay, the
+owned AVD display is reduced from 1080x1920 at 420 dpi to 480x800 at 160 dpi.
+This renders 384,000 rather than 2,073,600 pixels (about 81.5% fewer). It is only a
+resource-pressure hypothesis, not a fix or typing-success claim. The existing
+`hw.lcd.width`, `hw.lcd.height`, and `hw.lcd.density` AVD properties are supported
+by the official [emulator hardware schema](https://android.googlesource.com/platform/prebuilts/android-emulator/+/8f496dcdc9aa1602c7905900d4292b4044bfc449/linux-x86_64/lib/hardware-properties.ini).
+No new executable or flags are needed; no local emulator is available to claim a
+local runtime result. Image, software/KVM selection, GPU mode, RAM/cores, budgets,
+readiness predicate, APKs, all assertions, security settings and cleanup remain
+unchanged. The dimensions apply only to the newly created disposable AVD config,
+not through Android display-setting commands and never to a user's device.
