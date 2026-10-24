@@ -126,8 +126,10 @@ def main():
         if shell("getprop", "ro.kernel.qemu").strip() != "1" or shell("getprop", "ro.build.version.sdk").strip() != "31":
             raise RuntimeError("target is not expected owned API31 emulator")
         shell("input", "keyevent", "82") # unlock owned emulator only; no audio/media controls
-        command([adb, "-s", serial, "install", str(args.build / "fixture.apk")])
-        command([adb, "-s", serial, "install", str(args.build / "helper.apk")])
+        # Package-manager setup can be slow on software emulation; no retry on timeout.
+        # Only installation gets this budget, not instrumentation or the text engine.
+        command([adb, "-s", serial, "install", str(args.build / "fixture.apk")], timeout=120)
+        command([adb, "-s", serial, "install", str(args.build / "helper.apk")], timeout=120)
         settings = ("default_input_method", "selected_input_method_subtype", "enabled_accessibility_services", "accessibility_enabled")
         def snapshot():
             return tuple(shell("settings", "get", "secure", key).strip() for key in settings)
@@ -135,7 +137,7 @@ def main():
         result = shell("am", "instrument", "-w", "org.tvcontrol.nativehelper/org.tvcontrol.nativeinput.NativeTextInstrumentation", timeout=60)
         if "tv_native_text_v1=refused" not in result or snapshot() != initial:
             raise RuntimeError("standalone helper entrypoint/refusal proof failed")
-        command([adb, "-s", serial, "install", "-r", str(args.build / "proof.apk")])
+        command([adb, "-s", serial, "install", "-r", str(args.build / "proof.apk")], timeout=120)
         for mode in MODES:
             shell("am", "force-stop", "org.tvcontrol.fixture")
             shell("am", "start", "-W", "-n", "org.tvcontrol.fixture/.FixtureActivity", "--es", "mode", mode)

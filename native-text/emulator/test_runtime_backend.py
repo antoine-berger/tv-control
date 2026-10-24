@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Host-only selection/log bounds tests. Does not launch ADB, Android, or an emulator."""
+import ast
 import io
 from pathlib import Path
 import unittest
@@ -28,6 +29,24 @@ class RuntimeBackendTests(unittest.TestCase):
             output = io.BytesIO()
             drain_bounded_log(io.BytesIO(data), output)
             self.assertEqual(output.getvalue(), data)
+
+    def test_only_three_owned_installs_receive_bounded_setup_budget(self):
+        tree = ast.parse((Path(__file__).resolve().parent / "run_proof.py").read_text())
+        installs = []
+        for call in ast.walk(tree):
+            if not isinstance(call, ast.Call) or not isinstance(call.func, ast.Name):
+                continue
+            if call.func.id != "command" or not call.args or not isinstance(call.args[0], ast.List):
+                continue
+            if not any(isinstance(value, ast.Constant) and value.value == "install"
+                       for value in call.args[0].elts):
+                continue
+            installs.append(call)
+            timeout = [item.value for item in call.keywords if item.arg == "timeout"]
+            self.assertEqual(len(timeout), 1)
+            self.assertIsInstance(timeout[0], ast.Constant)
+            self.assertEqual(timeout[0].value, 120)
+        self.assertEqual(len(installs), 3)
 
     def test_audio_and_security_boundaries_remain_in_source(self):
         root = Path(__file__).resolve().parent
