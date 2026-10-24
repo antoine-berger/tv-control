@@ -49,6 +49,7 @@ class Volume(generic.GenericMcp):
         control = next(tool for tool in tools if tool["name"] == "tv_control")
         for semantic in ("native-scale", "global", "dispatch-only", "readback"):
             self.assertIn(semantic, control["description"])
+        self.assertIn("remote_media: global, dispatch-only", control["description"])
         delta = control["inputSchema"]["properties"]["action"]["properties"]["delta"]
         self.assertIn("native", delta["description"])
         self.assertIn("index", delta["description"])

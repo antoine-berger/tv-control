@@ -563,7 +563,7 @@ pub fn extend_tools(tools: &mut Value) {
         .iter_mut()
         .find(|t| t["name"] == "tv_control")
         .expect("control tool");
-    control["description"] = json!("Volume: native index / native-scale %, not loudness. Media: exact session; remote_media: global. Search/URL/next/previous: dispatch-only. Text: layout dependent; matching accessibility readback required. Never retry outcome_unknown.");
+    control["description"] = json!("Volume: native index / native-scale %, not loudness. Media: exact session; remote_media: global, dispatch-only. Search/URL/next/previous: dispatch-only. Text: layout dependent; accessibility readback must match. Never retry outcome_unknown.");
     let actions = control["inputSchema"]["properties"]["action"]["oneOf"]
         .as_array_mut()
         .unwrap();
