@@ -1,10 +1,12 @@
-# Source-only owned-emulator runtime proof candidate
+# Owned-emulator runtime prototype
 
-**The first reviewed workflow was published and stopped safely at its KVM access
-preflight; no Android runtime ran. This software-backend correction awaits renewed
-review before publication. All generated APKs are emulator-only test artifacts,
-not user-installable releases. The separate Darwin candidate below requires an
-explicitly selected private local lab; no user's TV is addressed or controlled.**
+**The owned AOSP API31 ARM64/HVF matrix passed on macOS on 2026-10-24 at source
+`59e2de170d08f30c8eb26828ec9eee1be33420b7`. See
+[Mac runtime evidence](MAC_RUNTIME_EVIDENCE.md) for the build hashes, cases and
+limits. All generated APKs remain emulator-only test artifacts, not user-installable
+releases. This does not qualify a physical TV or provide a shipping host transport.
+Earlier cloud/KVM/software failures below are historical evidence, not the status
+of the later explicitly selected private Darwin lab.**
 
 ## Modern architecture
 
@@ -47,7 +49,8 @@ Build three separately reviewed APKs with official SDK aapt2/D8/apksigner:
 Install standalone helper and verify its missing-token refusal through real
 `am instrument`. Replace it with the same-signed proof APK, and verify:
 - deliberate keyevent mismatch;
-- exact accessible Unicode/percent/quote append via ACTION_SET_TEXT;
+- exact accessible Unicode/percent/quote append to known public seed text via ACTION_SET_TEXT;
+- explicit null accessible-text refusal without interpreting null as observed empty text;
 - hint, password, visible-password, middle-selection, changed focus/window and
   cancellation refusal, no unintended editor change;
 - consumed request refuses replay;
@@ -99,16 +102,17 @@ and final cleanup terminate only the owned emulator and uninstall only our fixed
 package names. No retries of text mutation occur. This is not the shipping host
 transport.
 
-## Evidence / current blockers
+## Historical cloud evidence and blockers
 
-Local environment has no adb, emulator or `/dev/kvm`, and insufficient `/tmp`
-capacity for the pinned runtime image plus an AVD. Consequently Android runtime
-behavior is **unexecuted**, not passed. All three APKs can be genuinely built and
-signed locally against official SDK APIs; parent receives actual DEX hashes and
-host-test results with the review candidate. A CI outcome must be checked before
-claiming the instrumented helper works even on the owned AOSP API31 image.
+At the initial cloud build stage, the environment had no adb, emulator or
+`/dev/kvm`, and insufficient `/tmp` capacity for the runtime image plus an AVD.
+Android runtime behavior was therefore unexecuted at that stage; the APK builds
+and host tests below did not establish it. Later software CI attempts failed as
+recorded below. The separate successful macOS ARM64/HVF result is documented in
+[MAC_RUNTIME_EVIDENCE.md](MAC_RUNTIME_EVIDENCE.md); it does not turn these earlier
+cloud outcomes into passes.
 
-### Local build evidence (not runtime evidence)
+### Historical cloud-local build evidence (not runtime evidence)
 
 Built twice with installed javac 21.0.12.1 and pinned Platform28/BuildTools35:
 
@@ -180,7 +184,8 @@ Diagnostic candidate builds locally. Shared helper DEX remains unchanged at
 `8a39a66562d2973a4462202a11add57ea14caaac75c06ce5defb30f08a34466c`;
 proof-only DEX is
 `3d0181b2bc79ae775828bd9dadd4ff11346ac4b6b8df3a7d6b5dd2e0e94e1556`.
-No diagnostic candidate has been published or run yet; renewed review is required.
+At that historical point this diagnostic candidate had not been published or run;
+the later Darwin review/runtime sequence is recorded separately below.
 
 Editor-lookup diagnostics additionally expose fixed categories only: root package
 is compared against the owned fixture/helper, AOSP Latin IME, and Android/systemui;
@@ -252,8 +257,8 @@ This renders 384,000 rather than 2,073,600 pixels (about 81.5% fewer). It is onl
 resource-pressure hypothesis, not a fix or typing-success claim. The existing
 `hw.lcd.width`, `hw.lcd.height`, and `hw.lcd.density` AVD properties are supported
 by the official [emulator hardware schema](https://android.googlesource.com/platform/prebuilts/android-emulator/+/8f496dcdc9aa1602c7905900d4292b4044bfc449/linux-x86_64/lib/hardware-properties.ini).
-No new executable or flags are needed; no local emulator is available to claim a
-local runtime result. Image, software/KVM selection, GPU mode, RAM/cores, budgets,
+No new executable or flags were needed; that cloud environment had no usable
+local emulator result. Image, software/KVM selection, GPU mode, RAM/cores, budgets,
 readiness predicate, APKs, all assertions, security settings and cleanup remain
 unchanged. The dimensions apply only to the newly created disposable AVD config,
 not through Android display-setting commands and never to a user's device.
@@ -279,7 +284,13 @@ No diagnostics change readiness, mutation policy, settings, or cleanup. Existing
 engine/readiness/host-instrumentation deadlines are unchanged; only failure-time
 read-only diagnosis receives this additional independent 10-second bound.
 
-## Darwin ARM64 candidate: review before runtime
+## Darwin ARM64 runtime sequence
+
+The fifth reviewed local attempt completed the full owned API31 ARM64/HVF matrix
+at source `59e2de170d08f30c8eb26828ec9eee1be33420b7`, with cleanup verified and no
+remaining private SDK processes. The exact result and scope are in
+[MAC_RUNTIME_EVIDENCE.md](MAC_RUNTIME_EVIDENCE.md). The earlier failed attempts
+below explain the reviewed test-runner and fixture corrections.
 
 The first local runtime attempt passed the HVF preflight but the foreground ADB
 server aborted before readiness; no AVD was launched. Its cleanup receipt and
@@ -288,7 +299,7 @@ inspection and AOSP `socket_spec.cpp` established that the numeric listener host
 `127.0.0.1` takes the unsupported-hostname branch before binding. The server now
 uses the SDK's public `tcp:localhost:port` syntax, which calls the loopback helper
 directly without DNS; clients and the emulator retain their numeric loopback
-connection settings. This is not a successful Android runtime qualification.
+connection settings. That first attempt did not qualify Android runtime behavior.
 Startup diagnostics now preserve only fixed error categories, bounded allowlisted
 source locations and non-reaping exit metadata in the receipt before closing the
 temporary SDK log. Only on ADB startup failure, an explicitly authorized private
@@ -315,15 +326,16 @@ Both attempts completed cleanup verification; neither qualifies an Android runti
 
 The third attempt passed the owned ARM64/HVF/ADB gates and the key-remap proof,
 then failed the normal fixture's expected engine-status assertion. No Android
-crash/ANR was reported and owned cleanup passed, but text insertion remains
-unqualified. The proof now returns separate allowlisted first-call and replay
+crash/ANR was reported and owned cleanup passed; insertion was still unqualified
+at that point. The proof now returns separate allowlisted first-call and replay
 statuses: NOT_REPORTED, VERIFIED, REFUSED, UNCERTAIN, INVALID or MULTIPLE. It does
 not expose arbitrary engine strings, UI text, tokens or exception messages.
 The shared TextEngine has no finer error-code API; this diagnostic does not invent
 an internal cause or claim an observed effect from a failed assertion. The engine,
-assertions, four-second request deadline and UI calls are unchanged. Rebuilding
-the test-only proof APK is required before the strict host parser can consume the
-new fields. No helper distribution or TV qualification follows from host tests.
+assertions, four-second request deadline and UI calls were unchanged by that
+diagnostic patch. The test-only proof APK was rebuilt before the strict host parser
+consumed the new fields. No helper distribution or TV qualification follows from
+host tests.
 
 Source analysis identified a fixture/contract mismatch: AOSP API31 TextView returns
 its hint for empty text, including null when no hint exists; the proof had converted
@@ -336,13 +348,13 @@ still apply. No engine, deadline, permission or identity check is relaxed.
 
 | Fixture modes | Initial editor / selection | Expected engine result |
 | --- | --- | --- |
-| normal | `seed`, end4 | verified exact append, replay refused |
+| normal | `seed`, position4 at end | verified exact append, replay refused |
 | empty-null | empty without hint, accessible null | refused, null unchanged, replay refused |
 | hint | empty with public hint, accessible hint text | refused, unchanged |
-| password / visible-password | public seed, end4, respective sensitive type | refused with nonnull text |
+| password / visible-password | public seed, position4 at end, respective sensitive type | refused with nonnull text |
 | selection | `seed`, position1 | refused, unchanged |
-| focus | `seed`, end4; second editor `other`, end5 | refused; both editors unchanged after invocation/replay |
-| stale-window / cancel | `seed`, end4 | refused, unchanged |
+| focus | `seed`, position4; second editor `other`, position5 | refused; both editors unchanged after invocation/replay |
+| stale-window / cancel | `seed`, position4 at end | refused, unchanged |
 | key-remap | empty without hint before synthetic key input | exact prior remap assertion |
 
 The source reference is [Android12 TextView](https://android.googlesource.com/platform/frameworks/base/+/refs/tags/android-12.0.0_r1/core/java/android/widget/TextView.java),
@@ -357,7 +369,8 @@ mandatory. Darwin requires a native ARM64 host, the official emulator's successf
 HVF acceleration check, no software/Rosetta fallback, a private SDK/lab, and
 pre-existing licensed SDK and reviewed APK build receipts. It does not download
 tools, accept terms, change security settings, create startup services, or install
-anything on a TV. The fixture assertions and shared text engine are unchanged.
+anything on a TV. The shared engine is unchanged; the reviewed fixture/proof
+corrections above distinguish known-text append from unobservable null text.
 
 The provisioning receipt records official Google archive URLs, published checksum
 algorithm/value and size, locally computed SHA256, destination, and extracted-file
@@ -423,8 +436,9 @@ so an inherited open pipe cannot hang teardown. A local `runtime-receipt.json`
 records fixed phase/error categories and cleanup verification. A leftover listener,
 SDK process, unresolved group error or log-drain failure prevents success. The
 existing primary failure remains chained to cleanup errors. Logs/work data stay
-private and no artifacts are uploaded. This candidate has host/mock test evidence;
-no Darwin AVD boot, Android text mutation or OEM behavior is claimed yet.
+private and no artifacts are uploaded. The successful Darwin run establishes the
+specific owned-AVD cases in [MAC_RUNTIME_EVIDENCE.md](MAC_RUNTIME_EVIDENCE.md),
+including known-text append. It makes no physical-TV or OEM behavior claim.
 
 Pure host checks (no SDK, ADB or AVD launch):
 
