@@ -19,6 +19,7 @@ from owned_runtime import (Ports, PrivateAdb, command as run_command, isolated_e
                            owns_listener, port_closed, sdk_processes)
 from process_group import leader_exited, require_nonreaping_wait, stop_unreaped_group
 from runtime_environment import avd_config, select_runtime, verify_local_inputs
+from transport_owned import Pins, ReadyAvd, connectivity
 
 
 def select_acceleration(kvm_usable, allow_software):
@@ -72,8 +73,26 @@ def owned_diagnostics(shell):
     print("ANR window ownership:", json.dumps(result, sort_keys=True), flush=True)
 
 
+def clean_source():
+    root = Path(__file__).resolve().parents[2]
+    env = {"PATH": os.defpath, "LANG": "C", "LC_ALL": "C"}
+    if run_command(["/usr/bin/git", "-C", root, "status", "--porcelain", "--untracked-files=normal"], env, 5):
+        raise RuntimeError("lab transport requires the clean source that built its pinned artifact")
+    source = run_command(["/usr/bin/git", "-C", root, "rev-parse", "HEAD"], env, 5).strip()
+    if not re.fullmatch(r"[0-9a-f]{40}", source):
+        raise RuntimeError("lab source identity is unavailable")
+    return source
+
+
+def package_present(output, package):
+    if output not in ("", "package:" + package + "\n"):
+        raise RuntimeError("owned package presence is ambiguous")
+    return bool(output)
+
+
 def arguments():
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--scenario", required=True, choices=("existing-proof", "lab-connectivity"))
     parser.add_argument("--mode", required=True, choices=("ci-linux", "darwin-local"))
     parser.add_argument("--sdk", required=True, type=Path)
     parser.add_argument("--build", required=True, type=Path)
@@ -84,6 +103,8 @@ def arguments():
     args = parser.parse_args()
     if not 60 <= args.deadline_seconds <= 2400:
         parser.error("runtime deadline must be 60..2400 seconds")
+    if args.scenario == "lab-connectivity" and args.mode != "darwin-local":
+        parser.error("lab-connectivity currently requires the verified Darwin owned runtime")
     if args.mode == "darwin-local" and args.provenance is None:
         parser.error("darwin-local requires --provenance")
     return args
@@ -100,8 +121,11 @@ def main():
     except OSError:
         kvm = False
     runtime = select_runtime(args.mode, args.allow_software_emulation, kvm=kvm)
+    owner_source = Path(__file__).resolve().parent / "transport/client-owner.sh"
+    source_commit = clean_source() if args.scenario == "lab-connectivity" else None
     if runtime.mode == "darwin-local":
-        verify_local_inputs(args.sdk, args.build, args.work, args.provenance, runtime)
+        verify_local_inputs(args.sdk, args.build, args.work, args.provenance, runtime,
+                            scenario=args.scenario, owner_source=owner_source, source_commit=source_commit)
     args.sdk, args.build = args.sdk.resolve(strict=True), args.build.resolve(strict=True)
     os.umask(0o077)
     args.work.mkdir(mode=0o700, parents=False, exist_ok=False)
@@ -113,6 +137,8 @@ def main():
     emulator, log, log_thread, log_stop = None, None, None, None
     log_failed = threading.Event()
     owned_ready, completed = False, False
+    owned_packages = []
+    package_user = None
     phase = "preflight"
     deadline = time.monotonic() + args.deadline_seconds
     adb.deadline = deadline
@@ -186,7 +212,24 @@ def main():
             raise RuntimeError("target is not the expected owned API31 ABI emulator")
         owned_ready = True
         phase = "proof"
-        run_cases(args, shell, target)
+        raw_user = shell("am", "get-current-user")
+        if not re.fullmatch(r"(0|[1-9][0-9]{0,4})\n", raw_user):
+            raise RuntimeError("owned Android user unavailable")
+        package_user = raw_user.strip()
+        packages = ("org.tvcontrol.fixture", "org.tvcontrol.nativehelper") if args.scenario == "existing-proof" else ("org.tvcontrol.nativehelper",)
+        for package in packages:
+            if package_present(shell("cmd", "package", "list", "packages", "--user", package_user, package), package):
+                raise RuntimeError("proof package already exists; no replacement or ownership inferred")
+            # Reserve only an absent package in this fresh, exclusively owned AVD.
+            # A partial/uncertain install is checked for presence before cleanup.
+            owned_packages.append(package)
+        if args.scenario == "existing-proof":
+            run_cases(args, shell, target)
+        else:
+            pins = Pins.load(args.build, owner_source, args.provenance, source_commit, deadline)
+            target("install", "--user", package_user, pins.apk, timeout=120)
+            result = connectivity(ReadyAvd(adb, emulator, runtime.abi), pins, deadline)
+            print("LAB connectivity:", json.dumps(result.public(), sort_keys=True), flush=True)
         completed = True
     except (OSError, subprocess.SubprocessError, RuntimeError, UnicodeError):
         if owned_ready:
@@ -196,9 +239,21 @@ def main():
         primary_error = sys.exc_info()[1]
         failures = []
         if owned_ready:
-            for package in ("org.tvcontrol.fixture", "org.tvcontrol.nativehelper"):
+            for package in reversed(owned_packages):
                 try:
-                    adb.target("uninstall", package, timeout=5, cleanup=True)
+                    cleanup_user = adb.target("shell", "-n", "am", "get-current-user", timeout=5, cleanup=True).strip()
+                    if cleanup_user != package_user:
+                        raise RuntimeError("owned Android user changed before package cleanup")
+                    present = adb.target("shell", "-n", "cmd", "package", "list", "packages", "--user", package_user, package,
+                                         timeout=5, cleanup=True)
+                    if package_present(present, package):
+                        removed = adb.target("shell", "-n", "pm", "uninstall", "--user", package_user, package, timeout=5, cleanup=True)
+                        if removed != "Success\n":
+                            raise RuntimeError("owned package cleanup was refused")
+                        after = adb.target("shell", "-n", "cmd", "package", "list", "packages", "--user", package_user, package,
+                                           timeout=5, cleanup=True)
+                        if package_present(after, package):
+                            raise RuntimeError("owned package remains after cleanup")
                 except (OSError, subprocess.SubprocessError, RuntimeError):
                     failures.append("owned-package-cleanup")
         if emulator is not None:
@@ -230,7 +285,7 @@ def main():
         except (OSError, RuntimeError, subprocess.SubprocessError):
             failures.append("cleanup-observation-unavailable")
         (args.work / "runtime-receipt.json").write_text(json.dumps({
-            "mode": runtime.mode, "abi": runtime.abi, "acceleration": runtime.acceleration,
+            "mode": runtime.mode, "scenario": args.scenario, "abi": runtime.abi, "acceleration": runtime.acceleration,
             "adb_port": ports.adb_port, "console_port": ports.console_port,
             "adb_pid": adb.process.pid if adb.process else None,
             "emulator_pid": emulator.pid if emulator else None,
