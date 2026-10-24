@@ -133,7 +133,10 @@ final class LabSocketChannel {
             long until, StopSignal stop) throws LabProtocol.Fault {
         int position=0;
         while (position < length) {
-            if (stop != null && stop.stopped()) return Kind.STOP;
+            if (stop != null && stop.stopped()) {
+                if(position!=0)throw new LabProtocol.Fault(LabProtocol.Reason.INVALID_FRAME);
+                return Kind.STOP;
+            }
             lock(until);
             try {
                 if (!ready((short)OsConstants.POLLIN, until, stop)) {
@@ -142,7 +145,10 @@ final class LabSocketChannel {
                 }
                 int count=Os.read(borrowed, target, offset + position, length - position);
                 deadline.remaining(until,1);
-                if (stop != null && stop.stopped()) return Kind.STOP;
+                if (stop != null && stop.stopped()) {
+                    if(count>0 || position!=0)throw new LabProtocol.Fault(LabProtocol.Reason.INVALID_FRAME);
+                    return Kind.STOP;
+                }
                 usable(true);
                 if (count == 0) {
                     if (cleanEof && position == 0) return Kind.EOF;
@@ -172,11 +178,12 @@ final class LabSocketChannel {
             // at most two seconds, fixed at its first byte, not reset per byte.
             long frameUntil=Math.min(until,deadline.after(2000));
             kind=exact(prefix,1,3,false,frameUntil,stop);
-            if (kind == Kind.STOP) return new FrameRead(kind,null);
+            if (kind == Kind.STOP) throw new LabProtocol.Fault(LabProtocol.Reason.INVALID_FRAME);
             int size=LabProtocol.checkedBodyLength(((prefix[0]&255)<<24)|((prefix[1]&255)<<16)|((prefix[2]&255)<<8)|(prefix[3]&255));
             if (size > LabProtocol.MAX_INPUT_BYTES-inputBytes) throw new LabProtocol.Fault(LabProtocol.Reason.LIMIT_EXCEEDED);
             byte[] frame=new byte[size+4]; System.arraycopy(prefix,0,frame,0,4);
             kind=exact(frame,4,size,false,frameUntil,stop);
+            if (kind == Kind.STOP) throw new LabProtocol.Fault(LabProtocol.Reason.INVALID_FRAME);
             return new FrameRead(kind,kind == Kind.DATA ? frame : null);
         } catch (LabProtocol.Fault error) { failed=true; throw error; }
         catch (Throwable error) { failed=true; throw LabDeadline.fault(error, LabProtocol.Reason.TRANSPORT_LOST); }
