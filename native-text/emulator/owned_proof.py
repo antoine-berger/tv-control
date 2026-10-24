@@ -2,7 +2,7 @@
 import json
 from proof_result import parse_proof_result, parse_activity_start
 
-MODES = ("key-remap", "normal", "hint", "password", "visible-password", "selection", "focus", "stale-window", "cancel")
+MODES = ("key-remap", "normal", "empty-null", "hint", "password", "visible-password", "selection", "focus", "stale-window", "cancel")
 
 
 def run_cases(args, shell, target):

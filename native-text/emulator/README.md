@@ -325,6 +325,30 @@ assertions, four-second request deadline and UI calls are unchanged. Rebuilding
 the test-only proof APK is required before the strict host parser can consume the
 new fields. No helper distribution or TV qualification follows from host tests.
 
+Source analysis identified a fixture/contract mismatch: AOSP API31 TextView returns
+its hint for empty text, including null when no hint exists; the proof had converted
+null to an empty string while TextEngine correctly rejects unobservable null text.
+The positive fixture now tests append to the known public `seed` text with selection
+at its end. It does not qualify inserting into an empty/null accessible field.
+The new `empty-null` negative case explicitly requires null before invocation and
+after refusal/replay; existing request-consumption and replay-refusal assertions
+still apply. No engine, deadline, permission or identity check is relaxed.
+
+| Fixture modes | Initial editor / selection | Expected engine result |
+| --- | --- | --- |
+| normal | `seed`, end4 | verified exact append, replay refused |
+| empty-null | empty without hint, accessible null | refused, null unchanged, replay refused |
+| hint | empty with public hint, accessible hint text | refused, unchanged |
+| password / visible-password | public seed, end4, respective sensitive type | refused with nonnull text |
+| selection | `seed`, position1 | refused, unchanged |
+| focus | `seed`, end4; second editor `other`, end5 | refused after explicit focus switch |
+| stale-window / cancel | `seed`, end4 | refused, unchanged |
+| key-remap | empty without hint before synthetic key input | exact prior remap assertion |
+
+The source reference is [Android12 TextView](https://android.googlesource.com/platform/frameworks/base/+/refs/tags/android-12.0.0_r1/core/java/android/widget/TextView.java),
+`getTextForAccessibility()`. The fixture/proof/engine host checks use fake nodes and
+exercise the actual methods as contract tests; they are not AOSP runtime evidence.
+
 This candidate adds `--mode ci-linux` and `--mode darwin-local`; mode selection is
 mandatory. Darwin requires a native ARM64 host, the official emulator's successful
 HVF acceleration check, no software/Rosetta fallback, a private SDK/lab, and

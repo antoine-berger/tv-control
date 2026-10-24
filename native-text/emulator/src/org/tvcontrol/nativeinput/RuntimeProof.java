@@ -99,6 +99,11 @@ public final class RuntimeProof extends NativeTextInstrumentation {
     private static void assertEquals(Object expected, Object actual) {
         assertTrue("equality", expected == null ? actual == null : expected.equals(actual));
     }
+    private static void assertEditorText(AccessibilityNodeInfo node, String expected, boolean expectNull) {
+        CharSequence value = node.getText();
+        if (expectNull) assertTrue("empty fixture remains null", value == null);
+        else { assertNotNull("fixture text is observable", value); assertEquals(expected, value.toString()); }
+    }
     @Override public void onStart() {
         Bundle result = new Bundle();
         result.putString("tv_native_runtime_proof", "failed");
@@ -165,7 +170,11 @@ public final class RuntimeProof extends NativeTextInstrumentation {
         AccessibilityNodeInfo n = editor(ID);
         assertNotNull("fixture editor absent", n);
         stage = Stage.READ_EDITOR;
-        String before = n.getText() == null ? "" : n.getText().toString();
+        boolean emptyNull = "empty-null".equals(mode);
+        CharSequence observedBefore = n.getText();
+        if (emptyNull) assertTrue("empty fixture exposes null", observedBefore == null);
+        else assertNotNull("fixture text is observable", observedBefore);
+        String before = observedBefore == null ? "" : observedBefore.toString();
         if ("key-remap".equals(mode)) {
             stage = Stage.REMAP_CHECK;
             syntheticReadback = "Tqnyq".equals(before) ? SyntheticReadback.EXPECTED_REMAP
@@ -174,6 +183,14 @@ public final class RuntimeProof extends NativeTextInstrumentation {
             assertEquals("Tqnyq", before);
             n.recycle();
             return;
+        }
+        if ("hint".equals(mode)) assertEquals("fixture hint", before);
+        else if (!emptyNull && !"password".equals(mode) && !"visible-password".equals(mode))
+            assertEquals("seed", before);
+        if (!"hint".equals(mode) && !emptyNull) {
+            int expectedSelection = "selection".equals(mode) ? 1 : before.length();
+            assertEquals(expectedSelection, n.getTextSelectionStart());
+            assertEquals(expectedSelection, n.getTextSelectionEnd());
         }
         String after = before + "Tanya é🙂%s'";
         stage = Stage.CREATE_REQUEST;
@@ -224,7 +241,7 @@ public final class RuntimeProof extends NativeTextInstrumentation {
             stage = Stage.READBACK_REFRESH;
             assertTrue(n.refresh());
             stage = Stage.READBACK_CHECK;
-            assertEquals(insertion ? after : before, n.getText() == null ? "" : n.getText().toString());
+            assertEditorText(n, insertion ? after : before, emptyNull);
             stage = Stage.REQUEST_CONSUMED;
             assertFalse("request consumed", request.exists());
             status[0] = null;
@@ -236,7 +253,7 @@ public final class RuntimeProof extends NativeTextInstrumentation {
             assertEquals("refused", status[0]);
             stage = Stage.REPLAY_READBACK;
             assertTrue(n.refresh());
-            assertEquals(insertion ? after : before, n.getText() == null ? "" : n.getText().toString());
+            assertEditorText(n, insertion ? after : before, emptyNull);
         } finally {
             Stage previous = stage;
             stage = Stage.CLEANUP;

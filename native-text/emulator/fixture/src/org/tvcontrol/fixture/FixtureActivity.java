@@ -26,12 +26,18 @@ public final class FixtureActivity extends Activity {
         layout.addView(editor, new LinearLayout.LayoutParams(-1, 160));
         layout.addView(other, new LinearLayout.LayoutParams(-1, 160));
         setContentView(layout);
+        configureEditors(mode, editor, other);
+    }
+    private static void configureEditors(String mode, EditText editor, EditText other) {
         if ("hint".equals(mode)) editor.setHint("fixture hint");
         if ("password".equals(mode)) editor.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD);
         if ("visible-password".equals(mode)) editor.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD);
-        if ("selection".equals(mode)) { editor.setText("seed"); editor.setSelection(1); }
+        boolean seeded = !"hint".equals(mode) && !"key-remap".equals(mode) && !"empty-null".equals(mode);
+        if (seeded) editor.setText("seed");
+        if ("focus".equals(mode)) { other.setText("other"); other.setSelection(other.getText().length()); }
         editor.requestFocus();
         if ("selection".equals(mode)) editor.setSelection(1);
+        else if (seeded) editor.setSelection(editor.getText().length());
     }
     @Override public boolean dispatchKeyEvent(KeyEvent event) {
         // Deliberate fixture-only layout mismatch, independent of installed IME.
