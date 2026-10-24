@@ -16,6 +16,8 @@ import unittest
 from urllib.parse import parse_qs, urlsplit
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+from mcp_fixture_phase import VerificationBarrier
+
 BINARY = "target/debug/tv-control"
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 
@@ -36,6 +38,9 @@ class Fixture(BaseHTTPRequestHandler):
         if self.path == "/System/Info/Public":
             value = {"Version": "12.0.0"}
         elif self.path.startswith("/Sessions?"):
+            gate = self.server.verification_barrier
+            if gate is not None:
+                gate.before_session_response()
             if Fixture.position_mode == "progressing" and not Fixture.paused:
                 Fixture.position += 10
             state = {"IsPaused":Fixture.paused,"MediaSourceId":Fixture.source,"CanSeek":True}
@@ -56,10 +61,10 @@ class Fixture(BaseHTTPRequestHandler):
             self.send_error(404)
             return
         data = json.dumps(value).encode()
-        self.send_response(200)
-        self.send_header("Content-Length", str(len(data)))
-        self.end_headers()
         try:
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
             self.wfile.write(data)
         except (BrokenPipeError, ConnectionResetError):
             pass
@@ -71,8 +76,13 @@ class Fixture(BaseHTTPRequestHandler):
             Fixture.paused = False
         elif self.path.startswith("/Sessions/session/Playing/Seek?"):
             query = parse_qs(urlsplit(self.path).query)
+            target = int(query["seekPositionTicks"][0])
             if not Fixture.ignore_seek:
-                Fixture.position = int(query["seekPositionTicks"][0])
+                Fixture.position = target
+            self.server.seek_targets.append(target)
+            gate = self.server.verification_barrier
+            if gate is not None:
+                gate.record_post()
         elif self.path.startswith("/Sessions/session/Playing?"):
             Fixture.paused = False
             query = parse_qs(urlsplit(self.path).query)
@@ -96,6 +106,8 @@ class MCP(unittest.TestCase):
         Fixture.source = "source"
         Fixture.item = "episode"
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), Fixture)
+        self.server.verification_barrier = None
+        self.server.seek_targets = []
         threading.Thread(target=self.server.serve_forever, daemon=True).start()
         self.tmp = tempfile.TemporaryDirectory()
         cfg = json.loads((ROOT / "examples/config.json").read_text())
@@ -118,16 +130,21 @@ class MCP(unittest.TestCase):
         self.assertEqual(self.receive()["result"]["protocolVersion"], "2025-11-25")
         self.send({"jsonrpc":"2.0","method":"notifications/initialized"})
     def tearDown(self):
-        self.proc.stdin.close()
-        self.proc.wait(timeout=3)
-        stderr = self.proc.stderr.read()
-        self.reader.join(timeout=1)
-        self.proc.stdout.close()
-        self.proc.stderr.close()
-        self.assertNotIn("fixture_only_not_a_credential", stderr)
-        self.server.shutdown()
-        self.server.server_close()
-        self.tmp.cleanup()
+        try:
+            self.proc.stdin.close()
+            self.proc.wait(timeout=3)
+        finally:
+            if self.proc.poll() is None:
+                self.proc.kill()
+                self.proc.wait(timeout=2)
+            stderr = self.proc.stderr.read()
+            self.reader.join(timeout=1)
+            self.proc.stdout.close()
+            self.proc.stderr.close()
+            self.server.shutdown()
+            self.server.server_close()
+            self.tmp.cleanup()
+            self.assertNotIn("fixture_only_not_a_credential", stderr)
     def send(self, value):
         self.proc.stdin.write(json.dumps(value) + "\n")
         self.proc.stdin.flush()
@@ -283,10 +300,35 @@ class MCP(unittest.TestCase):
         Fixture.paused = True
         Fixture.position = 0
         Fixture.ignore_seek = True
-        self.call(81, {"type":"seek_media","item_id":"episode","source_id":"source","position_ms":5000}, "ignored-seek", ttl=250)
-        result = self.receive()["result"]["structuredContent"]
-        self.assertEqual(result["status"], "outcome_unknown")
-        self.assertEqual(Fixture.post_count, 1)
+        gate = self.server.verification_barrier = VerificationBarrier()
+        action = {"type":"seek_media","item_id":"episode","source_id":"source","position_ms":5000}
+        cancel = lambda: self.send({"jsonrpc":"2.0","method":"notifications/cancelled",
+                                   "params":{"requestId":81,"reason":"ignored-seek verification"}})
+        # Real curl startup is not an expiry test. Fake-clock Rust contracts cover
+        # deadline boundaries; here two unchanged snapshots must be rejected
+        # before cancellation interrupts a third post-dispatch verification read.
+        with gate.cancel_on_exit(cancel):
+            self.call(81, action, "ignored-seek", ttl=10000)
+            self.assertTrue(gate.blocked.wait(timeout=8),
+                            f"verification not reached: {Fixture.post_count} POSTs, {gate.session_reads} reads")
+            self.assertEqual(gate.session_reads, 3)
+            self.assertEqual(gate.post_count, 1)
+            self.assertEqual(self.server.seek_targets, [50_000_000])
+            self.assertEqual(Fixture.position, 0)
+            cancel()
+            response = self.receive(timeout=5)
+            self.assertEqual(response["id"], 81)
+            result = response["result"]["structuredContent"]
+            self.assertEqual(result["status"], "outcome_unknown")
+            self.assertEqual(result["code"], "cancelled")
+            self.assertFalse(result["cached"])
+            self.assertEqual(Fixture.post_count, 1)
+            self.call(82, action, "ignored-seek", ttl=10000)
+            replay = self.receive()["result"]["structuredContent"]
+            self.assertEqual(replay["status"], "outcome_unknown")
+            self.assertTrue(replay["cached"])
+            self.assertEqual(Fixture.post_count, 1)
+            self.assertEqual(Fixture.position, 0)
 
     def test_large_media_read_reports_size_error_without_disconnect(self):
         self.send({"jsonrpc":"2.0","id":50,"method":"tools/call","params":{"name":"tv_media_read","arguments":{"device":"media_screen","expires_at_unix_ms":int(time.time()*1000)+2000,"read":{"type":"search","query":"large","limit":20}}}})

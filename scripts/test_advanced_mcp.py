@@ -17,6 +17,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlsplit
 
 import test_generic_mcp as generic
+from mcp_fixture_phase import VerificationBarrier
 
 BINARY = str(generic.BINARY)
 ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -101,6 +102,9 @@ class MediaFixture(BaseHTTPRequestHandler):
         if self.path == "/System/Info/Public":
             value = {"Version": "12.0.0"}
         elif self.path.startswith("/Sessions?"):
+            barrier = self.server.verification_barrier
+            if barrier is not None:
+                barrier.before_session_response()
             if state["playing"]:
                 state["position"] += 100_000  # Natural progress, without any seek.
             value = [{"Id": "session", "DeviceId": "example_device", "UserId": "example_user",
@@ -118,10 +122,13 @@ class MediaFixture(BaseHTTPRequestHandler):
             self.send_error(404)
             return
         body = json.dumps(value).encode()
-        self.send_response(200)
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
+        try:
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+        except (BrokenPipeError, ConnectionResetError):
+            pass
 
     def do_POST(self):
         state = self.server.state
@@ -138,6 +145,9 @@ class MediaFixture(BaseHTTPRequestHandler):
         else:
             self.send_error(404)
             return
+        barrier = self.server.verification_barrier
+        if barrier is not None:
+            barrier.record_post()
         self.send_response(204)
         self.send_header("Content-Length", "0")
         self.end_headers()
@@ -146,6 +156,7 @@ class MediaFixture(BaseHTTPRequestHandler):
 class Media(unittest.TestCase):
     def setUp(self):
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), MediaFixture)
+        self.server.verification_barrier = None
         self.server.state = {"commands": ["SetAudioStreamIndex", "SetSubtitleStreamIndex"],
                              "position": 50_000_000, "audio": 0, "subtitle": None,
                              "ignore": False, "ignore_seek": False, "playing": False, "posts": []}
@@ -177,27 +188,41 @@ class Media(unittest.TestCase):
         self.proc.stdin.flush()
 
     def close(self):
-        self.proc.stdin.close()
-        self.proc.wait(timeout=3)
-        self.reader.join(timeout=1)
-        self.assertNotIn("fixture_only", self.proc.stderr.read())
-        self.proc.stdout.close()
-        self.proc.stderr.close()
+        try:
+            self.proc.stdin.close()
+            self.proc.wait(timeout=3)
+        finally:
+            if self.proc.poll() is None:
+                self.proc.kill()
+                self.proc.wait(timeout=2)
+            self.reader.join(timeout=1)
+            stderr = self.proc.stderr.read()
+            self.proc.stdout.close()
+            self.proc.stderr.close()
+            self.assertNotIn("fixture_only", stderr)
 
     def tearDown(self):
-        self.close()
-        self.server.shutdown()
-        self.server.server_close()
-        self.thread.join(timeout=2)
-        self.tmp.cleanup()
+        try:
+            self.close()
+        finally:
+            self.server.shutdown()
+            self.server.server_close()
+            self.thread.join(timeout=2)
+            self.tmp.cleanup()
+
+    def send(self, value):
+        self.proc.stdin.write(json.dumps(value) + "\n")
+        self.proc.stdin.flush()
+
+    def begin_rpc(self, method, params):
+        self.serial += 1
+        self.send({"jsonrpc": "2.0", "id": self.serial, "method": method, "params": params})
+        return self.serial
 
     def rpc(self, method, params):
-        self.serial += 1
-        self.proc.stdin.write(json.dumps({"jsonrpc": "2.0", "id": self.serial,
-                                         "method": method, "params": params}) + "\n")
-        self.proc.stdin.flush()
+        identity = self.begin_rpc(method, params)
         result = self.responses.get(timeout=5)
-        self.assertEqual(result["id"], self.serial)
+        self.assertEqual(result["id"], identity)
         return result
 
     def control(self, key, action, ttl=1500):
@@ -242,12 +267,8 @@ class Media(unittest.TestCase):
     def test_ignored_small_relative_seek_is_uncertain_not_verified_by_tolerance(self):
         self.server.state["ignore_seek"] = True
         action = {"type": "seek_relative", "item_id": "episode", "source_id": "source", "delta_ms": -50}
-        result = self.control("ignored_seek", action, ttl=300)
-        self.assertEqual(result["structuredContent"]["status"], "outcome_unknown", result)
+        self.assert_ignored_after_verification("ignored_seek", action)
         self.assertEqual(self.server.state["position"], 50_000_000)
-        self.assertEqual(len(self.server.state["posts"]), 1)
-        self.assertEqual(self.control("ignored_seek", action)["structuredContent"]["status"], "outcome_unknown")
-        self.assertEqual(len(self.server.state["posts"]), 1)
 
     def test_playing_relative_seek_refuses_before_post_despite_natural_progress(self):
         self.server.state["playing"] = True
@@ -272,11 +293,37 @@ class Media(unittest.TestCase):
     def test_ack_without_matching_readback_is_uncertain_never_repaired(self):
         self.server.state["ignore"] = True
         action = {"type": "select_audio_track", "item_id": "episode", "source_id": "source", "index": 1}
-        result = self.control("ignored", action, ttl=300)
-        self.assertEqual(result["structuredContent"]["status"], "outcome_unknown", result)
-        self.assertEqual(len(self.server.state["posts"]), 1)
-        self.assertEqual(self.control("ignored", action)["structuredContent"]["status"], "outcome_unknown")
-        self.assertEqual(len(self.server.state["posts"]), 1)
+        self.assert_ignored_after_verification("ignored", action)
+        self.assertEqual(self.server.state["audio"], 0)
+
+    def assert_ignored_after_verification(self, key, action):
+        barrier = self.server.verification_barrier = VerificationBarrier()
+        identity = self.serial + 1
+        cancel = lambda: self.send({"jsonrpc": "2.0", "method": "notifications/cancelled",
+                                   "params": {"requestId": identity, "reason": "ignored readback"}})
+        # This is a post-dispatch evidence test, not a real-time startup deadline
+        # test. Block the third snapshot only after two unchanged reads were
+        # processed; cancellation must never make either read count as verified.
+        with barrier.cancel_on_exit(cancel):
+            self.begin_rpc("tools/call", {"name": "tv_control", "arguments": {
+                "request_id": key, "device": "media_screen", "action": action,
+                "expires_at_unix_ms": int(time.time() * 1000) + 10000}})
+            self.assertTrue(barrier.blocked.wait(timeout=8),
+                            f"verification not reached: {barrier.post_count} POSTs, {barrier.session_reads} reads")
+            self.assertEqual(barrier.session_reads, 3)
+            self.assertEqual(barrier.post_count, 1)
+            self.assertEqual(len(self.server.state["posts"]), 1)
+            cancel()
+            result = self.responses.get(timeout=5)
+            self.assertEqual(result["id"], identity)
+            value = result["result"]["structuredContent"]
+            self.assertEqual(value["status"], "outcome_unknown", value)
+            self.assertEqual(value["code"], "cancelled")
+            self.assertFalse(value["cached"])
+            replay = self.control(key, action)["structuredContent"]
+            self.assertEqual(replay["status"], "outcome_unknown")
+            self.assertTrue(replay["cached"])
+            self.assertEqual(len(self.server.state["posts"]), 1)
 
 
 def load_tests(loader, tests, pattern):
