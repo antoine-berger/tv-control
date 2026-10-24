@@ -44,7 +44,16 @@ and [cutils single-connect](https://android.googlesource.com/platform/system/cor
 source. It is not a SELinux workaround: a denied bind/connect ends the experiment.
 
 The Bundle cleanup field attests the **server wrapper's** owned watcher/FD/cache
-cleanup before finish. It does not prove the separately running client died.
+cleanup before finish within the exclusive, unaltered-lab model. Its cache result
+is conditional on a trusted Context cache and no same-UID alteration; it does not
+detect or prove that precondition. Path identity baselines are read AFTER creation,
+not atomically authenticated from a created FD. DIRECTORY_CREATED, REQUEST_CREATED
+and CANCEL_CREATED are three unprotected create→baseline windows: replacement
+with matching metadata may be adopted/deleted with cleanupVerified=true, while a
+retained file channel still points to the moved original. Check→unlink is also
+not atomic against a same-UID writer. The explicit host regression witnesses
+document that out-of-model limit, not successful interference detection.
+It does not prove the separately running client died.
 Host qualification additionally requires the exact remote client-owner proof
 below, then local owned-process cleanup. Missing any proof means uncertain plus
 cleanup unverified; stopping adb/am or an exit0 never substitutes for either proof.

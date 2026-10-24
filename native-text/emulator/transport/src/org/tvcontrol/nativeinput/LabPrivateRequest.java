@@ -20,7 +20,13 @@ import java.nio.file.attribute.UserPrincipal;
 import java.util.Arrays;
 import java.util.HashSet;
 
-/** Own scratch only. Construction has no I/O; register before open/cancel. */
+/**
+ * Scratch for a trusted Context in an exclusive, unaltered lab. Construction has no I/O.
+ * Path keys are baselines read AFTER creation, not identity obtained atomically from
+ * the created handle. Same-UID substitution before that baseline or between a check
+ * and unlink is not prevented. cleanupVerified is conditional on that lab assumption;
+ * neither this class nor its retained channels proves the assumption itself.
+ */
 final class LabPrivateRequest implements AutoCloseable {
     enum Point { DIRECTORY_CREATED, REQUEST_CREATED, CANCEL_CREATED, REQUEST_CLOSED, CANCEL_CLOSED, DIRECTORY_CLOSED }
     interface Checkpoint { void hit(Point point) throws IOException; }
@@ -54,7 +60,7 @@ final class LabPrivateRequest implements AutoCloseable {
         if (key == null) throw new IOException();
         return key;
     }
-    private static boolean same(Path path, Object key, boolean dir) throws IOException {
+    private static boolean matchesBaseline(Path path, Object key, boolean dir) throws IOException {
         PosixFileAttributes value = attributes(path);
         return key != null && key.equals(value.fileKey()) && !value.isSymbolicLink()
             && (dir ? value.isDirectory() : value.isRegularFile());
@@ -134,9 +140,11 @@ final class LabPrivateRequest implements AutoCloseable {
             allocationUnknown = false;
             ByteBuffer buffer = ByteBuffer.wrap(payload);
             while (buffer.hasRemaining()) if (requestPin.write(buffer) <= 0) throw new IOException();
-            if (!same(base, baseKey, true) || !same(directory, directoryKey, true) || !same(request, requestKey, false))
+            if (!matchesBaseline(base, baseKey, true) || !matchesBaseline(directory, directoryKey, true) || !matchesBaseline(request, requestKey, false))
                 throw new IOException();
-            // Keep the inode pinned until cleanup, including after engine unlink.
+            // Retain the channel until cleanup, including after engine unlink.
+            // It does not authenticate the pathname baseline: a same-UID actor
+            // could have moved this channel's file before attributes(request).
             opened = true;
         } catch (Throwable failure) {
             failed = true;
@@ -150,9 +158,9 @@ final class LabPrivateRequest implements AutoCloseable {
     synchronized void cancel() throws LabProtocol.Fault {
         if (!opened || closed || failed) throw fault(LabProtocol.Reason.REF_CONSUMED);
         try {
-            if (!same(base, baseKey, true) || !same(directory, directoryKey, true)) throw new IOException();
+            if (!matchesBaseline(base, baseKey, true) || !matchesBaseline(directory, directoryKey, true)) throw new IOException();
             if (cancelCreated) {
-                if (!same(cancel, cancelKey, false)) throw new IOException();
+                if (!matchesBaseline(cancel, cancelKey, false)) throw new IOException();
                 return;
             }
             allocationUnknown = true;
@@ -164,7 +172,8 @@ final class LabPrivateRequest implements AutoCloseable {
             allocationUnknown = false;
         } catch (Throwable failure) { failed = true; throw fault(LabProtocol.Reason.TRANSPORT_LOST); }
     }
-    private static boolean removeOwned(Path path, Object key, boolean created) {
+    // Path check and delete are not atomic against another same-UID writer.
+    private static boolean removeMatchingBaseline(Path path, Object key, boolean created) {
         try {
             PosixFileAttributes value = attributes(path);
             if (!created || value.isSymbolicLink() || !value.isRegularFile()
@@ -181,12 +190,12 @@ final class LabPrivateRequest implements AutoCloseable {
         closed = true;
         boolean clean = !allocationUnknown;
         try {
-            if (directoryCreated && directoryKey != null && same(base, baseKey, true)
-                    && same(directory, directoryKey, true)) {
-                boolean removedRequest = removeOwned(request, requestKey, requestCreated);
-                boolean removedCancel = removeOwned(cancel, cancelKey, cancelCreated);
+            if (directoryCreated && directoryKey != null && matchesBaseline(base, baseKey, true)
+                    && matchesBaseline(directory, directoryKey, true)) {
+                boolean removedRequest = removeMatchingBaseline(request, requestKey, requestCreated);
+                boolean removedCancel = removeMatchingBaseline(cancel, cancelKey, cancelCreated);
                 clean &= removedRequest && removedCancel;
-                if (clean && same(directory, directoryKey, true)) Files.delete(directory);
+                if (clean && matchesBaseline(directory, directoryKey, true)) Files.delete(directory);
             } else if (directoryCreated || allocationUnknown) clean = false;
         } catch (Throwable failure) { clean = false; }
         try { if (requestPin != null) { requestPin.close(); hit(Point.REQUEST_CLOSED); } } catch (Throwable failure) { clean = false; }
@@ -196,6 +205,8 @@ final class LabPrivateRequest implements AutoCloseable {
         verified = clean;
         if (!verified) throw fault(LabProtocol.Reason.CLEANUP_UNVERIFIED);
     }
+    // Conditional close/path-baseline result; not proof of exclusive access or
+    // authentication of the object first created. See class contract and regressions.
     synchronized boolean cleanupVerified() { return closed && verified; }
     @Override public String toString() { return "LabPrivateRequest"; }
 }

@@ -191,11 +191,74 @@ public final class PrivateRequestTest {
             if (creationFailure) check(Files.exists(dir));
         }
     }
+    /** These are limitation witnesses, NOT a claim that same-UID replacement is resisted. */
+    static void sameUidPreBaselineWindowsOutsideModel(Path root) throws Exception {
+        LabPrivateRequest.Point[] windows={LabPrivateRequest.Point.DIRECTORY_CREATED,
+            LabPrivateRequest.Point.REQUEST_CREATED,LabPrivateRequest.Point.CANCEL_CREATED};
+        for(int index=0;index<windows.length;index++) {
+            LabPrivateRequest.Point window=windows[index];
+            Path cache=Files.createDirectory(root.resolve("outside-model-"+window));
+            int entropy=0xb0+index;
+            Path dir=directory(cache,fixedToken(entropy));
+            Path original=root.resolve("moved-original-"+window),witness=root.resolve("foreign-hardlink-"+window);
+            final Object[] keys=new Object[2];
+            java.util.EnumMap<LabPrivateRequest.Point,Integer> hits=new java.util.EnumMap<>(LabPrivateRequest.Point.class);
+            LabPrivateRequest owner=new LabPrivateRequest(cache.toFile(),bytes->Arrays.fill(bytes,(byte)entropy),point->{
+                hits.put(point,hits.getOrDefault(point,0)+1);
+                if(point!=window)return;
+                Path path=window==LabPrivateRequest.Point.DIRECTORY_CREATED ? dir
+                    : dir.resolve(window==LabPrivateRequest.Point.REQUEST_CREATED?"request":"cancel");
+                keys[0]=Files.readAttributes(path,java.nio.file.attribute.BasicFileAttributes.class,LinkOption.NOFOLLOW_LINKS).fileKey();
+                Files.move(path,original); // Preserve the first-created object, preventing inode reuse.
+                if(window==LabPrivateRequest.Point.DIRECTORY_CREATED)
+                    Files.createDirectory(path,PosixFilePermissions.asFileAttribute(PosixFilePermissions.fromString("rwx------")));
+                else {
+                    Files.createFile(path,PosixFilePermissions.asFileAttribute(PosixFilePermissions.fromString("rw-------")));
+                    Files.write(path,new byte[]{42,43});
+                    Files.createLink(witness,path); // Preserve independent evidence of the adopted foreign inode.
+                }
+                keys[1]=Files.readAttributes(path,java.nio.file.attribute.BasicFileAttributes.class,LinkOption.NOFOLLOW_LINKS).fileKey();
+                check(keys[0]!=null && keys[1]!=null && !keys[0].equals(keys[1]));
+            });
+            owner.open(pending());
+            if(window==LabPrivateRequest.Point.CANCEL_CREATED)owner.cancel();
+            if(window==LabPrivateRequest.Point.DIRECTORY_CREATED) {
+                Files.createLink(witness,dir.resolve("request"));
+                try(java.nio.file.DirectoryStream<Path> empty=Files.newDirectoryStream(original)){check(!empty.iterator().hasNext());}
+            } else {
+                Path path=dir.resolve(window==LabPrivateRequest.Point.REQUEST_CREATED?"request":"cancel");
+                check(Files.isSameFile(path,witness));check(Arrays.equals(Files.readAllBytes(witness),new byte[]{42,43}));
+            }
+            if(window==LabPrivateRequest.Point.REQUEST_CREATED) {
+                // The retained channel wrote the payload to the moved original,
+                // while the pathname baseline adopted a different foreign inode.
+                RequestDecoderProbe.Request decoded=new RequestDecoderProbe.Request(new DataInputStream(
+                    new ByteArrayInputStream(Files.readAllBytes(original))));
+                check(decoded.before.equals("seed") && decoded.after.equals(pending().after()));
+            }
+            if(window==LabPrivateRequest.Point.CANCEL_CREATED)check(Files.size(original)==0);
+            owner.close();
+            // This true result is conditional on an assumption deliberately broken
+            // here. It does not detect/prove exclusivity or authenticate creation.
+            check(owner.cleanupVerified());check(!Files.exists(dir,LinkOption.NOFOLLOW_LINKS));
+            check(Files.exists(original,LinkOption.NOFOLLOW_LINKS));
+            check(keys[0].equals(Files.readAttributes(original,java.nio.file.attribute.BasicFileAttributes.class).fileKey()));
+            check(Files.exists(witness));
+            if(window!=LabPrivateRequest.Point.DIRECTORY_CREATED) {
+                check(keys[1].equals(Files.readAttributes(witness,java.nio.file.attribute.BasicFileAttributes.class).fileKey()));
+                check(Arrays.equals(Files.readAllBytes(witness),new byte[]{42,43}));
+            }
+            check(hits.get(window)==1 && hits.get(LabPrivateRequest.Point.REQUEST_CLOSED)==1
+                && hits.get(LabPrivateRequest.Point.DIRECTORY_CLOSED)==1);
+            if(window==LabPrivateRequest.Point.CANCEL_CREATED)check(hits.get(LabPrivateRequest.Point.CANCEL_CLOSED)==1);
+        }
+    }
     public static void main(String[] args) throws Exception {
         Path root = Files.createTempDirectory("private-request-host-").toRealPath();
         try {
             positive(root); collisionsAndLinks(root); replacementsAndUnknownEntries(root); partialFailure(root);
             allocationAndCloseFailures(root);
+            sameUidPreBaselineWindowsOutsideModel(root);
             System.out.println("PASS private request host checks: " + checks);
         } finally {
             Files.walkFileTree(root, new java.nio.file.SimpleFileVisitor<Path>() {

@@ -36,13 +36,17 @@ qualified typing transport and is not part of a release. The independently revie
   admission gates. The original observation time and exact immutable binding are
   retained; it performs no action or selection repair. Its host tests use Android
   and unique-focus fakes, not a real AOSP node or an independent tree algorithm proof.
-* LabPrivateRequest owns only an exclusive private scratch directory/request/cancel
+* LabPrivateRequest uses an exclusive private scratch directory/request/cancel
   under the wrapper's Context cache. It serializes the existing engine frame with
-  the original expiry, pins file/directory identities, refuses links/collisions
-  and removes only known owned paths. Unknown allocation or close failures keep
-  cleanup unverified without another destructive attempt. Pure Java cannot
+  the original expiry, retains handles and captures pathname identity baselines
+  **after creation**. It refuses observed links/collisions and later baseline
+  mismatches; it does not atomically authenticate a newly created object from
+  its retained handle. Unknown allocation or close failures keep cleanup
+  unverified without another destructive attempt. Pure Java cannot
   authenticate an arbitrary File as an Android sandbox; the Context is that trust
-  source, and hostile same-UID writers are outside the lab threat model.
+  source. cleanupVerified is conditional on the exclusive unaltered lab assumed
+  by the design; it does not detect or prove that assumption. Hostile same-UID
+  writers are outside that model, including the windows described below.
 
 Pure host checks compile/run these actual Java classes with the pre-approved host
 JDK, fake clocks/entropy and synthetic strings. No Android API, SDK executable,
@@ -82,8 +86,28 @@ owned Python fakes check the CLOSED-before-exit distinction, nonzero/signalled
 child outcomes, EOF misuse and rejected public arguments. No Android tool runs.
 Private-cache tests use real host files and the exact extracted TextEngine.Request
 decoder. They exercise exclusive creation/modes, original expiry, engine unlink,
-symlink/inode replacement preservation, unknown-allocation checkpoints and close
+observed post-baseline symlink/inode replacement preservation, unknown-allocation checkpoints and close
 failures. They do not qualify the Android NIO provider or a device cache.
+
+### Cache baseline limitation: three explicit regression witnesses
+
+DIRECTORY_CREATED, REQUEST_CREATED and CANCEL_CREATED checkpoints stay immediately
+after their respective create call, before the first pathname attributes. A
+same-UID actor in any of those windows can move the original and substitute an
+object with matching type/owner/modes. The subsequent baseline can adopt that
+replacement and cleanup can delete it and return true. In the file cases, the
+retained FileChannel can still refer to the moved original while the pathname
+baseline refers to the replacement. There is also no atomic check→unlink guard
+against a same-UID writer during cleanup.
+
+Three real-host-filesystem regressions deliberately violate the exclusive-lab
+assumption and record this limitation. They retain different original/replacement
+file keys, moved originals and hardlink witnesses, including proof that the
+request payload went to the original channel while the foreign path was adopted.
+Those checks expect the existing conditional true result; they are **not security
+passes** or evidence that interference is detected. Normal, unaltered-lab cleanup
+tests and post-baseline foreign/symlink refusal tests remain separate. No checkpoint
+is moved and no private descriptor/reflection/permission route is introduced.
 
 The socket layer now uses public LocalServerSocket/LocalSocket and borrowed Os
 nonblocking I/O. A failed server constructor keeps allocation/cleanup unverified.
@@ -97,7 +121,9 @@ zero editor observation, and otherwise issues a ref only for the owned synthetic
 fixture package/resource. Its watcher uses the same synchronized core cancellation/
 entry boundary; every codec failure aborts, and late failures stay uncertain.
 The final Bundle is emitted only after bounded watcher join and attempted socket/
-cache closure with explicit proofs. The Bundle attests those owned resources;
+cache closure with explicit results. The cache part is conditional on the trusted
+Context and exclusive unaltered-lab precondition above, not proof of that condition.
+The Bundle attests those resource results within that boundary;
 the host must separately require the remote shell's client wait/reap witness.
 Tests use fake ports/cache/editor/engine and do not qualify a remote lifecycle.
 
