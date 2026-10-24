@@ -355,7 +355,7 @@ impl Call {
                             value
                         }
                         Data::Ui(ui) => {
-                            json!({"revision":ui.revision,"truncation":ui.truncation.iter().map(|reason| match reason { UiTruncation::Elements=>"elements", UiTruncation::Text=>"text" }).collect::<Vec<_>>(),"focused_count":ui.focused_count,"elements":ui.elements.into_iter().map(|e|json!({"ref":e.reference,"text":e.text,"role":e.role,"focused":e.focused,"actionable":e.actionable,"editable":e.editable})).collect::<Vec<_>>()})
+                            json!({"revision":ui.revision,"truncation":ui.truncation.iter().map(|reason| match reason { UiTruncation::Elements=>"elements", UiTruncation::Text=>"text" }).collect::<Vec<_>>(),"focused_count":ui.focused_count,"elements":ui.elements.iter().map(ui_element).collect::<Vec<_>>()})
                         }
                     },
                     false,
@@ -382,6 +382,13 @@ impl Call {
             image: None,
         }
     }
+}
+fn ui_element(e: &UiElement) -> Value {
+    let mut value = json!({"ref":e.reference,"text":e.text,"role":e.role,"focused":e.focused,"actionable":e.actionable,"editable":e.editable});
+    if let Some(text) = &e.accessibility_text {
+        value["accessibility_text"] = json!(text);
+    }
+    value
 }
 fn media(s: &MediaSession) -> Value {
     let mut v = json!({"session":s.session,"package":s.package,"playback": playback(s.playback)});
@@ -483,7 +490,7 @@ pub fn extend_tools(tools: &mut Value) {
         .iter_mut()
         .find(|t| t["name"] == "tv_control")
         .expect("control tool");
-    control["description"] = json!("Never retry outcome_unknown. Native volume index, not %. Mute: stream 3 zero, not speaker proof. Media: session from read media. Search/URL/text/next/previous: dispatch only. Text: focused editable ref; ASCII except %, append only. Unique IDs.");
+    control["description"] = json!("Never retry outcome_unknown. Native volume index, not %. Mute: stream 3 zero, not speaker proof. Media: session from read media. Search/URL/next/previous: dispatch only. Text: focused editable ref; ASCII except %/?, matching accessibility readback; mismatch unknown, no repair. Unique IDs.");
     let actions = control["inputSchema"]["properties"]["action"]["oneOf"]
         .as_array_mut()
         .unwrap();

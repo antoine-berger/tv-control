@@ -118,7 +118,28 @@ pub(super) fn parse_ui(device: &str, session: u128, raw: &str) -> PortResult<UiS
             }
             continue;
         }
+        let accessibility_text =
+            (editable && !flag("showing-hint-text") && !flag("showingHintText"))
+                .then(|| attributes.get("text"))
+                .flatten()
+                .filter(|text| {
+                    text.len() <= 256
+                        && text
+                            .bytes()
+                            .all(|b| (b' '..=b'~').contains(&b) && b != b'?')
+                })
+                .cloned();
+        let resource_id = attributes
+            .get("resource-id")
+            .filter(|id| {
+                !id.is_empty()
+                    && id.len() <= 256
+                    && id.bytes().all(|b| (b' '..=b'~').contains(&b) && b != b'?')
+            })
+            .cloned();
         elements.push(UiElement {
+            accessibility_text,
+            resource_id,
             reference: format!("{revision}:{}", elements.len()),
             text,
             role,

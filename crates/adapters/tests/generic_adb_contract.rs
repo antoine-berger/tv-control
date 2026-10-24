@@ -120,3 +120,6 @@ mod standby;
 mod ui;
 #[path = "generic_adb_contract/volume.rs"]
 mod volume;
+
+#[path = "generic_adb_contract/text_result.rs"]
+mod text_result;

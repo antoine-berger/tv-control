@@ -86,13 +86,20 @@ fn ui_dump_uses_private_temporary_file_and_removes_it() {
 }
 fn editable_ui() -> String {
     UI.replace("android.widget.Button", "android.widget.EditText")
-        .replace("<node ", "<node package=\"org.example.player\" ")
+        .replace(
+            "<node ",
+            "<node resource-id=\"org.example.player:id/query\" package=\"org.example.player\" ",
+        )
 }
 
 #[test]
 fn text_input_is_one_literal_argument_and_consumes_reference() {
     let ui = editable_ui();
-    let (adb, process, _) = adapter(true, &[VERSION, &ui, &ui, FOREGROUND, ""]);
+    let after = ui.replace("Search", "Searcha b&apos;s $HOME `id`; &amp; | \\");
+    let (adb, process, _) = adapter(
+        true,
+        &[VERSION, &ui, &ui, FOREGROUND, "", &after, FOREGROUND],
+    );
     let clock = TestClock::default();
     let flag = CancelFlag::default();
     let view = adb.ui("screen", &ctx(&clock, &flag)).unwrap();
@@ -107,7 +114,8 @@ fn text_input_is_one_literal_argument_and_consumes_reference() {
             .calls
             .lock()
             .unwrap()
-            .last()
+            .iter()
+            .find(|c| c.mutating)
             .unwrap()
             .args
             .last()
@@ -139,7 +147,9 @@ fn unsupported_text_never_dispatches_or_consumes_reference() {
     let clock = TestClock::default();
     let flag = CancelFlag::default();
     let view = adb.ui("screen", &ctx(&clock, &flag)).unwrap();
-    for text in ["%s", "%", "café", "中文", "a\nb", "a\0b", "\t", "", "   "] {
+    for text in [
+        "%s", "%", "?", "café", "中文", "a\nb", "a\0b", "\t", "", "   ",
+    ] {
         assert!(
             adb.apply(
                 "screen",

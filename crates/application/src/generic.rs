@@ -39,6 +39,9 @@ pub trait Device: Send + Sync {
         Err(tv_domain::Failure::before("screenshot_unsupported"))
     }
     /// A resolved app is passed only for OpenApp/OpenUrl/Search. Other intents use None.
+    /// TypeText may succeed only after matching accessibility-dump append readback; a
+    /// dispatched but unreadable/mismatched insertion must return uncertain failure.
+    /// This is an observation, never proof of underlying committed editor text.
     fn apply(
         &self,
         device: &str,
@@ -594,6 +597,7 @@ fn fail(reply: &mut Reply, e: Failure) {
             | "search_unsupported"
             | "url_unsupported"
             | "input_text_unsupported"
+            | "text_verification_unsupported"
             | "media_command_unsupported" => Status::Unsupported,
             _ => Status::Failed,
         }

@@ -80,6 +80,11 @@ impl GenericAdb {
             }
             _ => {}
         }
+        let expected_text = if let Intent::TypeText { text, .. } = intent {
+            Some(expected_accessibility_text(&snapshot, element, text)?)
+        } else {
+            None
+        };
         let fresh = self.read_ui(alias, ctx)?;
         // Revision includes the entire raw hierarchy, device and adapter
         // session. Issuance-specific refs are intentionally not compared.
@@ -117,6 +122,10 @@ impl GenericAdb {
         }
         if let Intent::TypeText { text, .. } = intent {
             self.shell(alias, &["input", "text", text], &[], true, ctx)?;
+            // Shell success proves key dispatch, not even matching accessibility text.
+            // Readback remains UI evidence only, not proof of underlying committed text.
+            // One post-read only: never repeat or try to repair uncertain input.
+            self.verify_accessibility_text(alias, element, expected_text.as_deref().unwrap(), ctx)?;
         } else {
             let [left, top, right, bottom] = element.bounds;
             let x = left + (right - left) / 2;
@@ -131,17 +140,90 @@ impl GenericAdb {
         }
         Ok(())
     }
+
+    fn verify_accessibility_text(
+        &self,
+        alias: &str,
+        before: &UiElement,
+        expected: &str,
+        ctx: &Context<'_>,
+    ) -> PortResult<()> {
+        let verify = || {
+            ctx.check()?;
+            let after = self.read_ui(alias, ctx)?;
+            ctx.check()?;
+            if self.foreground(alias, ctx)? != before.package {
+                return Err(Failure::before("text_result_context_changed"));
+            }
+            ctx.check()?;
+            let editors: Vec<_> = after
+                .elements
+                .iter()
+                .filter(|e| same_editor(before, e))
+                .collect();
+            if after.focused_count != 1
+                || !after.truncation.is_empty()
+                || editors.len() != 1
+                || !editors[0].focused
+                || !editors[0].editable
+            {
+                return Err(Failure::before("text_result_context_changed"));
+            }
+            let actual = editors[0]
+                .accessibility_text
+                .as_deref()
+                .ok_or(Failure::before("text_result_unreadable"))?;
+            if actual != expected {
+                return Err(Failure::before("text_result_mismatch"));
+            }
+            Ok(())
+        };
+        verify().map_err(|e| Failure::uncertain(e.code))
+    }
+}
+
+fn same_editor(a: &UiElement, b: &UiElement) -> bool {
+    a.resource_id == b.resource_id
+        && a.package == b.package
+        && a.role == b.role
+        && a.bounds == b.bounds
+}
+
+fn expected_accessibility_text(
+    snapshot: &UiSnapshot,
+    editor: &UiElement,
+    text: &str,
+) -> PortResult<String> {
+    let unsupported = || Failure::before("text_verification_unsupported");
+    let before = editor
+        .accessibility_text
+        .as_deref()
+        .ok_or_else(unsupported)?;
+    if editor.resource_id.is_none()
+        || !snapshot.truncation.is_empty()
+        || snapshot
+            .elements
+            .iter()
+            .filter(|e| same_editor(editor, e))
+            .count()
+            != 1
+        || before.chars().count() + text.chars().count() > 256
+    {
+        return Err(unsupported());
+    }
+    Ok(format!("{before}{text}"))
 }
 
 /// Percent is rejected because Android rewrites `%s` to a space before injecting
-/// key events. Shell quoting alone cannot preserve arbitrary input text semantics.
+/// key events. Question mark is ambiguous with UIAutomator sanitization of Unicode
+/// and controls. Shell quoting cannot preserve arbitrary input text semantics.
 fn validate_input_text(text: &str) -> PortResult<()> {
     if text.trim().is_empty() || text.len() > 500 {
         return Err(Failure::before("invalid_input_text"));
     }
     if !text
         .bytes()
-        .all(|b| (b' '..=b'~').contains(&b) && b != b'%')
+        .all(|b| (b' '..=b'~').contains(&b) && b != b'%' && b != b'?')
     {
         return Err(Failure::before("input_text_unsupported"));
     }

@@ -60,7 +60,9 @@ pub enum Intent {
     Activate {
         reference: String,
     },
-    /// Append printable ASCII to a freshly validated focused editable field.
+    /// Attempt printable ASCII insertion; require matching accessibility-dump append.
+    /// This observes exposed UI text, not proof of underlying committed editor text.
+    /// Key injection is layout dependent; uncertainty must never be retried automatically.
     TypeText {
         reference: String,
         text: String,
@@ -121,6 +123,11 @@ pub struct Request {
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct UiElement {
+    /// Bounded ASCII accessibility-dump text, separate from content-description fallback.
+    /// May be a hint or transformed display text; never proof of committed editor text.
+    pub accessibility_text: Option<String>,
+    /// Native identity for matching an editor across observations.
+    pub resource_id: Option<String>,
     pub reference: String,
     pub text: String,
     pub role: String,

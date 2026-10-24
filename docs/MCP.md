@@ -200,21 +200,61 @@ back. See the [exploratory evidence limits](ACCEPTANCE.md#exploratory-url-search
 If SEARCH is ignored and there is no suitable URL route, navigate to the visible
 search field, read UI again, and use `type_text` only for its fresh
 `focused: true`, `editable: true` reference.
-This appends at the current cursor/selection; it does not clear existing text,
-submit a search, or select a result. The adapter rejects multiple focused nodes,
-password fields, unknown target packages and a changed foreground package. It
-rechecks the full hierarchy and TTL immediately before dispatch. A physical remote
-or another controller can still change focus between validation and key injection;
-ADB does not provide an atomic compare-and-type operation.
+This attempts insertion at the current cursor/selection, but accepts success only
+when a fresh accessibility dump of the same uniquely identified native editor
+equals its earlier dumped text plus the requested text. This is UI observation,
+not proof of underlying committed editor contents. It does not move the cursor,
+clear text, submit a search, or select a result. Selection replacement or insertion away from the end
+therefore fails verification. The adapter rejects multiple focused nodes, password
+fields, unknown target packages, missing/ambiguous resource identity, unreadable or
+truncated text, and a changed foreground package. The total expected dumped text
+must fit 256 characters. The UI read exposes bounded `accessibility_text` separately
+from display `text` labels, without a content-description fallback. An empty dump
+attribute differs from a content description; absent `accessibility_text` means
+usable dump text is unavailable, not empty.
+It rechecks the hierarchy and TTL before dispatch, then reads accessibility-dump text
+and foreground again within the original deadline.
 
-Text entry supports 1–500 bytes of printable ASCII except `%`, whose Android
-`input text` substitution semantics are unsafe for literal input. Unicode, control
-characters and percent are rejected before dispatch, never transliterated or
-silently dropped. Shell metacharacters remain one quoted literal argument. Custom
-editors that do not expose native EditText metadata are unsupported; do not guess
-or type blindly. The receipt confirms dispatch and fresh state only, not that the
-app accepted the text. Inspect UI afterward and explicitly navigate to submit if
-appropriate. Never retry an uncertain text operation under a new request ID.
+Android `input text` synthesizes virtual keyboard events; it is **not** a direct
+text commit. An IME/layout or application can transform even ASCII (for example,
+requested `Tanya` was observed as `Tqnyq` on hardware). This check detects mismatching exposed text,
+not every underlying corruption, and cannot prevent its first occurrence. There is no universal insertion guarantee and
+no keyboard-layout inversion, IME/locale change, helper installation, or automatic
+repair. A physical remote can also race validation; ADB provides no atomic
+compare-and-type operation.
+
+Text accepts 1–500 bytes of printable ASCII except `%` and `?`; the 256-character result
+bound can refuse a smaller request with `text_verification_unsupported` before
+mutation. Unicode, controls, percent and question marks are rejected, never transliterated. Shell
+metacharacters remain one quoted literal argument. Custom editors without readable
+native EditText metadata are unsupported. `text_result_mismatch` reports
+`outcome_unknown`: keys may already have changed the field, but matching accessibility-dump append was
+not observed. Unreadable post-state, changed context, timeout or cancellation after
+dispatch also remain uncertain. Read `tv_read` UI (or explicitly capture) for the
+current exposed field; its contents are not added to error codes or result
+journals. **Never retry an uncertain text operation under a new request ID.** The
+reference is consumed even on uncertainty; the existing request ID only retrieves
+its cached result. A successful `observed` receipt means matching accessibility-dump text was read
+back at that moment. It is not a `verified` committed-text receipt and does not
+prove insertion, submission, search, or absence of app text transformation.
+
+Accessibility limits: Android TextView may expose hint text for an empty editor,
+or transformed display text instead of underlying text. The stock dump does not
+include the showing-hint flag, so absence of that flag is not proof of actual
+editor contents. Explicit `showing-hint-text`/`showingHintText` true metadata, when
+supplied, is refused; the controller never guesses a hint from its label. A hint
+`Search` changing to `Tanya` produces an uncertain mismatch, not a repair/retry.
+The [AOSP dumper](https://android.googlesource.com/platform/frameworks/testing/+/refs/heads/main/uiautomator/library/core-src/com/android/uiautomator/core/AccessibilityNodeInfoDumper.java)
+also replaces unsupported Unicode/control characters with `?` (and can drop
+unpaired surrogates). Therefore a requested or observed question mark is ambiguous
+and is refused, not treated as proof of literal text. Even sentinel-free matching
+dumps cannot prove that invisible underlying content or a transformation is absent.
+See [TextView accessibility text](https://android.googlesource.com/platform/frameworks/base/+/master/core/java/android/widget/TextView.java).
+
+Platform rationale: AOSP's [input shell implementation](https://android.googlesource.com/platform/frameworks/base/+/master/services/core/java/com/android/server/input/InputShellCommand.java)
+uses `KeyCharacterMap.VIRTUAL_KEYBOARD`; the [IME shell interface](https://android.googlesource.com/platform/frameworks/base/+/master/services/core/java/com/android/server/inputmethod/InputMethodManagerService.java)
+provides IME management, not a generic `commitText` command. This implementation
+uses only existing shell/UI capabilities, not a new IME or accessibility service.
 
 Navigation/search/URL/text dispatch does not prove that a particular
 episode is playing. Missing labels or unsupported UI are reported honestly;

@@ -90,10 +90,10 @@ elif command==['dumpsys','media_session']:
     print('  player '+state['package']+'/player/7 (userId=0)\n    ownerPid=1234, ownerUid=10001, userId=0\n    package='+state['package']+'\n    active='+str(state.get('session_active',True)).lower()+'\n    state=PlaybackState {state='+str(state.get('playback',3))+', position=12000, speed=1.0, actions='+str(state.get('media_actions',55))+'}\n    metadata: Example title, Example artist, Example album')
 elif command[:2]==['sh','-c'] and 'uiautomator dump' in command[2]:
     text=html.escape(state.get('entered_text',''),quote=True)
-    print('<hierarchy rotation="0"><node text="'+text+'" content-desc="Search" class="android.widget.EditText" package="'+state['package']+'" enabled="true" clickable="true" focused="true" bounds="[10,20][110,60]" /></hierarchy>')
+    print('<hierarchy rotation="0"><node resource-id="fixture:id/query" text="'+text+'" content-desc="Search" class="android.widget.EditText" package="'+state['package']+'" enabled="true" clickable="true" focused="true" bounds="[10,20][110,60]" /></hierarchy>')
 elif command[:2]==['input','text']:
     state['text_writes']=state.get('text_writes',0)+1
-    state['entered_text']=state.get('entered_text','')+command[2]
+    state['entered_text']=state.get('entered_text','')+state.get('text_transform',command[2])
     state_path.write_text(json.dumps(state))
 elif command==['screencap','-p']:
     sys.stdout.buffer.write((root/'screen.png').read_bytes())
@@ -250,6 +250,19 @@ class GenericMcp(unittest.TestCase):
             self.close_process();self.start()
             self.assertTrue(self.control(identity,action)['structuredContent']['cached'])
             state=json.loads(path.read_text());self.assertEqual(state['text_writes'],1);self.assertEqual(state['entered_text'],'cats music')
+    def test_text_layout_mismatch_is_unknown_and_durable_without_replay(self):
+        path=self.root/'state.json';state=json.loads(path.read_text());state['text_transform']='Tqnyq';path.write_text(json.dumps(state))
+        ui=self.tool('tv_read',{'device':'screen','expires_at_unix_ms':int(time.time()*1000)+9000,'read':{'type':'ui'}})['structuredContent']
+        action={'type':'type_text','reference':next(item['ref'] for item in ui['elements'] if item['editable']),'text':'Tanya'}
+        result=self.control('layout_mismatch',action)['structuredContent']
+        self.assertEqual(result['status'],'outcome_unknown',result)
+        self.assertEqual(result['code'],'text_result_mismatch',result)
+        self.assertNotIn('Tqnyq',json.dumps(result))
+        self.close_process();self.start()
+        self.assertTrue(self.control('layout_mismatch',action)['structuredContent']['cached'])
+        state=json.loads(path.read_text());self.assertEqual(state['text_writes'],1);self.assertEqual(state['entered_text'],'Tqnyq')
+        ui=self.tool('tv_read',{'device':'screen','expires_at_unix_ms':int(time.time()*1000)+9000,'read':{'type':'ui'}})['structuredContent']
+        self.assertEqual(next(item['accessibility_text'] for item in ui['elements'] if item['editable']),'Tqnyq')
     def test_media_mutation_invalidates_ui_reference_before_text_dispatch(self):
         ui=self.tool('tv_read',{'device':'screen','expires_at_unix_ms':int(time.time()*1000)+9000,'read':{'type':'ui'}})['structuredContent']
         ref=next(item['ref'] for item in ui['elements'] if item['editable'])
