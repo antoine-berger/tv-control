@@ -192,7 +192,7 @@ The existing standalone missing-token refusal stays a separate regression.
 This hook is a proposed wrapper change requiring review, not implemented code.
 
 The common wrapper creates/registers the PendingRequest resource owner before
-ingress can create an FD, thread or scratch file, so an ingress exception before
+connectForText or ingress can create an FD, thread or scratch file, so an ingress exception before
 return cannot strand unowned resources. Ingress owns ref issuance/atomic
 consumption and registers each resource immediately. Only the common onStart
 path marks ENGINE_ENTERED immediately before its one runOnce call. The sink stores
@@ -213,7 +213,10 @@ The subclass cannot override onStart, terminal publication, close or finish poli
 The **wrapper's final Bundle is the sole authoritative terminal result**, published
 after cleanup checks. Socket replies carry REF/progress only, never a competing
 terminal verified result. Server-side socket closure is not evidence of success:
-the client reports only channel closed and awaits the wrapper Bundle. The watcher
+the Java app_process client reports only CHANNEL_CLOSED and exits within its
+deadline. It never waits for a Bundle or a nonexistent terminal socket message.
+Only the HOST waits for and correlates the Bundle on the separately owned
+am instrument process's private stdout channel. The watcher
 stop/FD-close cutoff must be explicit and must not mistake self-initiated close
 for peer EOF; it cannot prove that future or unread late bytes were absent.
 If the host cancelled, lost a required channel/result, or cannot correlate the
