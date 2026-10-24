@@ -31,6 +31,7 @@ def main():
     engine = (root.parent / "src/org/tvcontrol/nativeinput/TextEngine.java").read_text()
     configure = method(fixture, "    private static void configureEditors(").replace("EditText", "Editor")
     readback = method(proof, "    private static void assertEditorText(").replace("AccessibilityNodeInfo", "Node")
+    other_readback = method(proof, "    private void assertOtherUnchanged(").replace("AccessibilityNodeInfo", "Node")
     matches = method(engine, "        boolean matches(").replace("AccessibilityNodeInfo", "Node")
     sensitive = method(engine, "    static boolean sensitiveInputType(")
     before = proof[proof.index('        boolean emptyNull = "empty-null".equals(mode);'):proof.index('        if ("key-remap".equals(mode))')]
@@ -64,7 +65,7 @@ public final class FixtureContractTest {
         public boolean equals(Object value) { return value instanceof Rect; }
     }
     static class Node {
-        String text, hint; int selection, type=1; boolean password;
+        String text, hint; int selection, type=1, refreshed, recycled; boolean password, refreshOk=true;
         Node(String value) { text=value; selection=value == null ? -1 : value.length(); }
         CharSequence getText() { return text; }
         CharSequence getHintText() { return hint; }
@@ -82,6 +83,8 @@ public final class FixtureContractTest {
         String getViewIdResourceName() { return "editor"; }
         String getClassName() { return "EditText"; }
         int getWindowId() { return 1; }
+        boolean refresh() { refreshed++; return refreshOk; }
+        void recycle() { recycled++; }
     }
     static class Request {
         String pkg="fixture", resource="editor", role="EditText"; int window=1; Rect bounds=new Rect();
@@ -90,6 +93,15 @@ public final class FixtureContractTest {
     @SENSITIVE@
     @CONFIGURE@
     @READBACK@
+    enum Stage { READBACK_CHECK, OTHER_LOOKUP }
+    Stage stage=Stage.READBACK_CHECK;
+    Node other;
+    int otherLookups;
+    Node editor(String id) {
+        assertEquals("org.tvcontrol.fixture:id/other", id);
+        otherLookups++; stage=Stage.OTHER_LOOKUP; return other;
+    }
+    @OTHER_READBACK@
     static String validateBefore(String mode, Node n) {
         @BEFORE@
         return before;
@@ -132,12 +144,28 @@ public final class FixtureContractTest {
         assertTrue("password refused with text", !request.matches(password, "seed"));
         password.type=145;
         assertTrue("visible password refused with text", !request.matches(password, "seed"));
+        FixtureContractTest proof=new FixtureContractTest();
+        for (int invocation=1; invocation<=3; invocation++) {
+            proof.other=new Node("other");
+            proof.assertOtherUnchanged();
+            assertEquals(invocation, proof.otherLookups);
+            assertEquals(1, proof.other.refreshed); assertEquals(1, proof.other.recycled);
+            assertEquals(Stage.READBACK_CHECK, proof.stage);
+        }
+        for (String changed:new String[]{"mutated", "", null}) {
+            proof.other=new Node(changed);
+            rejects(() -> proof.assertOtherUnchanged());
+            assertEquals(1, proof.other.refreshed); assertEquals(1, proof.other.recycled);
+        }
+        proof.other=new Node("other"); proof.other.refreshOk=false;
+        rejects(() -> proof.assertOtherUnchanged()); assertEquals(1, proof.other.recycled);
+        proof.other=null; rejects(() -> proof.assertOtherUnchanged());
         System.out.println("PASS fixture/proof/engine host contract checks: " + checks);
     }
 }
 '''
     for key, value in {"MATCHES": matches, "SENSITIVE": sensitive, "CONFIGURE": configure,
-                       "READBACK": readback, "BEFORE": before}.items():
+                       "READBACK": readback, "OTHER_READBACK": other_readback, "BEFORE": before}.items():
         harness = harness.replace("@" + key + "@", value)
     env = {"PATH": os.defpath, "LANG": "C", "LC_ALL": "C"}
     with tempfile.TemporaryDirectory(prefix="fixture-contract-host-") as directory:

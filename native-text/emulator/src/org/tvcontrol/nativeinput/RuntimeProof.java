@@ -104,6 +104,16 @@ public final class RuntimeProof extends NativeTextInstrumentation {
         if (expectNull) assertTrue("empty fixture remains null", value == null);
         else { assertNotNull("fixture text is observable", value); assertEquals(expected, value.toString()); }
     }
+    private void assertOtherUnchanged() {
+        Stage previous = stage;
+        AccessibilityNodeInfo other = editor("org.tvcontrol.fixture:id/other");
+        stage = previous;
+        try {
+            assertNotNull("other editor", other);
+            assertTrue("fresh other editor", other.refresh());
+            assertEditorText(other, "other", false);
+        } finally { if (other != null) other.recycle(); }
+    }
     @Override public void onStart() {
         Bundle result = new Bundle();
         result.putString("tv_native_runtime_proof", "failed");
@@ -217,7 +227,11 @@ public final class RuntimeProof extends NativeTextInstrumentation {
                 AccessibilityNodeInfo other = editor("org.tvcontrol.fixture:id/other");
                 assertNotNull("other editor", other);
                 stage = Stage.FOCUS_SWITCH;
-                try { assertTrue(other.performAction(AccessibilityNodeInfo.ACTION_FOCUS)); }
+                try {
+                    assertTrue("fresh other editor", other.refresh());
+                    assertEditorText(other, "other", false);
+                    assertTrue(other.performAction(AccessibilityNodeInfo.ACTION_FOCUS));
+                }
                 finally { other.recycle(); }
             }
             if ("cancel".equals(mode)) {
@@ -242,6 +256,7 @@ public final class RuntimeProof extends NativeTextInstrumentation {
             assertTrue(n.refresh());
             stage = Stage.READBACK_CHECK;
             assertEditorText(n, insertion ? after : before, emptyNull);
+            if ("focus".equals(mode)) assertOtherUnchanged();
             stage = Stage.REQUEST_CONSUMED;
             assertFalse("request consumed", request.exists());
             status[0] = null;
@@ -254,6 +269,7 @@ public final class RuntimeProof extends NativeTextInstrumentation {
             stage = Stage.REPLAY_READBACK;
             assertTrue(n.refresh());
             assertEditorText(n, insertion ? after : before, emptyNull);
+            if ("focus".equals(mode)) assertOtherUnchanged();
         } finally {
             Stage previous = stage;
             stage = Stage.CLEANUP;

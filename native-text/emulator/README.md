@@ -341,13 +341,16 @@ still apply. No engine, deadline, permission or identity check is relaxed.
 | hint | empty with public hint, accessible hint text | refused, unchanged |
 | password / visible-password | public seed, end4, respective sensitive type | refused with nonnull text |
 | selection | `seed`, position1 | refused, unchanged |
-| focus | `seed`, end4; second editor `other`, end5 | refused after explicit focus switch |
+| focus | `seed`, end4; second editor `other`, end5 | refused; both editors unchanged after invocation/replay |
 | stale-window / cancel | `seed`, end4 | refused, unchanged |
 | key-remap | empty without hint before synthetic key input | exact prior remap assertion |
 
 The source reference is [Android12 TextView](https://android.googlesource.com/platform/frameworks/base/+/refs/tags/android-12.0.0_r1/core/java/android/widget/TextView.java),
 `getTextForAccessibility()`. The fixture/proof/engine host checks use fake nodes and
 exercise the actual methods as contract tests; they are not AOSP runtime evidence.
+The focus proof compares the second editor's exact public seed before the focus
+action, then reacquires, refreshes and recycles that editor for both post-invocation
+and post-replay checks. It does not infer preservation from the original editor alone.
 
 This candidate adds `--mode ci-linux` and `--mode darwin-local`; mode selection is
 mandatory. Darwin requires a native ARM64 host, the official emulator's successful
