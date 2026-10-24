@@ -1,6 +1,6 @@
 # Native text insertion — isolated, non-shipping prototype
 
-**Not enabled in TV Control, not published, not deployed or run on a TV/Mac.**
+**Not enabled in TV Control, not published as a release, not deployed or run on a TV/Mac.**
 This directory is outside the production workspace. The host crate has no concrete
 ADB transport, capability probe, observation issuer, configuration option, or MCP
 route. Nothing selects this implementation automatically. Do not merge it into a

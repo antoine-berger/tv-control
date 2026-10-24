@@ -1,8 +1,9 @@
 # Source-only owned-emulator runtime proof candidate
 
-**No workflow publication or Android runtime run has occurred. All generated APKs
-are emulator-only test artifacts, not user-installable releases. Parent review is
-required before deliberately pushing `qa/native-text-runtime`. No user TV/Mac is
+**The first reviewed workflow was published and stopped safely at its KVM access
+preflight; no Android runtime ran. This software-backend correction awaits renewed
+review before publication. All generated APKs are emulator-only test artifacts,
+not user-installable releases. No user TV/Mac is
 addressed, discovered, installed on, or controlled.**
 
 ## Modern architecture
@@ -83,11 +84,16 @@ Fixture signing keys are newly generated disposable local test keys, deleted aft
 build, never uploaded or used for any account access. Signed APK hashes naturally
 differ across builds because each build has a different disposable signing key.
 
-KVM is used only when already accessible to the hosted runner. Otherwise the job
-fails clearly before provisioning; no ACL/group/permission changes or sudo are
-performed. Emulator
-has no window/audio/metrics, a fresh wiped AVD, 240s boot deadline, 30s instrument
-bounds and a 25-minute total job deadline. Commands are captured to bounded
+KVM is used only when already accessible to the hosted runner. Otherwise an
+explicit `--allow-software-emulation` selects the separate unprivileged
+`-accel off` backend. Without that opt-in the runner fails. No KVM permissions,
+ACLs/groups or sudo changes are performed, and inaccessible KVM is not opened.
+The emulator has no window/audio/metrics and uses a fresh wiped AVD. Boot is
+bounded to 240 seconds with existing KVM or 900 seconds in software; instrumentation
+commands have 60-second host deadlines and the job has a 40-minute total deadline.
+The shared helper's 5-second liveness gate and all mutation/assertion checks remain
+unchanged. Emulator output is continuously drained while retaining at most 64 KiB
+locally; none is uploaded. Commands are captured to bounded
 runner-local files, terminated as owned process groups on timeout; cancellation
 and final cleanup terminate only the owned emulator and uninstall only our fixed
 package names. No retries of text mutation occur. This is not the shipping host
@@ -120,3 +126,26 @@ confirms the helper has only its self-targeting Instrumentation, no permissions
 or activity/service/receiver/provider. Test signing key was removed after build.
 Ten Rust tests, 21 source-extracted guard cases and 150 malformed-protocol Java
 cases pass. They remain host/algorithm tests, not Android behavior.
+
+### First CI result and proposed correction
+
+The first exact reviewed tree ran at
+https://github.com/antoine-berger/tv-control/actions/runs/40072790718 . JDK/license
+checks passed; existing KVM access was unavailable, so the job failed before SDK
+provisioning, APK build or Android startup. Cleanup passed. No permission gate
+was changed at runtime.
+
+The new source-only correction selects bounded software emulation when existing
+KVM access is unavailable. Five host tests cover backend selection, required
+opt-in, bounded log draining, and preserved security/audio boundaries. No helper
+Java code, APK manifest, input assertion or SDK/license pin changes are involved.
+A software boot timeout or runtime assertion failure will still fail the job.
+
+### Owned process-group regression correction
+
+Emulator liveness now uses Linux `waitid(..., WNOWAIT)` instead of `Popen.poll()`.
+The parent retains the running or zombie leader until all group signals finish;
+only then does `wait()` reap it. A reaped leader or lost child ownership refuses
+all group signals rather than using a potentially recycled PGID. Seven explicit regressions (including real owned Python subprocesses) cover early launcher exit, ordinary exit, timeout, already-reaped
+leader, lost-child ownership, non-reaping exit observation and bounded live-child
+cleanup. No helper or text assertions were changed.

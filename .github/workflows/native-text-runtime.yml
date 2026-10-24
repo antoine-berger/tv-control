@@ -14,7 +14,7 @@ concurrency:
 jobs:
   owned-emulator:
     runs-on: ubuntu-24.04
-    timeout-minutes: 25
+    timeout-minutes: 40
     env:
       TV_NATIVE_OWNED_AVD: api31-disposable
     steps:
@@ -27,11 +27,8 @@ jobs:
           set -euo pipefail
           test -x "$JAVA_HOME_21_X64/bin/java"
           test -s "$ANDROID_HOME/licenses/android-sdk-license"
-          # No permission, ACL or group changes. Fail clearly if acceleration is unavailable.
-          if ! test -c /dev/kvm || ! test -r /dev/kvm || ! test -w /dev/kvm; then
-            echo "Blocked: hosted runner lacks pre-existing KVM access; no permissions changed."
-            exit 1
-          fi
+          # Backend selection occurs in run_proof.py; no KVM/ACL/group/permission changes.
+          # Inaccessible KVM uses explicitly selected unprivileged software emulation.
       - name: Provision checksum-pinned official SDK packages without accepting licenses
         shell: bash
         run: |
@@ -45,6 +42,8 @@ jobs:
           set -euo pipefail
           python3 native-text/tests/test_focus_guards.py --java "$JAVA_HOME_21_X64/bin/java"
           python3 native-text/tests/protocol_decoder.py --java "$JAVA_HOME_21_X64/bin/java"
+          python3 native-text/emulator/test_runtime_backend.py
+          python3 native-text/emulator/test_process_group.py
           cargo test --manifest-path native-text/host/Cargo.toml --locked --offline
       - name: Build project-owned fixture and instrumentation APKs
         shell: bash
@@ -61,7 +60,8 @@ jobs:
           python3 native-text/emulator/run_proof.py \
             --sdk "$RUNNER_TEMP/native-runtime-sdk" \
             --build "$RUNNER_TEMP/native-runtime-build" \
-            --work "$RUNNER_TEMP/native-runtime-avd"
+            --work "$RUNNER_TEMP/native-runtime-avd" \
+            --allow-software-emulation
       - name: Remove only this job's owned temporary artifacts
         if: always()
         shell: bash

@@ -4,11 +4,36 @@ import argparse
 import os
 from pathlib import Path
 import signal
+import stat
+import threading
 import tempfile
 import subprocess
 import time
+from process_group import leader_exited, stop_unreaped_group
 
 MODES = ("key-remap", "normal", "hint", "password", "visible-password", "selection", "focus", "stale-window", "cancel")
+
+
+def select_acceleration(kvm_usable, allow_software):
+    if kvm_usable:
+        return "on", 240
+    if allow_software:
+        return "off", 900
+    raise RuntimeError("KVM unavailable and software emulation was not explicitly selected")
+
+
+def drain_bounded_log(source, output, limit=64 * 1024):
+    """Drain child output without backpressure, retaining at most limit bytes."""
+    retained = 0
+    while True:
+        chunk = source.read(4096)
+        if not chunk:
+            break
+        keep = min(len(chunk), limit - retained)
+        if keep:
+            output.write(chunk[:keep])
+            retained += keep
+    output.flush()
 
 
 def main():
@@ -16,12 +41,19 @@ def main():
     parser.add_argument("--sdk", required=True, type=Path)
     parser.add_argument("--build", required=True, type=Path)
     parser.add_argument("--work", required=True, type=Path)
+    parser.add_argument("--allow-software-emulation", action="store_true")
     args = parser.parse_args()
     def interrupted(_signum, _frame):
         raise KeyboardInterrupt
     signal.signal(signal.SIGTERM, interrupted)
     if os.environ.get("GITHUB_ACTIONS") != "true" or os.environ.get("TV_NATIVE_OWNED_AVD") != "api31-disposable":
         raise SystemExit("blocked: runtime proof restricted to explicitly selected disposable CI AVD")
+    try:
+        kvm_usable = stat.S_ISCHR(os.stat("/dev/kvm").st_mode) and os.access("/dev/kvm", os.R_OK | os.W_OK)
+    except OSError:
+        kvm_usable = False
+    acceleration, boot_seconds = select_acceleration(kvm_usable, args.allow_software_emulation)
+    print("Owned emulator backend:", "existing KVM" if acceleration == "on" else "unprivileged software", flush=True)
     args.work.mkdir(parents=True, exist_ok=False)
     adb = args.sdk / "platform-tools/adb"
     serial = "emulator-5554"
@@ -70,15 +102,17 @@ def main():
         "hw.keyboard=yes", "hw.gpu.enabled=yes", "hw.gpu.mode=swiftshader_indirect",
         "disk.dataPartition.size=2G", "image.sysdir.1=system-images/android-31/default/x86_64/",
         "tag.id=default", "tag.display=Default", "PlayStore.enabled=false", ""]))
-    log = (args.work / "emulator.log").open("w")
+    log = (args.work / "emulator.log").open("wb")
     emulator = subprocess.Popen([str(args.sdk / "emulator/emulator"), "-avd", "proof", "-port", "5554",
                                  "-no-window", "-no-audio", "-no-boot-anim", "-no-snapshot", "-wipe-data",
-                                 "-gpu", "swiftshader_indirect", "-accel", "on", "-no-metrics"],
-                                env=env, stdout=log, stderr=subprocess.STDOUT)
+                                 "-gpu", "swiftshader_indirect", "-accel", acceleration, "-no-metrics"],
+                                env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, start_new_session=True)
+    log_thread = threading.Thread(target=drain_bounded_log, args=(emulator.stdout, log), daemon=True)
+    log_thread.start()
     try:
-        until = time.monotonic() + 240
+        until = time.monotonic() + boot_seconds
         while True:
-            if emulator.poll() is not None:
+            if leader_exited(emulator):
                 raise RuntimeError("owned emulator exited before boot; see local runner log")
             try:
                 if shell("getprop", "sys.boot_completed", timeout=5).strip() == "1":
@@ -97,7 +131,7 @@ def main():
         def snapshot():
             return tuple(shell("settings", "get", "secure", key).strip() for key in settings)
         initial = snapshot()
-        result = shell("am", "instrument", "-w", "org.tvcontrol.nativehelper/org.tvcontrol.nativeinput.NativeTextInstrumentation")
+        result = shell("am", "instrument", "-w", "org.tvcontrol.nativehelper/org.tvcontrol.nativeinput.NativeTextInstrumentation", timeout=60)
         if "tv_native_text_v1=refused" not in result or snapshot() != initial:
             raise RuntimeError("standalone helper entrypoint/refusal proof failed")
         command([adb, "-s", serial, "install", "-r", str(args.build / "proof.apk")])
@@ -108,7 +142,7 @@ def main():
             if mode == "key-remap":
                 shell("input", "text", "Tanya")
             result = shell("am", "instrument", "-w", "-e", "mode", mode,
-                           "org.tvcontrol.nativehelper/org.tvcontrol.nativeinput.RuntimeProof", timeout=30)
+                           "org.tvcontrol.nativehelper/org.tvcontrol.nativeinput.RuntimeProof", timeout=60)
             if "tv_native_runtime_proof=passed" not in result or "INSTRUMENTATION_FAILED" in result:
                 raise RuntimeError("runtime fixture assertion failed: " + mode)
             if snapshot() != initial:
@@ -127,11 +161,11 @@ def main():
             command([adb, "-s", serial, "emu", "kill"], timeout=5)
         except (subprocess.SubprocessError, RuntimeError):
             pass
-        emulator.terminate()
-        try:
-            emulator.wait(timeout=10)
-        except subprocess.TimeoutExpired:
-            emulator.kill(); emulator.wait(timeout=5)
+        stop_unreaped_group(emulator)
+        log_thread.join(timeout=2)
+        if log_thread.is_alive():
+            raise RuntimeError("owned emulator log drain did not stop within cleanup deadline")
+        emulator.stdout.close()
         log.close()
 
 
