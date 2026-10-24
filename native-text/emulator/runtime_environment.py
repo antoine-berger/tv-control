@@ -120,13 +120,38 @@ def macho_arm64(path):
                for i in range(count))
 
 
-def verify_local_inputs(sdk, build, work, provenance, runtime):
+LAB_PACKAGE = 'org.tvcontrol.nativehelper'
+LAB_COMPONENT = LAB_PACKAGE + '/org.tvcontrol.nativeinput.LabSocketInstrumentation'
+LAB_RECEIPT_KEYS = frozenset(('schema', 'lab_apk_sha256', 'lab_certificate_sha256', 'owner_sha256',
+                             'lab_package', 'instrumentation_component', 'source_commit', 'sdk_provenance_sha256'))
+
+
+def verify_lab_build(build, lab, provenance, owner, source_commit, deadline):
+    receipt = read_json(regular_owned(build / 'lab-build-receipt.json', lab))
+    if (not isinstance(receipt, dict) or receipt.keys() != LAB_RECEIPT_KEYS or type(receipt['schema']) is not int or receipt['schema'] != 1
+            or receipt['lab_package'] != LAB_PACKAGE or receipt['instrumentation_component'] != LAB_COMPONENT
+            or not isinstance(source_commit, str) or not re.fullmatch(r'[0-9a-f]{40}', source_commit)
+            or receipt['source_commit'] != source_commit
+            or any(not isinstance(receipt[key], str) or not re.fullmatch(r'[0-9a-f]{64}', receipt[key])
+                   for key in ('lab_apk_sha256', 'lab_certificate_sha256', 'owner_sha256', 'sdk_provenance_sha256'))):
+        raise RuntimeError('lab build receipt does not match the reviewed closed contract')
+    if (sha256(regular_owned(build / 'lab-helper.apk', lab), deadline) != receipt['lab_apk_sha256']
+            or sha256(owner, deadline) != receipt['owner_sha256']
+            or sha256(provenance, deadline) != receipt['sdk_provenance_sha256']):
+        raise RuntimeError('lab build artifacts or SDK provenance changed')
+    return receipt
+
+
+def verify_local_inputs(sdk, build, work, provenance, runtime, *, scenario="existing-proof",
+                        owner_source=None, source_commit=None):
     """No executable runs here; hashes are checked against the provisioning receipt.
 
     The receipt records verification against official published archive metadata.
     It is trusted local configuration, not a signature/security boundary against
     another process deliberately modifying both the receipt and SDK as this user.
     """
+    if scenario not in ("existing-proof", "lab-connectivity"):
+        raise RuntimeError("unknown owned runtime scenario")
     require_nonreaping_wait()
     sdk, build, work, provenance = map(Path, (sdk, build, work, provenance))
     if any(any(ord(char) < 32 or ord(char) == 127 for char in str(path))
@@ -194,12 +219,17 @@ def verify_local_inputs(sdk, build, work, provenance, runtime):
         raise RuntimeError("SDK image is not the exact AOSP API31 ABI selected")
     if not all(macho_arm64(sdk / binary) for binary in ("platform-tools/adb", "emulator/emulator")):
         raise RuntimeError("SDK runtime executables lack native ARM64 support")
-    artifacts = read_json(regular_owned(build / "build-receipt.json", lab))
-    if artifacts.get("schema") != 1:
-        raise RuntimeError("APK build provenance is absent")
-    for name in ("fixture.apk", "helper.apk", "proof.apk"):
-        if artifacts.get("artifacts", {}).get(name) != sha256(regular_owned(build / name, lab)):
-            raise RuntimeError("APK changed since the reviewed owned build")
+    if scenario == "existing-proof":
+        artifacts = read_json(regular_owned(build / "build-receipt.json", lab))
+        if artifacts.get("schema") != 1:
+            raise RuntimeError("APK build provenance is absent")
+        for name in ("fixture.apk", "helper.apk", "proof.apk"):
+            if artifacts.get("artifacts", {}).get(name) != sha256(regular_owned(build / name, lab)):
+                raise RuntimeError("APK changed since the reviewed owned build")
+    else:
+        if owner_source is None:
+            raise RuntimeError("lab owner source pin is required")
+        verify_lab_build(build, lab, provenance, Path(owner_source), source_commit, deadline)
     if shutil.disk_usage(work.parent).free < 8 * 1024 ** 3:
         raise RuntimeError("owned AVD requires at least eight GiB free")
     return receipt

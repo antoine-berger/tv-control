@@ -389,7 +389,7 @@ After independent review and explicit operator selection, a local invocation is:
 ```sh
 python3.14 native-text/emulator/build_runtime.py \
   --sdk "$LAB/sdk" --java "$JAVA_HOME/bin/java" --out "$LAB/build-1"
-python3.14 native-text/emulator/run_proof.py --mode darwin-local \
+python3.14 native-text/emulator/run_proof.py --scenario existing-proof --mode darwin-local \
   --sdk "$LAB/sdk" --build "$LAB/build-1" \
   --provenance "$LAB/provision_receipt.json" --work "$LAB/run-1"
 ```

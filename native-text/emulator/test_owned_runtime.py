@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Owned host subprocess/mock tests; never execute SDK tools, ADB, or an AVD."""
 import io
+import contextlib
 import json
 import os
 from pathlib import Path
@@ -128,7 +129,7 @@ class MainCleanupTests(unittest.TestCase):
         self.sdk, self.build, self.work = [self.lab / value for value in ("sdk", "build", "fresh-run")]
         self.sdk.mkdir()
         self.build.mkdir()
-        self.args = SimpleNamespace(mode="darwin-local", allow_software_emulation=False,
+        self.args = SimpleNamespace(scenario="existing-proof", mode="darwin-local", allow_software_emulation=False,
                                     sdk=self.sdk, build=self.build, work=self.work,
                                     provenance=self.lab / "fake-receipt.json", deadline_seconds=60)
         self.events = []
@@ -142,11 +143,21 @@ class MainCleanupTests(unittest.TestCase):
         class FakeAdb:
             process = SimpleNamespace(pid=123)
             def __init__(self, *args):
-                pass
+                self.installed = set()
             def start(self):
                 events.append("start-adb")
             def target(self, *words, **kwargs):
                 events.append(tuple(words))
+                if words[-2:] == ("am", "get-current-user"):
+                    return "0\n"
+                if words[0] == "install":
+                    self.installed.add("org.tvcontrol.nativehelper")
+                    return "Success\n"
+                if "packages" in words:
+                    return "package:" + words[-1] + "\n" if words[-1] in self.installed else ""
+                if "uninstall" in words:
+                    self.installed.discard(words[-1])
+                    return "Success\n"
                 values = {"sys.boot_completed": "1", "ro.kernel.qemu": "1", "ro.build.version.sdk": "31",
                           "ro.product.cpu.abi": "arm64-v8a"}
                 return values.get(words[-1], "Success")
@@ -189,6 +200,50 @@ class MainCleanupTests(unittest.TestCase):
         self.assertFalse(receipt["proof_completed"])
         self.assertTrue(receipt["cleanup_verified"])
 
+    def test_connectivity_scenario_never_calls_old_cases_or_fixture_ui_and_cleans_only_helper(self):
+        self.args.scenario = "lab-connectivity"
+        fake = SimpleNamespace(pid=456, stdout=io.BytesIO(b""))
+        pins = SimpleNamespace(apk=self.build / "lab-helper.apk")
+        result = SimpleNamespace(public=lambda: {'status': 'CONNECTED', 'qualified': True})
+        with patch.object(run_proof, "clean_source", return_value="a" * 40), \
+             patch.object(run_proof.Pins, "load", return_value=pins), \
+             patch.object(run_proof, "connectivity", return_value=result) as probe, \
+             patch.object(run_proof.subprocess, "Popen", return_value=fake), \
+             patch.object(run_proof, "stop_unreaped_group"), patch.object(run_proof, "drain_bounded_log"), \
+             patch.object(run_proof, "run_cases") as old:
+            run_proof.main()
+            old.assert_not_called()
+            probe.assert_called_once()
+        self.assertIn(("install", "--user", "0", pins.apk), self.events)
+        mutations = [event for event in self.events if isinstance(event, tuple) and ("uninstall" in event or "input" in event or "start" in event)]
+        self.assertEqual(mutations, [("shell", "-n", "pm", "uninstall", "--user", "0", "org.tvcontrol.nativehelper")])
+        self.assertFalse(any(isinstance(event, tuple) and "org.tvcontrol.fixture" in event for event in self.events))
+        receipt = json.loads((self.work / "runtime-receipt.json").read_text())
+        self.assertTrue(receipt["proof_completed"])
+        self.assertTrue(receipt["cleanup_verified"])
+        self.assertEqual(receipt["scenario"], "lab-connectivity")
+
+    def test_refused_owned_package_cleanup_is_not_reported_success(self):
+        self.args.scenario = "lab-connectivity"
+        original = self.fake_adb.target
+        def target(adb, *words, **kwargs):
+            if "uninstall" in words:
+                self.events.append(tuple(words))
+                return "Failure [synthetic refusal]\n"
+            return original(adb, *words, **kwargs)
+        fake = SimpleNamespace(pid=456, stdout=io.BytesIO(b""))
+        with patch.object(run_proof, "clean_source", return_value="a" * 40), \
+             patch.object(run_proof.Pins, "load", return_value=SimpleNamespace(apk=self.build / "lab-helper.apk")), \
+             patch.object(run_proof, "connectivity", return_value=SimpleNamespace(public=lambda: {})), \
+             patch.object(self.fake_adb, "target", target), \
+             patch.object(run_proof.subprocess, "Popen", return_value=fake), \
+             patch.object(run_proof, "stop_unreaped_group"), patch.object(run_proof, "drain_bounded_log"):
+            with self.assertRaisesRegex(RuntimeError, "cleanup unverified"):
+                run_proof.main()
+        receipt = json.loads((self.work / "runtime-receipt.json").read_text())
+        self.assertFalse(receipt["cleanup_verified"])
+        self.assertIn("owned-package-cleanup", receipt["cleanup_failures"])
+
     def test_remaining_listener_is_explicit_failure_without_unowned_pid_signals(self):
         with patch.object(self.fake_adb, "start", side_effect=RuntimeError("fixture startup failed")), \
              patch.object(run_proof, "port_closed", return_value=False), \
@@ -209,6 +264,32 @@ class MainCleanupTests(unittest.TestCase):
         self.assertFalse(receipt["cleanup_verified"])
         self.assertIn("adb-group-or-listener", receipt["cleanup_failures"])
         self.assertIn("close-ports", self.events)
+
+
+class ExplicitScenarioTests(unittest.TestCase):
+    def test_cli_requires_explicit_scenario_and_never_selects_from_files(self):
+        argv = ['run_proof.py', '--mode', 'darwin-local', '--sdk', '/synthetic/sdk', '--build', '/synthetic/build',
+                '--work', '/synthetic/new', '--provenance', '/synthetic/receipt']
+        with patch.object(sys, 'argv', argv), contextlib.redirect_stderr(io.StringIO()):
+            with self.assertRaises(SystemExit) as error:
+                run_proof.arguments()
+            self.assertEqual(error.exception.code, 2)
+        with patch.object(sys, 'argv', argv + ['--scenario', 'lab-connectivity']):
+            self.assertEqual(run_proof.arguments().scenario, 'lab-connectivity')
+        with patch.object(sys, 'argv', argv + ['--scenario', 'auto']), contextlib.redirect_stderr(io.StringIO()):
+            with self.assertRaises(SystemExit):
+                run_proof.arguments()
+
+    def test_clean_source_does_not_accept_dirty_or_malformed_identity(self):
+        with patch.object(run_proof, 'run_command', return_value='?? synthetic-untracked') as command:
+            with self.assertRaisesRegex(RuntimeError, 'clean source'):
+                run_proof.clean_source()
+            self.assertEqual(command.call_count, 1)
+        with patch.object(run_proof, 'run_command', side_effect=['', 'bad']):
+            with self.assertRaisesRegex(RuntimeError, 'identity'):
+                run_proof.clean_source()
+        with patch.object(run_proof, 'run_command', side_effect=['', 'a' * 40 + '\n']):
+            self.assertEqual(run_proof.clean_source(), 'a' * 40)
 
 
 if __name__ == "__main__":

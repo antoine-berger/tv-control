@@ -56,8 +56,8 @@ class RuntimeEnvironmentTests(unittest.TestCase):
     def save(self):
         self.receipt.write_text(json.dumps(self.metadata))
 
-    def verify(self):
-        return verify_local_inputs(self.sdk, self.build, self.work, self.receipt, self.runtime)
+    def verify(self, **kwargs):
+        return verify_local_inputs(self.sdk, self.build, self.work, self.receipt, self.runtime, **kwargs)
 
     def test_arm64_local_mode_is_explicit_and_never_uses_software_or_fake_ci(self):
         for system, machine, software in [("Linux", "arm64", False), ("Darwin", "x86_64", False), ("Darwin", "arm64", True)]:
@@ -78,6 +78,40 @@ class RuntimeEnvironmentTests(unittest.TestCase):
         for required in ("abi.type=arm64-v8a", "hw.cpu.arch=arm64", "hw.audioOutput=no", "hw.audioInput=no"):
             self.assertIn(required, config)
         self.assertNotIn("x86_64", config)
+
+    def lab_build(self):
+        from runtime_environment import LAB_COMPONENT, LAB_PACKAGE
+        for name in ("fixture.apk", "helper.apk", "proof.apk", "build-receipt.json"):
+            (self.build / name).unlink()
+        apk, owner = self.build / "lab-helper.apk", self.lab / "owner.sh"
+        apk.write_bytes(b"synthetic signed lab APK")
+        owner.write_bytes(b"synthetic pinned owner")
+        digest = lambda path: hashlib.sha256(path.read_bytes()).hexdigest()
+        receipt = dict(schema=1, lab_apk_sha256=digest(apk), lab_certificate_sha256="c" * 64,
+                       owner_sha256=digest(owner), lab_package=LAB_PACKAGE, instrumentation_component=LAB_COMPONENT,
+                       source_commit="a" * 40, sdk_provenance_sha256=digest(self.receipt))
+        (self.build / "lab-build-receipt.json").write_text(json.dumps(receipt))
+        return dict(scenario="lab-connectivity", owner_source=owner, source_commit="a" * 40)
+
+    def test_lab_scenario_accepts_only_its_closed_receipt_without_legacy_apks(self):
+        lab = self.lab_build()
+        self.assertEqual(self.verify(**lab)["source_revision"], 3)
+        self.assertFalse(self.work.exists())
+        with self.assertRaises(FileNotFoundError):
+            self.verify()  # Never falls back from the explicit legacy scenario.
+        with self.assertRaisesRegex(RuntimeError, "unknown.*scenario"):
+            self.verify(scenario="auto")
+
+    def test_lab_scenario_preserves_image_and_artifact_pins_without_fallback(self):
+        lab = self.lab_build()
+        owner = lab["owner_source"]
+        owner.write_bytes(b"changed")
+        with self.assertRaisesRegex(RuntimeError, "artifacts.*changed"):
+            self.verify(**lab)
+        owner.write_bytes(b"synthetic pinned owner")
+        (self.sdk / "emulator/emulator").write_bytes(b"changed")
+        with self.assertRaisesRegex(RuntimeError, "changed"):
+            self.verify(**lab)
 
     def test_modified_binary_and_non_arm64_executable_fail(self):
         path = self.sdk / "emulator/emulator"

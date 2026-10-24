@@ -70,7 +70,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          python3 native-text/emulator/run_proof.py --mode ci-linux \
+          python3 native-text/emulator/run_proof.py --scenario existing-proof --mode ci-linux \
             --sdk "$RUNNER_TEMP/native-runtime-sdk" \
             --build "$RUNNER_TEMP/native-runtime-build" \
             --work "$RUNNER_TEMP/native-runtime-avd" \
