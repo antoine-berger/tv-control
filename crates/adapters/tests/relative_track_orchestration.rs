@@ -423,3 +423,88 @@ fn native_fraction_can_verify_only_after_exact_resolved_target_is_observed() {
         assert_eq!(s.devices.applied.lock().unwrap().len(), 1);
     }
 }
+
+fn assert_raw_relative_result(
+    before_ticks: u64,
+    delta_ms: i64,
+    tolerance_ms: u64,
+    after_ticks: u64,
+    expected: Status,
+) {
+    let mut before = state(0);
+    before.position_ticks = Some(before_ticks);
+    let mut after = state(0);
+    after.position_ticks = Some(after_ticks);
+    let mut s = service(vec![before, after]);
+    s.policy.resume_position_tolerance_ms = tolerance_ms;
+    let result = s.execute(req(seek(delta_ms)), &CancelFlag::default());
+    assert_eq!(
+        result.status, expected,
+        "before={before_ticks} delta={delta_ms} tolerance={tolerance_ms} after={after_ticks}: {}",
+        result.code
+    );
+    if expected == Status::OutcomeUnknown {
+        let mut replay = req(seek(delta_ms));
+        replay.expires_at_unix_ms = s.clock.unix_ms() + 500;
+        let recovered = s.execute(replay, &CancelFlag::default());
+        assert!(recovered.cached);
+        assert_eq!(recovered.status, Status::OutcomeUnknown);
+    }
+    let target =
+        (i128::from(before_ticks / MEDIA_TICKS_PER_MILLISECOND) + i128::from(delta_ms)) as u64;
+    assert_eq!(
+        s.devices.applied.lock().unwrap().as_slice(),
+        &[Action::SeekMedia {
+            item_id: "item".into(),
+            source_id: "source".into(),
+            position_ms: target,
+        }]
+    );
+}
+
+#[test]
+fn one_native_tick_cannot_validate_a_seek_above_tolerance_boundary() {
+    assert_raw_relative_result(50_009_999, 101, 100, 50_010_000, Status::OutcomeUnknown);
+}
+
+#[test]
+fn raw_displacement_minimum_is_inclusive_at_t_plus_one_and_twice_tolerance() {
+    for (before, delta, after, expected) in [
+        (50_009_999, 101, 50_019_998, Status::OutcomeUnknown), // 9999 ticks, below 1 ms.
+        (50_009_999, 101, 50_019_999, Status::Verified),       // Exactly 1 ms.
+        (50_009_999, 200, 51_009_998, Status::OutcomeUnknown), // Below delta - tolerance.
+        (50_009_999, 200, 51_009_999, Status::Verified),       // Exactly 100 ms.
+        (50_000_000, -101, 49_990_001, Status::OutcomeUnknown),
+        (50_000_000, -101, 49_990_000, Status::Verified),
+        (50_000_001, -101, 49_990_000, Status::Verified), // Negative seek + native fraction.
+        (50_009_999, -200, 48_000_000, Status::Verified), // Exact meaningful target.
+        (50_009_999, 200, 52_000_000, Status::Verified),
+    ] {
+        assert_raw_relative_result(before, delta, 100, after, expected);
+    }
+}
+
+#[test]
+fn zero_tolerance_requires_full_raw_millisecond_displacement() {
+    for (before, delta, after, expected) in [
+        (50_009_999, 1, 50_010_000, Status::OutcomeUnknown),
+        (50_000_000, 1, 50_010_000, Status::Verified),
+        (50_000_001, -1, 49_990_000, Status::Verified),
+        (50_005_000, 50, 50_500_000, Status::OutcomeUnknown),
+        (50_005_000, -50, 49_500_000, Status::Verified),
+    ] {
+        assert_raw_relative_result(before, delta, 0, after, expected);
+    }
+}
+
+#[test]
+fn maximum_tolerance_keeps_one_millisecond_floor_without_overflow() {
+    for (before, delta, after, expected) in [
+        (50_009_999, 1, 50_010_000, Status::OutcomeUnknown),
+        (50_000_000, 1, 50_010_000, Status::Verified),
+        (50_005_000, 50, 50_500_000, Status::Verified),
+        (50_005_000, -50, 49_500_000, Status::Verified),
+    ] {
+        assert_raw_relative_result(before, delta, u64::MAX, after, expected);
+    }
+}

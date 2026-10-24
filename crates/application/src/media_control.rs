@@ -128,6 +128,14 @@ pub(super) fn relative_verified(
     let displacement = delta_ms
         .unsigned_abs()
         .saturating_mul(MEDIA_TICKS_PER_MILLISECOND);
+    // Compare raw native positions before any millisecond flooring. A tolerance
+    // window must not turn a sub-ms boundary crossing into a verified seek.
+    let minimum_displacement = displacement
+        .saturating_sub(tolerance)
+        .max(MEDIA_TICKS_PER_MILLISECOND);
+    if position.abs_diff(initial) < minimum_displacement {
+        return false;
+    }
     // A broad tolerance must not swallow a small request. If native precision
     // cannot expose the exact target in this case, the outcome stays unknown.
     let precision = if displacement <= tolerance {

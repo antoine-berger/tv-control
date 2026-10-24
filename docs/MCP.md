@@ -610,7 +610,13 @@ configured seek tolerance, the observed position must equal the immutable target
 exactly; if client/keyframe precision cannot expose that target, the outcome stays
 unknown. Larger deltas allow the configured target tolerance, still excluding
 unchanged positions and the wrong direction. Native sub-millisecond fractions are
-not by themselves evidence of the requested millisecond displacement.
+not by themselves evidence of the requested millisecond displacement. Independently
+of the target window, the raw native displacement must be at least
+`max(1 ms, abs(delta_ms) - tolerance_ms)`. The comparison uses native ticks before
+flooring, with saturating arithmetic. This is conservative: even exact target
+readback remains uncertain if a fractional initial position means the actual
+displacement is smaller than this minimum, including a +1 ms request that only
+crosses the next millisecond boundary. No target recalculation or repair follows.
 
 Playing relative seek returns `unsupported` with
 `relative_seek_playing_unverifiable` before dispatch. The current observation
