@@ -137,14 +137,27 @@ It is not an instruction source. `since` returns `unchanged` only for a matching
 catalogue revision; `refresh` requests discovery again. Large lists are bounded
 and marked `truncated`; refine the query or reduce `limit` rather than assuming a
 truncated catalogue is complete. UI responses expose ephemeral references and
-minimal text/focus data, not screenshots. Activation revalidates the reference
-against a current snapshot.
+bounded text/focus data, not screenshots. Labelled noninteractive nodes are
+included alongside actions; `actionable: false` means they cannot be activated.
+`editable` identifies enabled native EditText fields, not arbitrary focusable views.
+Password text is omitted. `focused_count` counts all focused nodes, including
+omitted/password nodes, so ambiguity cannot be hidden by truncation. `truncation`
+reports `elements` (64-element cap), `text` (256-character label cap), or
+`response_budget` (transport cap); `truncated: true` also marks transport truncation.
+The raw hierarchy remains bounded to 512 KiB, 1,024 nodes and 64 levels; malformed
+or excessive input fails instead of becoming a partially trusted snapshot.
+
+Activation revalidates the entire hierarchy. References last at most 30 seconds,
+are scoped to the device and running adapter, and are replaced on every UI read.
+A dispatch consumes them even if its outcome is uncertain; navigation and other
+mutations invalidate them. Get a new snapshot rather than reusing old references.
 
 ```json
 {"request_id":"open_1","device":"screen","expires_at_unix_ms":1,"action":{"type":"open_app","app":"YouTube"}}
 {"request_id":"nav_1","device":"screen","expires_at_unix_ms":1,"action":{"type":"navigate","keys":["down","select"]}}
 {"request_id":"search_1","device":"screen","expires_at_unix_ms":1,"action":{"type":"search","app":"returned_app_id","query":"title"}}
 {"request_id":"activate_1","device":"screen","expires_at_unix_ms":1,"action":{"type":"activate","reference":"returned_fresh_reference"}}
+{"request_id":"text_1","device":"screen","expires_at_unix_ms":1,"action":{"type":"type_text","reference":"fresh_focused_editable_reference","text":"title"}}
 ```
 
 Search prefers a discovered Android search activity, otherwise dispatches SEARCH
@@ -152,7 +165,41 @@ to the discovered launcher. Apps may ignore it: inspect UI or an explicit captur
 before claiming search results. `open_url` takes `app` and a bounded HTTP(S) `url`,
 checks a handler in that discovered package, and dispatches ACTION_VIEW without
 a global chooser. Credentials, control characters and non-HTTP schemes are rejected.
-Navigation/search/URL dispatch does not prove that a particular
+For apps with a documented web search URL, explicit `open_url` is another route:
+
+```json
+{"request_id":"url_search_1","device":"screen","expires_at_unix_ms":1,"action":{"type":"open_url","app":"returned_app_id","url":"https://www.youtube.com/results?search_query=example%20title"}}
+```
+
+Use the discovered target app, not an assumed package or a global browser, and
+percent-encode the query as URL data (for example a literal `&` becomes `%26`).
+This is a caller-selected URL, not an automatic fallback or a promise that every
+app/version supports that URL. Handler resolution must succeed in the selected
+package. Inspect the resulting UI or explicit screenshot before reporting results;
+opening a results page does not authorize choosing a result or starting playback.
+The controller never repeats a failed/uncertain SEARCH as a URL behind the caller's
+back. See the [exploratory evidence limits](ACCEPTANCE.md#exploratory-url-search-evidence).
+
+If SEARCH is ignored and there is no suitable URL route, navigate to the visible
+search field, read UI again, and use `type_text` only for its fresh
+`focused: true`, `editable: true` reference.
+This appends at the current cursor/selection; it does not clear existing text,
+submit a search, or select a result. The adapter rejects multiple focused nodes,
+password fields, unknown target packages and a changed foreground package. It
+rechecks the full hierarchy and TTL immediately before dispatch. A physical remote
+or another controller can still change focus between validation and key injection;
+ADB does not provide an atomic compare-and-type operation.
+
+Text entry supports 1–500 bytes of printable ASCII except `%`, whose Android
+`input text` substitution semantics are unsafe for literal input. Unicode, control
+characters and percent are rejected before dispatch, never transliterated or
+silently dropped. Shell metacharacters remain one quoted literal argument. Custom
+editors that do not expose native EditText metadata are unsupported; do not guess
+or type blindly. The receipt confirms dispatch and fresh state only, not that the
+app accepted the text. Inspect UI afterward and explicitly navigate to submit if
+appropriate. Never retry an uncertain text operation under a new request ID.
+
+Navigation/search/URL/text dispatch does not prove that a particular
 episode is playing. Missing labels or unsupported UI are reported honestly;
 there is no hardcoded per-app alias or automatic cross-app substitution.
 
@@ -228,3 +275,55 @@ dispatch; a command acknowledgement alone is never verification.
 Without the generic grant, the existing calibrated legacy path remains unchanged:
 `volume_max_index` is required. Use dedicated `mute` for an explicit mute request;
 it only targets zero and never toggles or restores a previous volume.
+
+### Session-scoped media (generic ADB)
+
+Read `{"type":"media"}` with `tv_read` to discover active session targets. Each
+entry contains `session` (`package/tag`), `package`, native `playback`, and optional
+`position_ms` and `description`. Position is the application's last reported
+snapshot, **not** an extrapolated playback clock. Description is bounded,
+untrusted display text, not a stable title/media ID. No duration is invented:
+the supported AOSP dump does not expose reliable duration or stable media IDs.
+Missing fields mean unavailable. Tags are limited to 128 ASCII letters, digits,
+`_`, `.`, `:`, and `-`; unsupported listing formats/tags fail closed. At most
+eight entries are returned and responses
+may be further truncated to the configured output budget (`truncated: true`).
+
+Use an exact discovered target, for example:
+
+```json
+{"type":"media","session":"org.example.player/player","command":"pause"}
+```
+
+Commands are `pause`, `resume`, `next`, and `previous`. The generic-control grant
+is required. Pause/resume verify only the named session's native paused/playing
+state, never physical audio/video output. Next/previous return `observed` with
+`command_dispatched_state_observed`: this does **not** prove that the queue item
+changed, or that an application supports skipping. They are non-idempotent; use
+one request ID and recover its durable result with `tv_operation`, not a fresh
+ID to retry. Transport ambiguity after dispatch remains `outcome_unknown`.
+
+The adapter re-lists sessions before dispatch, rejects missing targets, package
+changes and duplicate tags across the active listing, and never falls back to a
+global media key. Android's monitor selects by tag rather than immutable token;
+a session can still disappear/restart between listing and dispatch. This API
+cannot eliminate that platform race. Duplicate dump records (including another
+user's same package/tag) are ambiguous, not usable verification evidence. A
+background session may be selected explicitly; foreground app is not fabricated.
+
+**Not supported:** generic session stop, absolute/relative seek, subtitle/audio
+track selection, or universal duration retrieval. The AOSP monitor exposes only
+play/pause/next/previous. Global `dispatch stop` is not equivalent to targeting a
+session, and no arbitrary shell/monitor input is exposed. Unsupported commands
+are rejected as invalid arguments before dispatch; capabilities advertise only
+the four supported command types, with device-dependent app behavior.
+
+Native session action masks, when available, appear as `supported_commands` in
+`read: {"type":"media"}`. An empty list means none of the implemented commands
+are advertised; an omitted field means unknown, not unsupported. Before dispatch,
+the controller re-reads the exact selected session and refuses a known-unsupported
+command with `media_command_unsupported`. This adds a read; it is not a measured
+chat-to-TV latency guarantee. The masks follow Android's
+[PlaybackState action constants](https://developer.android.com/reference/android/media/session/PlaybackState),
+not app names. Missing masks remain device-dependent and never make dispatch proof
+of effect. Already-satisfied pause/resume requests can remain verified no-ops.

@@ -15,16 +15,46 @@ struct Mutation {
 #[derive(Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 enum Action {
-    OpenApp { app: String },
-    OpenUrl { app: String, url: String },
+    OpenApp {
+        app: String,
+    },
+    OpenUrl {
+        app: String,
+        url: String,
+    },
     Wake {},
     Mute {},
-    SetVolume { index: u16 },
+    SetVolume {
+        index: u16,
+    },
     Pause {},
     Resume {},
-    Navigate { keys: Vec<WireKey> },
-    Search { app: String, query: String },
-    Activate { reference: String },
+    Media {
+        session: String,
+        command: WireMediaCommand,
+    },
+    Navigate {
+        keys: Vec<WireKey>,
+    },
+    Search {
+        app: String,
+        query: String,
+    },
+    Activate {
+        reference: String,
+    },
+    TypeText {
+        reference: String,
+        text: String,
+    },
+}
+#[derive(Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum WireMediaCommand {
+    Pause,
+    Resume,
+    Next,
+    Previous,
 }
 #[derive(Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -47,6 +77,7 @@ struct Reading {
 #[derive(Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 enum ReadKind {
+    Media {},
     State {},
     Volume {},
     Apps {
@@ -81,7 +112,16 @@ pub fn routes_generic(config: &tv_adapters::config::Config, name: &str, args: &V
     let action = args.pointer("/action/type").and_then(Value::as_str);
     if matches!(
         action,
-        Some("mute" | "wake" | "navigate" | "search" | "open_url" | "activate")
+        Some(
+            "mute"
+                | "wake"
+                | "navigate"
+                | "search"
+                | "open_url"
+                | "activate"
+                | "media"
+                | "type_text"
+        )
     ) {
         return true;
     }
@@ -140,6 +180,7 @@ impl Call {
                     device: r.device,
                     expires_at_unix_ms: r.expires_at_unix_ms,
                     read: match r.read {
+                        ReadKind::Media {} => Read::Media,
                         ReadKind::State {} => Read::State,
                         ReadKind::Volume {} => Read::Volume,
                         ReadKind::Apps {
@@ -182,6 +223,15 @@ impl Call {
                         Action::SetVolume { index } => Intent::SetVolume { index },
                         Action::Pause {} => Intent::Pause,
                         Action::Resume {} => Intent::Resume,
+                        Action::Media { session, command } => Intent::Media {
+                            session,
+                            command: match command {
+                                WireMediaCommand::Pause => MediaCommand::Pause,
+                                WireMediaCommand::Resume => MediaCommand::Resume,
+                                WireMediaCommand::Next => MediaCommand::Next,
+                                WireMediaCommand::Previous => MediaCommand::Previous,
+                            },
+                        },
                         Action::Navigate { keys } => Intent::Navigate {
                             keys: keys
                                 .into_iter()
@@ -198,6 +248,9 @@ impl Call {
                         },
                         Action::Search { app, query } => Intent::Search { app, query },
                         Action::Activate { reference } => Intent::Activate { reference },
+                        Action::TypeText { reference, text } => {
+                            Intent::TypeText { reference, text }
+                        }
                     },
                 }))
             }
@@ -222,6 +275,17 @@ impl Call {
                 Ok(data) => (
                     match data {
                         Data::State(s) => json!({"state": state(&s)}),
+                        Data::Media {
+                            sessions,
+                            truncated,
+                        } => {
+                            let mut value =
+                                json!({"sessions": sessions.iter().map(media).collect::<Vec<_>>()});
+                            if truncated {
+                                value["truncated"] = json!(true);
+                            }
+                            value
+                        }
                         Data::Screenshot(s) => {
                             return Response {
                                 value: json!({"width":s.width,"height":s.height,"format":"png"}),
@@ -247,7 +311,7 @@ impl Call {
                             value
                         }
                         Data::Ui(ui) => {
-                            json!({"revision":ui.revision,"elements":ui.elements.into_iter().map(|e|json!({"ref":e.reference,"text":e.text,"role":e.role,"focused":e.focused})).collect::<Vec<_>>()})
+                            json!({"revision":ui.revision,"truncation":ui.truncation.iter().map(|reason| match reason { UiTruncation::Elements=>"elements", UiTruncation::Text=>"text" }).collect::<Vec<_>>(),"focused_count":ui.focused_count,"elements":ui.elements.into_iter().map(|e|json!({"ref":e.reference,"text":e.text,"role":e.role,"focused":e.focused,"actionable":e.actionable,"editable":e.editable})).collect::<Vec<_>>()})
                         }
                     },
                     false,
@@ -273,6 +337,36 @@ impl Call {
             failed,
             image: None,
         }
+    }
+}
+fn media(s: &MediaSession) -> Value {
+    let mut v = json!({"session":s.session,"package":s.package,"playback": playback(s.playback)});
+    if let Some(commands) = &s.supported_commands {
+        v["supported_commands"] = json!(commands
+            .iter()
+            .map(|command| match command {
+                MediaCommand::Pause => "pause",
+                MediaCommand::Resume => "resume",
+                MediaCommand::Next => "next",
+                MediaCommand::Previous => "previous",
+            })
+            .collect::<Vec<_>>());
+    }
+    if let Some(position) = s.position_ms {
+        v["position_ms"] = json!(position);
+    }
+    if let Some(description) = &s.description {
+        v["description"] = json!(description);
+    }
+    v
+}
+fn playback(p: Playback) -> &'static str {
+    match p {
+        Playback::Playing => "playing",
+        Playback::Paused => "paused",
+        Playback::Stopped => "stopped",
+        Playback::Buffering => "buffering",
+        Playback::Unknown => "unknown",
     }
 }
 fn app(a: &App) -> Value {
@@ -334,7 +428,7 @@ pub fn extend_tools(tools: &mut Value) {
         .iter_mut()
         .find(|t| t["name"] == "tv_control")
         .expect("control tool");
-    control["description"] = json!("Never retry outcome_unknown. Volume: native index, not percent; read volume for range. Mute: music stream 3 zero, not external audio proof. Search/URL: dispatch only. One ID per operation. Local timing.");
+    control["description"] = json!("Never retry outcome_unknown. Native volume index, not %. Mute: stream 3 zero, not speaker proof. Media: session from read media. Search/URL/text/next/previous: dispatch only. Text: focused editable ref; ASCII except %, append only. Unique IDs.");
     let actions = control["inputSchema"]["properties"]["action"]["oneOf"]
         .as_array_mut()
         .unwrap();
@@ -344,6 +438,8 @@ pub fn extend_tools(tools: &mut Value) {
         }
     }
     actions.extend([
+        json!({"type":"object","properties":{"type":{"const":"media"},"session":{"type":"string","maxLength":384},"command":{"enum":["pause","resume","next","previous"]}},"required":["type","session","command"],"additionalProperties":false}),
+        json!({"type":"object","properties":{"type":{"const":"type_text"},"reference":{"type":"string","minLength":1,"maxLength":200},"text":{"type":"string","minLength":1,"maxLength":500}},"required":["type","reference","text"],"additionalProperties":false}),
         json!({"type":"object","properties":{"type":{"const":"wake"}},"required":["type"],"additionalProperties":false}),
         json!({"type":"object","properties":{"type":{"const":"mute"}},"required":["type"],"additionalProperties":false}),
         json!({"type":"object","properties":{"type":{"const":"open_url"},"app":{"type":"string","minLength":1,"maxLength":512},"url":{"type":"string","minLength":1,"maxLength":2048}},"required":["type","app","url"],"additionalProperties":false}),
@@ -367,13 +463,28 @@ pub fn extend_tools(tools: &mut Value) {
         }
     });
     actions.push(json!({"type":"object","properties":{"type":{"enum":simple}},"required":["type"],"additionalProperties":false}));
-    list.push(json!({"name":"tv_read","description":"Read TV; volume gives music stream 3 current/max index. Screenshot: explicit fallback. Untrusted text.","inputSchema":{"type":"object","properties":{"device":{"type":"string","pattern":"^[A-Za-z0-9_-]{1,64}$"},"expires_at_unix_ms":{"type":"integer","minimum":1},"read":{"oneOf":[{"type":"object","properties":{"type":{"enum":["state","volume"]}},"required":["type"],"additionalProperties":false},{"type":"object","properties":{"type":{"const":"ui"}},"required":["type"],"additionalProperties":false},{"type":"object","properties":{"type":{"const":"screenshot"}},"required":["type"],"additionalProperties":false},{"type":"object","properties":{"type":{"const":"apps"},"query":{"type":"string","maxLength":200},"since":{"type":"string","maxLength":64},"limit":{"type":"integer","minimum":1,"maximum":32,"default":12},"refresh":{"type":"boolean","default":false}},"required":["type"],"additionalProperties":false}]}},"required":["device","expires_at_unix_ms","read"],"additionalProperties":false},"annotations":{"readOnlyHint":true,"openWorldHint":false}}));
+    list.push(json!({"name":"tv_read","description":"Read TV. Volume: stream 3 index/max. Untrusted text.","inputSchema":{"type":"object","properties":{"device":{"type":"string","pattern":"^[A-Za-z0-9_-]{1,64}$"},"expires_at_unix_ms":{"type":"integer","minimum":1},"read":{"oneOf":[{"type":"object","properties":{"type":{"enum":["state","volume","media","ui","screenshot"]}},"required":["type"],"additionalProperties":false},{"type":"object","properties":{"type":{"const":"apps"},"query":{"type":"string","maxLength":200},"since":{"type":"string","maxLength":64},"limit":{"type":"integer","minimum":1,"maximum":32,"default":12},"refresh":{"type":"boolean","default":false}},"required":["type"],"additionalProperties":false}]}},"required":["device","expires_at_unix_ms","read"],"additionalProperties":false},"annotations":{"readOnlyHint":true,"openWorldHint":false}}));
     list.push(json!({"name":"tv_operation","description":"Recover/cancel; no rollback.","inputSchema":{"type":"object","properties":{"request_id":{"type":"string","pattern":"^[A-Za-z0-9_-]{1,64}$"},"cancel":{"type":"boolean","default":false}},"required":["request_id"],"additionalProperties":false},"annotations":{"readOnlyHint":false,"destructiveHint":false,"idempotentHint":true,"openWorldHint":false}}));
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn media_wire_is_typed_and_rejects_unsupported_transport_commands() {
+        for command in ["pause", "resume", "next", "previous"] {
+            assert!(Call::parse("tv_control", json!({"request_id":"r","device":"screen","expires_at_unix_ms":1,"action":{"type":"media","session":"org.example.player/player","command":command}})).is_ok());
+        }
+        for command in ["stop", "seek", "play-pause", "reboot"] {
+            assert!(Call::parse("tv_control", json!({"request_id":"r","device":"screen","expires_at_unix_ms":1,"action":{"type":"media","session":"org.example.player/player","command":command}})).is_err());
+        }
+        assert!(Call::parse(
+            "tv_read",
+            json!({"device":"screen","expires_at_unix_ms":1,"read":{"type":"media"}})
+        )
+        .is_ok());
+        assert!(Call::parse("tv_control", json!({"request_id":"r","device":"screen","expires_at_unix_ms":1,"action":{"type":"media","session":"org.example.player/player","command":"next","position_ms":10}})).is_err());
+    }
     #[test]
     fn wire_rejects_unknown_actions_and_fields() {
         assert!(Call::parse("tv_control", json!({"request_id":"r","device":"screen","expires_at_unix_ms":1,"action":{"type":"legacy","action":"anything"}})).is_err());
@@ -385,7 +496,7 @@ mod tests {
         .is_err());
     }
     #[test]
-    fn schema_stays_inside_minimum_transport_budget() {
+    fn individual_schemas_fit_minimum_paginated_transport_budget() {
         let mut tools = crate::mcp::tools();
         extend_tools(&mut tools);
         let control = tools["tools"]
@@ -402,12 +513,17 @@ mod tests {
                 .any(|action| action["properties"]["type"]["const"] == "observe"),
             "onboarding probe requires the legacy observe discriminator"
         );
-        let frame = json!({"jsonrpc":"2.0","id":1,"result":tools});
-        assert!(
-            frame.to_string().len() <= 4096,
-            "schema length {}",
-            frame.to_string().len()
-        );
+        // The catalog may grow across pages; every individual tool must still
+        // fit the minimum configured frame, including cursor/newline overhead.
+        for tool in tools["tools"].as_array().unwrap() {
+            let frame =
+                json!({"jsonrpc":"2.0","id":1,"result":{"tools":[tool],"nextCursor":"999"}});
+            assert!(
+                frame.to_string().len() < 4096,
+                "tool schema too large: {}",
+                tool["name"]
+            );
+        }
     }
     #[test]
     fn legacy_aliases_keep_their_scope_until_generic_permission_is_granted() {

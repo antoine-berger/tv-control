@@ -223,7 +223,7 @@ impl<D: DeviceControl, M: MediaCatalogue, S: StateStore, C: Clock> Control for S
                     match e.code {
                         "cancelled" => Status::Cancelled,
                         "expired" => Status::Expired,
-                        "unsupported" => Status::Unsupported,
+                        "unsupported" | "media_command_unsupported" => Status::Unsupported,
                         _ => Status::Failed,
                     }
                 };

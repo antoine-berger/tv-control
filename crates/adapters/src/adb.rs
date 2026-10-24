@@ -7,6 +7,7 @@ use tv_application::Context;
 use tv_domain::*;
 
 mod apps;
+pub(crate) mod media;
 
 pub struct Adb<'a> {
     config: &'a Config,
@@ -241,31 +242,16 @@ impl<'a> Adb<'a> {
                     false,
                     ctx,
                 )?;
-                let all_tags: Vec<_> = output
-                    .lines()
-                    .filter_map(|line| {
-                        let (tag, pkg) =
-                            line.trim().strip_prefix("tag=")?.split_once(", package=")?;
-                        (!tag.is_empty()
-                            && tag.len() <= 128
-                            && tag
-                                .bytes()
-                                .all(|b| b.is_ascii_alphanumeric() || b"_.:-".contains(&b)))
-                        .then_some((tag, pkg.trim()))
-                    })
-                    .collect();
-                let mut tags = all_tags
-                    .iter()
-                    .filter_map(|(tag, pkg)| (*pkg == package).then_some(*tag));
-                let tag = tags
-                    .next()
-                    .ok_or(Failure::before("media_session_not_found"))?;
-                if tags.next().is_some() {
-                    return Err(Failure::before("media_session_ambiguous"));
-                }
-                if all_tags.iter().filter(|(other, _)| *other == tag).count() != 1 {
-                    return Err(Failure::before("media_tag_ambiguous"));
-                }
+                let sessions = media::sessions(&output)?;
+                let tag = media::unique_for_package(&sessions, package)?;
+                let raw = self.shell(alias, &["dumpsys", "media_session"], &[], false, ctx)?;
+                let state = media::snapshot(&raw, tag, package)?;
+                let command = if *action == Action::Pause {
+                    generic::MediaCommand::Pause
+                } else {
+                    generic::MediaCommand::Resume
+                };
+                media::require_command(&state, &command)?;
                 let command = if *action == Action::Pause {
                     b"pause\nq\n".as_slice()
                 } else {
@@ -306,42 +292,9 @@ impl<'a> Adb<'a> {
     }
 }
 pub fn parse_playback(raw: &str, package: &str) -> PortResult<Playback> {
-    let mut current = false;
-    let mut states = Vec::new();
-    for line in raw.lines() {
-        if let Some(value) = line.trim().strip_prefix("package=") {
-            current = value.split_whitespace().next() == Some(package);
-        }
-        if current {
-            if let Some((_, state)) = line.split_once("state=PlaybackState {state=") {
-                states.push(match state.split(|c: char| !c.is_ascii_digit()).next() {
-                    Some("2") => Playback::Paused,
-                    Some("3")
-                        if state
-                            .split_once("speed=")
-                            .and_then(|(_, s)| {
-                                s.split(|c: char| !c.is_ascii_digit() && c != '.' && c != '-')
-                                    .next()
-                            })
-                            .and_then(|s| s.parse::<f32>().ok())
-                            .is_some_and(|s| s > 0.0) =>
-                    {
-                        Playback::Playing
-                    }
-                    Some("6") => Playback::Buffering,
-                    Some("0" | "1") => Playback::Stopped,
-                    _ => Playback::Unknown,
-                });
-                current = false;
-            }
-        }
-    }
-    match states.as_slice() {
-        [] => Ok(Playback::Unknown),
-        [state] => Ok(*state),
-        _ => Err(Failure::before("media_session_ambiguous")),
-    }
+    media::package_playback(raw, package)
 }
+
 pub fn parse_foreground(raw: &str) -> PortResult<Option<String>> {
     let mut packages = std::collections::BTreeSet::new();
     for line in raw

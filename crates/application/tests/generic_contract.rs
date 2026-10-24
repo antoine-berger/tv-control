@@ -65,6 +65,8 @@ impl Device for SharedFake {
     fn ui(&self, _: &str, _: &Context<'_>) -> PortResult<UiSnapshot> {
         Ok(UiSnapshot {
             revision: "v1".into(),
+            truncation: vec![],
+            focused_count: 0,
             elements: vec![],
         })
     }
@@ -452,4 +454,91 @@ fn set_volume_verifies_and_conflicts_with_other_volume_intents() {
         "request_id_conflict"
     );
     assert_eq!(d.effects.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn media_skip_is_observed_not_verified_and_duplicate_id_never_replays() {
+    for command in [MediaCommand::Next, MediaCommand::Previous] {
+        let (service, device, _) = setup(vec![]);
+        device.state.lock().unwrap().playback = Playback::Playing;
+        let request = req(Intent::Media {
+            session: "org.example.player/player".into(),
+            command,
+        });
+        let reply = service.execute(request.clone(), &Never);
+        assert_eq!(reply.status, Status::Observed);
+        assert_eq!(reply.code, "command_dispatched_state_observed");
+        assert!(service.execute(request, &Never).cached);
+        assert_eq!(device.effects.load(Ordering::SeqCst), 1);
+    }
+}
+#[test]
+fn invalid_media_target_never_observes_or_mutates() {
+    let (service, device, _) = setup(vec![]);
+    for session in [
+        "",
+        "player",
+        "org.example.player/player\nplay",
+        "org.example.player/player/x",
+    ] {
+        assert_eq!(
+            service
+                .execute(
+                    req(Intent::Media {
+                        session: session.into(),
+                        command: MediaCommand::Next
+                    }),
+                    &Never
+                )
+                .status,
+            Status::Invalid
+        );
+    }
+    assert_eq!(device.effects.load(Ordering::SeqCst), 0);
+}
+#[test]
+fn media_pause_only_verifies_observed_native_paused_state() {
+    let (service, device, _) = setup(vec![]);
+    device.state.lock().unwrap().playback = Playback::Paused;
+    let r = service.execute(
+        req(Intent::Media {
+            session: "org.example.player/player".into(),
+            command: MediaCommand::Pause,
+        }),
+        &Never,
+    );
+    assert_eq!(r.status, Status::Verified);
+    assert_eq!(device.effects.load(Ordering::SeqCst), 0);
+}
+#[test]
+fn media_pause_without_native_evidence_cannot_verify() {
+    let (service, device, _) = setup(vec![]);
+    {
+        let mut state = device.state.lock().unwrap();
+        state.playback = Playback::Paused;
+        state.playback_evidence = PlaybackEvidence::PositionProgressRequired;
+    }
+    let r = service.execute(
+        req(Intent::Media {
+            session: "org.example.player/player".into(),
+            command: MediaCommand::Pause,
+        }),
+        &Never,
+    );
+    assert_eq!(r.status, Status::OutcomeUnknown);
+    assert_eq!(device.effects.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn text_dispatch_is_observed_not_verified_and_deduplicated() {
+    let (s, fake, _) = setup(vec![]);
+    let request = req(Intent::TypeText {
+        reference: "opaque:1".into(),
+        text: "title".into(),
+    });
+    let first = s.execute(request.clone(), &Never);
+    assert_eq!(first.status, Status::Observed);
+    assert_eq!(first.code, "command_dispatched_state_observed");
+    assert!(s.execute(request, &Never).cached);
+    assert_eq!(fake.effects.load(Ordering::SeqCst), 1);
 }

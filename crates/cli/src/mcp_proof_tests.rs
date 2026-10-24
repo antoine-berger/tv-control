@@ -159,12 +159,33 @@ fn generic_tools_paginate_without_exceeding_output_budget() {
     list["tools"].as_array_mut().unwrap().push(
         json!({"name":"extra","description":"x".repeat(1000),"inputSchema":{"type":"object"}}),
     );
-    let first = tools_page(json!(1), list.clone(), None, 4096).unwrap();
-    assert!(first.to_string().len() < 4096);
-    let cursor = first.pointer("/result/nextCursor").unwrap();
-    let second = tools_page(json!(2), list, Some(cursor), 4096).unwrap();
-    assert!(second.to_string().len() < 4096);
-    assert!(second.pointer("/result/nextCursor").is_none());
+    let expected = list["tools"].as_array().unwrap().clone();
+    let mut observed = Vec::new();
+    let mut cursor = None;
+    let mut pages = 0;
+    loop {
+        let frame = tools_page(json!(pages + 1), list.clone(), cursor.as_ref(), 4096).unwrap();
+        assert!(frame.to_string().len() < 4096);
+        let page = frame["result"]["tools"].as_array().unwrap();
+        assert!(!page.is_empty());
+        if pages == 0 {
+            assert!(
+                page.iter().any(|tool| tool["name"] == "tv_control"),
+                "legacy onboarding control must remain on first page"
+            );
+        }
+        observed.extend(page.iter().cloned());
+        pages += 1;
+        assert!(pages <= expected.len());
+        let next = frame.pointer("/result/nextCursor").cloned();
+        if next.is_none() {
+            break;
+        }
+        assert_ne!(next, cursor);
+        cursor = next;
+    }
+    assert!(pages > 1);
+    assert_eq!(observed, expected);
 }
 #[test]
 fn large_generic_lists_are_explicitly_truncated_not_silently_dropped() {
@@ -178,6 +199,18 @@ fn large_generic_lists_are_explicitly_truncated_not_silently_dropped() {
         Some(&json!(true))
     );
     assert!(!frame["result"]["structuredContent"]["apps"]
+        .as_array()
+        .unwrap()
+        .is_empty());
+}
+
+#[test]
+fn media_session_list_obeys_the_minimum_response_budget() {
+    let items = (0..8).map(|n| json!({"session":format!("org.example.player{n}/{}", "t".repeat(128)),"package":"p".repeat(255),"description":"é".repeat(160),"playback":"playing","position_ms":12000})).collect::<Vec<_>>();
+    let frame = bounded_tool_result(json!(1), json!({"sessions":items}), false, 4096);
+    assert!(frame.to_string().len() < 4096);
+    assert_eq!(frame["result"]["structuredContent"]["truncated"], true);
+    assert!(!frame["result"]["structuredContent"]["sessions"]
         .as_array()
         .unwrap()
         .is_empty());
@@ -255,4 +288,23 @@ fn realistic_screenshot_sizes_use_only_the_bounded_image_allowance() {
         text["result"]["structuredContent"]["code"],
         "response_too_large"
     );
+}
+
+#[test]
+fn ui_transport_truncation_preserves_focus_count_and_reports_reason_once() {
+    let elements = (0..64)
+        .map(|n| json!({"ref":n.to_string(),"text":"x".repeat(256)}))
+        .collect::<Vec<_>>();
+    let frame = bounded_tool_result(
+        json!(1),
+        json!({"elements":elements,"focused_count":2,"truncation":["text"]}),
+        false,
+        4096,
+    );
+    assert!(frame.to_string().len() < 4096);
+    let ui = &frame["result"]["structuredContent"];
+    assert_eq!(ui["focused_count"], 2);
+    assert_eq!(ui["truncation"], json!(["text", "response_budget"]));
+    assert_eq!(ui["truncated"], true);
+    assert!(!ui["elements"].as_array().unwrap().is_empty());
 }

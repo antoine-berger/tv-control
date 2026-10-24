@@ -213,3 +213,94 @@ fn every_bridge_start_gets_a_new_generation_bound_to_its_intent() {
     assert!(start_generation(&directory, "installation", "revision", "screen").is_err());
     assert_eq!(fs::read(target).unwrap(), b"preserve");
 }
+
+#[test]
+fn build_record_is_bound_to_the_current_generation_and_old_readers_keep_working() {
+    use tv_adapters::runtime_intent::{
+        last_started_version, read_generation, record_build, start_generation,
+    };
+    let temp = Temporary::new();
+    let first = start_generation(&temp.0, "installation", "revision", "screen").unwrap();
+    assert_eq!(
+        last_started_version(&temp.0, "installation", "revision", "screen"),
+        Err("bridge_build_unavailable")
+    );
+    record_build(&temp.0, &first, "0.4.5").unwrap();
+    assert_eq!(
+        last_started_version(&temp.0, "installation", "revision", "screen").unwrap(),
+        "0.4.5"
+    );
+    assert_eq!(
+        read_generation(&temp.0, "installation", "revision", "screen").unwrap(),
+        first.generation
+    );
+    // A restarted older binary only publishes the old generation format. It
+    // must not inherit a newer binary's diagnostic version from the old record.
+    let second = start_generation(&temp.0, "installation", "revision", "screen").unwrap();
+    assert_eq!(
+        last_started_version(&temp.0, "installation", "revision", "screen"),
+        Err("bridge_build_binding_mismatch")
+    );
+    assert_eq!(
+        record_build(&temp.0, &first, "0.4.5"),
+        Err("bridge_build_binding_mismatch")
+    );
+    record_build(&temp.0, &second, "0.4.6-rc.1").unwrap();
+    assert_eq!(
+        last_started_version(&temp.0, "installation", "revision", "screen").unwrap(),
+        "0.4.6-rc.1"
+    );
+    assert_eq!(
+        last_started_version(&temp.0, "installation", "other", "screen"),
+        Err("bridge_generation_binding_mismatch")
+    );
+    assert_eq!(
+        record_build(&temp.0, &second, "private\ntext"),
+        Err("bridge_build_invalid")
+    );
+}
+
+#[test]
+fn build_diagnostics_never_recover_a_live_writer_or_follow_nonprivate_files() {
+    use tv_adapters::runtime_intent::{last_started_version, record_build, start_generation};
+    let temp = Temporary::new();
+    let generation = start_generation(&temp.0, "installation", "revision", "screen").unwrap();
+    record_build(&temp.0, &generation, "0.4.5").unwrap();
+    let path = temp.0.join("bridge-build.json");
+    let staged = temp.0.join(".pipeline-bridge-build.json-123-456.tmp");
+    fs::hard_link(&path, &staged).unwrap();
+    assert_eq!(
+        last_started_version(&temp.0, "installation", "revision", "screen"),
+        Err("bridge_build_pending")
+    );
+    assert!(staged.exists());
+    fs::remove_file(staged).unwrap();
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
+    assert_eq!(
+        last_started_version(&temp.0, "installation", "revision", "screen"),
+        Err("bridge_build_invalid")
+    );
+    fs::remove_file(&path).unwrap();
+    let target = temp.0.join("preserve");
+    fs::write(&target, b"private fixture").unwrap();
+    symlink(&target, &path).unwrap();
+    assert_eq!(
+        last_started_version(&temp.0, "installation", "revision", "screen"),
+        Err("bridge_build_invalid")
+    );
+    assert_eq!(fs::read(target).unwrap(), b"private fixture");
+}
+
+#[test]
+fn malformed_or_oversized_build_records_are_unknown_without_repairs() {
+    use tv_adapters::runtime_intent::{last_started_version, start_generation};
+    let temp = Temporary::new();
+    let generation = start_generation(&temp.0, "installation", "revision", "screen").unwrap();
+    let path = temp.0.join("bridge-build.json");
+    for bytes in [b"{partial".to_vec(), vec![b'x'; 8193], serde_json::to_vec(&serde_json::json!({"schema":1,"generation":generation.generation,"version":"private\ntext"})).unwrap()] {
+        fs::write(&path, &bytes).unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+        assert_eq!(last_started_version(&temp.0, "installation", "revision", "screen"), Err("bridge_build_invalid"));
+        assert_eq!(fs::read(&path).unwrap(), bytes);
+    }
+}

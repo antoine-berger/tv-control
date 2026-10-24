@@ -19,7 +19,7 @@ import zlib
 BINARY = pathlib.Path(sys.argv.pop(1) if len(sys.argv) > 1 else 'target/release/tv-control').resolve()
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 ADB = r'''
-import json,pathlib,shlex,sys
+import html,json,pathlib,shlex,sys
 root=pathlib.Path(__file__).parent
 args=sys.argv[1:]
 if args==['version']:
@@ -28,7 +28,7 @@ command=shlex.split(args[-1])
 state_path=root/'state.json'
 state=json.loads(state_path.read_text())
 if command[:3]==['cmd','package','query-activities']:
-    if 'android.intent.action.SEARCH' in command or 'android.intent.category.LAUNCHER' in command:
+    if ('android.intent.action.VIEW' in command and state.get('url_unsupported')) or 'android.intent.action.SEARCH' in command or 'android.intent.category.LAUNCHER' in command:
         print('No activities found')
     else:
         print('2 activities found:')
@@ -63,8 +63,29 @@ elif command[:2]==['am','start']:
     component=command[command.index('-n')+1] if '-n' in command else command[command.index('-p')+1]
     state['package']=component.split('/')[0];state['launches']+=1
     state_path.write_text(json.dumps(state));print('Status: ok')
+elif command==['cmd','media_session','list-sessions']:
+    print('Sessions:')
+    if not state.get('session_missing'):
+        print('  tag=player, package='+state['package'])
+        if state.get('session_duplicate'): print('  tag=player, package=com.fixture.other')
+elif command==['cmd','media_session','monitor','player']:
+    commands=sys.stdin.read().splitlines()
+    if commands[-1:]!=['q'] or len(commands)!=2 or commands[0] not in ['play','pause','next','previous']: sys.exit(2)
+    state.setdefault('media_commands',[]).append(commands[0])
+    if commands[0]=='pause': state['playback']=2
+    if commands[0]=='play': state['playback']=3
+    state_path.write_text(json.dumps(state))
+    if state.get('media_command_fail'): sys.exit(1)
+    print('V2Monitoring session player... available commands: play, pause, next, previous')
 elif command==['dumpsys','media_session']:
-    print('package='+state['package']+'\nstate=PlaybackState {state=3, position=1, speed=1.0}')
+    print('  player '+state['package']+'/player/7 (userId=0)\n    ownerPid=1234, ownerUid=10001, userId=0\n    package='+state['package']+'\n    active='+str(state.get('session_active',True)).lower()+'\n    state=PlaybackState {state='+str(state.get('playback',3))+', position=12000, speed=1.0, actions='+str(state.get('media_actions',55))+'}\n    metadata: Example title, Example artist, Example album')
+elif command[:2]==['sh','-c'] and 'uiautomator dump' in command[2]:
+    text=html.escape(state.get('entered_text',''),quote=True)
+    print('<hierarchy rotation="0"><node text="'+text+'" content-desc="Search" class="android.widget.EditText" package="'+state['package']+'" enabled="true" clickable="true" focused="true" bounds="[10,20][110,60]" /></hierarchy>')
+elif command[:2]==['input','text']:
+    state['text_writes']=state.get('text_writes',0)+1
+    state['entered_text']=state.get('entered_text','')+command[2]
+    state_path.write_text(json.dumps(state))
 elif command==['screencap','-p']:
     sys.stdout.buffer.write((root/'screen.png').read_bytes())
 else:
@@ -148,6 +169,87 @@ class GenericMcp(unittest.TestCase):
     def tool(self,name,args):return self.rpc('tools/call',{'name':name,'arguments':args})
     def control(self,identity,action):
         return self.tool('tv_control',{'request_id':identity,'device':'screen','expires_at_unix_ms':int(time.time()*1000)+9000,'action':action})
+    def test_media_read_and_pause_verify_only_native_session_state(self):
+        data=self.tool('tv_read',{'device':'screen','expires_at_unix_ms':int(time.time()*1000)+9000,'read':{'type':'media'}})['structuredContent']
+        self.assertEqual(len(data['sessions']),1)
+        session=data['sessions'][0]
+        self.assertEqual(session['position_ms'],12000)
+        self.assertNotIn('duration_ms',session)
+        self.assertNotIn('media_id',session)
+        result=self.control('media_pause',{'type':'media','session':session['session'],'command':'pause'})['structuredContent']
+        self.assertEqual(result['status'],'verified',result)
+        self.assertEqual(result['state']['playback'],'paused')
+        self.assertNotIn('app',result['state'])
+    def test_zero_native_action_mask_refuses_explicit_and_implicit_pause(self):
+        path=self.root/'state.json';state=json.loads(path.read_text());state['media_actions']=0;path.write_text(json.dumps(state))
+        data=self.tool('tv_read',{'device':'screen','expires_at_unix_ms':int(time.time()*1000)+9000,'read':{'type':'media'}})['structuredContent']
+        self.assertEqual(data['sessions'][0]['supported_commands'],[])
+        for identity,action in [('explicit_zero',{'type':'media','session':state['package']+'/player','command':'pause'}),('implicit_zero',{'type':'pause'})]:
+            result=self.control(identity,action)['structuredContent']
+            self.assertEqual(result['status'],'unsupported',result)
+            self.assertEqual(result['code'],'media_command_unsupported')
+        self.assertNotIn('media_commands',json.loads(path.read_text()))
+    def test_inactive_retained_playback_is_not_verified_by_implicit_resume(self):
+        path=self.root/'state.json';state=json.loads(path.read_text());state['session_active']=False;state['playback']=3;path.write_text(json.dumps(state))
+        observed=self.tool('tv_read',{'device':'screen','expires_at_unix_ms':int(time.time()*1000)+9000,'read':{'type':'state'}})['structuredContent']
+        self.assertNotIn('playback',observed['state'])
+        result=self.tool('tv_control',{'request_id':'inactive_resume','device':'screen','expires_at_unix_ms':int(time.time()*1000)+1500,'action':{'type':'resume'}})['structuredContent']
+        self.assertEqual(result['status'],'outcome_unknown',result)
+        self.assertEqual(json.loads(path.read_text())['media_commands'],['play'])
+    def test_unsupported_url_is_reported_as_unsupported_without_launch(self):
+        path=self.root/'state.json';state=json.loads(path.read_text());state['url_unsupported']=True;path.write_text(json.dumps(state))
+        result=self.control('unsupported_url',{'type':'open_url','app':'YouTube','url':'https://video.example/watch?v=1'})['structuredContent']
+        self.assertEqual(result['status'],'unsupported',result)
+        self.assertEqual(result['code'],'url_unsupported')
+        self.assertEqual(json.loads(path.read_text())['launches'],0)
+    def test_media_next_is_dispatch_only_and_replays_after_restart(self):
+        path=self.root/'state.json';state=json.loads(path.read_text())
+        action={'type':'media','session':state['package']+'/player','command':'next'}
+        result=self.control('media_next',action)['structuredContent']
+        self.assertEqual(result['status'],'observed',result)
+        self.assertEqual(result['code'],'command_dispatched_state_observed')
+        self.close_process();self.start()
+        self.assertTrue(self.control('media_next',action)['structuredContent']['cached'])
+        self.assertEqual(json.loads(path.read_text())['media_commands'],['next'])
+        action['command']='previous'
+        self.assertEqual(self.control('media_next',action)['structuredContent']['code'],'request_id_conflict')
+    def test_media_duplicate_tag_is_rejected_without_dispatch(self):
+        path=self.root/'state.json';state=json.loads(path.read_text());state['session_duplicate']=True;path.write_text(json.dumps(state))
+        result=self.control('media_duplicate',{'type':'media','session':state['package']+'/player','command':'next'})['structuredContent']
+        self.assertEqual(result['code'],'media_tag_ambiguous',result)
+        self.assertEqual(result['status'],'failed')
+        self.assertNotIn('media_commands',json.loads(path.read_text()))
+    def test_media_uncertain_dispatch_never_replays(self):
+        path=self.root/'state.json';state=json.loads(path.read_text());state['media_command_fail']=True;path.write_text(json.dumps(state))
+        action={'type':'media','session':state['package']+'/player','command':'previous'}
+        result=self.control('media_failed',action)['structuredContent']
+        self.assertEqual(result['status'],'outcome_unknown',result)
+        self.close_process();self.start()
+        self.assertTrue(self.control('media_failed',action)['structuredContent']['cached'])
+        self.assertEqual(json.loads(path.read_text())['media_commands'],['previous'])
+    def test_text_entry_is_generic_and_durable_for_multiple_packages(self):
+        path=self.root/'state.json'
+        for package in ('com.fixture.video','org.fixture.podcasts'):
+            state=json.loads(path.read_text());state['package']=package;state['entered_text']='';state['text_writes']=0;path.write_text(json.dumps(state))
+            ui=self.tool('tv_read',{'device':'screen','expires_at_unix_ms':int(time.time()*1000)+9000,'read':{'type':'ui'}})['structuredContent']
+            element=next(item for item in ui['elements'] if item['editable'])
+            action={'type':'type_text','reference':element['ref'],'text':'cats music'}
+            identity='text_'+package.replace('.','_')
+            result=self.control(identity,action)['structuredContent']
+            self.assertEqual(result['status'],'observed',result)
+            self.assertEqual(result['state']['app'],package)
+            self.close_process();self.start()
+            self.assertTrue(self.control(identity,action)['structuredContent']['cached'])
+            state=json.loads(path.read_text());self.assertEqual(state['text_writes'],1);self.assertEqual(state['entered_text'],'cats music')
+    def test_media_mutation_invalidates_ui_reference_before_text_dispatch(self):
+        ui=self.tool('tv_read',{'device':'screen','expires_at_unix_ms':int(time.time()*1000)+9000,'read':{'type':'ui'}})['structuredContent']
+        ref=next(item['ref'] for item in ui['elements'] if item['editable'])
+        path=self.root/'state.json';state=json.loads(path.read_text())
+        result=self.control('media_before_text',{'type':'media','session':state['package']+'/player','command':'next'})['structuredContent']
+        self.assertEqual(result['status'],'observed')
+        result=self.control('text_after_media',{'type':'type_text','reference':ref,'text':'cats'})['structuredContent']
+        self.assertEqual(result['code'],'ui_reference_unknown',result)
+        self.assertNotIn('text_writes',json.loads(path.read_text()))
     def test_wake_verifies_power_and_replays_after_restart(self):
         schema=self.rpc('tools/list',{})
         control=next(t for t in schema['tools'] if t['name']=='tv_control')

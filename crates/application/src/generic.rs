@@ -24,11 +24,14 @@ pub trait Device: Send + Sync {
     ) -> PortResult<Observed> {
         self.observe(device, ctx)
     }
+    fn media(&self, _device: &str, _ctx: &Context<'_>) -> PortResult<Vec<MediaSession>> {
+        Err(tv_domain::Failure::before("unsupported"))
+    }
     fn ui(&self, device: &str, ctx: &Context<'_>) -> PortResult<UiSnapshot>;
     fn screenshot(&self, _device: &str, _ctx: &Context<'_>) -> PortResult<Screenshot> {
         Err(tv_domain::Failure::before("screenshot_unsupported"))
     }
-    /// A resolved app is passed only for OpenApp/Search. Other intents use None.
+    /// A resolved app is passed only for OpenApp/OpenUrl/Search. Other intents use None.
     fn apply(
         &self,
         device: &str,
@@ -244,6 +247,11 @@ impl<D: Device, C: Clock> Service<D, C> {
                     | Intent::Search { .. }
                     | Intent::OpenUrl { .. }
                     | Intent::Activate { .. }
+                    | Intent::Media {
+                        command: MediaCommand::Next | MediaCommand::Previous,
+                        ..
+                    }
+                    | Intent::TypeText { .. }
             ) {
                 reply.status = Status::Observed;
                 reply.code = "command_dispatched_state_observed".into();
@@ -278,6 +286,15 @@ impl<D: Device, C: Clock> Control for Service<D, C> {
         self.device.resource(&req.device)?;
         let ctx = self.context(req.expires_at_unix_ms, cancel)?;
         let result = match req.read {
+            Read::Media => {
+                let mut sessions = self.device.media(&req.device, &ctx)?;
+                let truncated = sessions.len() > 8;
+                sessions.truncate(8);
+                Data::Media {
+                    sessions,
+                    truncated,
+                }
+            }
             Read::Volume => {
                 Data::State(self.device.observe_for(&req.device, &Intent::Mute, &ctx)?)
             }
@@ -432,12 +449,14 @@ fn valid_text(s: &str, max: usize) -> bool {
 }
 fn valid_intent(intent: &Intent) -> bool {
     match intent {
+        Intent::Media { session, .. } => valid_media_session(session),
         Intent::Legacy { .. } => false,
         Intent::OpenApp { app } => valid_text(app, 512),
         Intent::OpenUrl { app, url } => valid_text(app, 512) && valid_url(url),
         Intent::Search { app, query } => valid_text(app, 512) && valid_text(query, 500),
         Intent::Navigate { keys } => !keys.is_empty() && keys.len() <= 16,
         Intent::Activate { reference } => valid_text(reference, 200),
+        Intent::TypeText { reference, text } => valid_text(reference, 200) && valid_text(text, 500),
         Intent::SetVolume { index } => *index <= 1000,
         Intent::Wake | Intent::Mute | Intent::Pause | Intent::Resume => true,
     }
@@ -486,7 +505,18 @@ fn desired(intent: &Intent, app: Option<&App>, state: &Observed) -> bool {
         Intent::Mute => state.volume_index == Some(0),
         Intent::SetVolume { index } => state.volume_index == Some(*index),
         Intent::Pause => state.playback == Playback::Paused,
-        Intent::Resume => {
+        Intent::Media {
+            command: MediaCommand::Pause,
+            ..
+        } => {
+            state.playback == Playback::Paused
+                && state.playback_evidence == tv_domain::PlaybackEvidence::NativeState
+        }
+        Intent::Resume
+        | Intent::Media {
+            command: MediaCommand::Resume,
+            ..
+        } => {
             state.playback == Playback::Playing
                 && state.playback_evidence == tv_domain::PlaybackEvidence::NativeState
         }
@@ -501,7 +531,11 @@ fn fail(reply: &mut Reply, e: Failure) {
         match e.code {
             "expired" => Status::Expired,
             "cancelled" => Status::Cancelled,
-            "unsupported" | "search_unsupported" => Status::Unsupported,
+            "unsupported"
+            | "search_unsupported"
+            | "url_unsupported"
+            | "input_text_unsupported"
+            | "media_command_unsupported" => Status::Unsupported,
             _ => Status::Failed,
         }
     };

@@ -1,6 +1,8 @@
 //! Composition of the guided journey. Account approvals remain explicit and resumable.
 mod conversation;
 mod credential;
+mod diagnostics;
+pub use diagnostics::runtime_diagnostics;
 mod guidance;
 mod local;
 mod maintenance;

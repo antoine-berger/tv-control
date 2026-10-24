@@ -15,6 +15,16 @@ pub(super) fn emit(value: Value, as_json: bool) {
                 .and_then(Value::as_str)
                 .unwrap_or("Done.")
         );
+        if let Some(versions) = value.get("versions") {
+            println!(
+                "  Invoked CLI: {}; last-started bridge: {} ({}). Running version not verified.",
+                versions["invoked_version"].as_str().unwrap_or("unknown"),
+                versions["last_started_version"]
+                    .as_str()
+                    .unwrap_or("unknown"),
+                versions["record_status"].as_str().unwrap_or("unknown")
+            );
+        }
         if let Some(steps) = value.get("next_steps").and_then(Value::as_array) {
             for step in steps {
                 if let Some(text) = step.as_str() {

@@ -76,9 +76,11 @@ enum IntentWire {
     SetVolume { index: u16 },
     Pause,
     Resume,
+    Media { session: String, command: String },
     Navigate { keys: Vec<String> },
     Search { app: String, query: String },
     Activate { reference: String },
+    TypeText { reference: String, text: String },
 }
 impl From<&Intent> for IntentWire {
     fn from(value: &Intent) -> Self {
@@ -96,6 +98,10 @@ impl From<&Intent> for IntentWire {
             Intent::SetVolume { index } => Self::SetVolume { index: *index },
             Intent::Pause => Self::Pause,
             Intent::Resume => Self::Resume,
+            Intent::Media { session, command } => Self::Media {
+                session: session.clone(),
+                command: command.name().into(),
+            },
             Intent::Navigate { keys } => Self::Navigate {
                 keys: keys
                     .iter()
@@ -116,6 +122,10 @@ impl From<&Intent> for IntentWire {
             Intent::Search { app, query } => Self::Search {
                 app: app.clone(),
                 query: query.clone(),
+            },
+            Intent::TypeText { reference, text } => Self::TypeText {
+                reference: reference.clone(),
+                text: text.clone(),
             },
             Intent::Activate { reference } => Self::Activate {
                 reference: reference.clone(),

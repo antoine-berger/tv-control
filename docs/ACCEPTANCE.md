@@ -17,7 +17,7 @@ or full user-to-physical-effect-and-response. Do not combine these measurements.
 | Configured media resume | Exact user/device/item, expected seek range and increasing position; qualify physical output separately for the end-to-end target |
 | App launch | Exact foreground app; no title or playback claim |
 | Volume | Requested Android stream index and matching calibration; no inferred TV percentage |
-| Concurrent commands | One reservation per physical-device group in a process; contention returns busy without queued late mutation |
+| Concurrent commands | One reservation per physical-device group across processes sharing the same journal; contention returns busy without queued late mutation |
 | Duplicate request | At most one dispatch while the entry is retained; completed replay is marked cached |
 | Expired request | Rejected before dispatch with zero device actions |
 | Cancel during read | Owned process group cleaned up; cancelled without mutation |
@@ -25,8 +25,11 @@ or full user-to-physical-effect-and-response. Do not combine these measurements.
 | Frozen progress or buffering | No verified playback postcondition; count unknown or late playback as target failures |
 | Malformed configuration or selector | Rejected before mutation; no request-supplied shell, URL or host override |
 
-These criteria do not extend process-local coordination across restarts or other
-controllers. See [request semantics](CLI.md#deadlines-and-retries).
+Completed receipts and interrupted-operation uncertainty persist across restarts
+in the configuration directory's private operation journal. Cross-process resource
+exclusion applies only to controllers sharing that journal; it does not cover
+physical remotes, independent controllers or copied configurations with different
+state directories. See [request semantics](CLI.md#deadlines-and-retries).
 
 ## Hardware trial design
 
@@ -57,3 +60,20 @@ Performance testing does not include loud audio, purchases, deletions, account
 selection, pairing, persistent authentication or router/network modifications.
 Keep real configurations and evidence private and out of Git. Controller-only
 [host benchmarks](../benchmarks/README.md) require no hardware access.
+
+
+## Exploratory URL search evidence
+
+An authorized manual check on 2026-10-24 used controller v0.4.4 with Android 12
+Google TV and the discovered YouTube TV app. A SEARCH intent was ignored, while
+an explicitly package-targeted YouTube `/results?search_query=...` URL displayed
+search results in a screenshot. UI Automator exposed blank View nodes on that
+screen; a native editable-field flow was not established. Installed/system app
+metadata listed differing versions, so the active YouTube version was unresolved.
+
+This is a single exploratory observation, not version-qualified compatibility,
+current-source hardware acceptance, a latency benchmark, or playback/audio proof.
+The generic URL route remains caller-selected and dispatch-only. Qualifying a
+release requires resolving the active app version and repeating the route with
+that exact controller build under the hardware procedure above. Do not infer
+support for blind text entry or automatic SEARCH fallback from this observation.

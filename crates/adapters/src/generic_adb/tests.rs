@@ -58,7 +58,7 @@ fn resolver_metadata_cannot_bleed_into_previous_app() {
 fn duplicate_media_tag_is_rejected() {
     assert_eq!(
         session_tag(
-            "tag=x, package=org.example.one\ntag=x, package=org.example.two",
+            "Sessions:\ntag=x, package=org.example.one\ntag=x, package=org.example.two",
             "org.example.one"
         )
         .unwrap_err()
@@ -76,4 +76,64 @@ fn clipped_ui_nodes_do_not_hide_visible_siblings() {
     let view = parse_ui("living", 1, &mixed).unwrap();
     assert_eq!(view.elements.len(), 1);
     assert_eq!(view.elements[0].text, "Search & play");
+}
+
+#[test]
+fn labels_without_actions_remain_visible_but_not_actionable() {
+    let raw = UI.replace(
+        "clickable=\"true\" focused=\"true\"",
+        "clickable=\"false\" focused=\"false\"",
+    );
+    let view = parse_ui("living", 1, &raw).unwrap();
+    assert_eq!(view.elements.len(), 1);
+    assert!(!view.elements[0].actionable);
+    assert!(!view.elements[0].editable);
+    assert_eq!(view.focused_count, 0);
+}
+
+#[test]
+fn bounded_snapshot_reports_omissions_without_hiding_focus_ambiguity() {
+    let node = "<node text=\"Title\" class=\"android.widget.TextView\" focused=\"true\" bounds=\"[1,1][20,20]\"/>";
+    let raw = format!(
+        "<hierarchy>{}</hierarchy>",
+        node.repeat(MAX_UI_ELEMENTS + 2)
+    );
+    let view = parse_ui("living", 1, &raw).unwrap();
+    assert_eq!(view.elements.len(), MAX_UI_ELEMENTS);
+    assert_eq!(view.focused_count, MAX_UI_ELEMENTS + 2);
+    assert_eq!(view.truncation, vec![UiTruncation::Elements]);
+    let raw = UI.replace("Search &amp; play", &"é".repeat(257));
+    let view = parse_ui("living", 1, &raw).unwrap();
+    assert_eq!(view.elements[0].text.chars().count(), 256);
+    assert_eq!(view.truncation, vec![UiTruncation::Text]);
+    // Still parse the entire document: truncation cannot conceal malformed XML.
+    assert!(parse_ui(
+        "living",
+        1,
+        &format!(
+            "<hierarchy>{}<node broken/></hierarchy>",
+            node.repeat(MAX_UI_ELEMENTS + 2)
+        )
+    )
+    .is_err());
+}
+
+#[test]
+fn password_focus_is_counted_without_exposing_text() {
+    let secret = UI.replace("index=\"0\"", "password=\"true\" index=\"0\"");
+    let view = parse_ui("living", 1, &secret).unwrap();
+    assert_eq!(view.focused_count, 1);
+    assert!(view.elements.is_empty());
+}
+
+#[test]
+fn visible_text_takes_precedence_over_static_accessibility_description() {
+    let raw = UI.replace("content-desc=\"\"", "content-desc=\"Search field\"");
+    let view = parse_ui("living", 1, &raw).unwrap();
+    assert_eq!(view.elements[0].text, "Search & play");
+    let blank = raw.replace("text=\"Search &amp; play\"", "text=\"\"");
+    assert_eq!(
+        parse_ui("living", 1, &blank).unwrap().elements[0].text,
+        "Search field"
+    );
 }

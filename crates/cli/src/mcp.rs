@@ -73,15 +73,29 @@ fn bounded_tool_result(id: Value, mut value: Value, is_error: bool, max_bytes: u
         if frame.to_string().len() < max_bytes {
             return frame;
         }
-        let field = ["apps", "elements", "choices"].into_iter().find(|field| {
-            value
-                .get(*field)
-                .and_then(Value::as_array)
-                .is_some_and(|items| !items.is_empty())
-        });
+        let field = ["apps", "elements", "choices", "sessions"]
+            .into_iter()
+            .find(|field| {
+                value
+                    .get(*field)
+                    .and_then(Value::as_array)
+                    .is_some_and(|items| !items.is_empty())
+            });
         if let Some(field) = field {
             value[field].as_array_mut().unwrap().pop();
             value["truncated"] = json!(true);
+            if field == "elements" {
+                let reasons = value
+                    .as_object_mut()
+                    .unwrap()
+                    .entry("truncation")
+                    .or_insert_with(|| json!([]));
+                if let Some(reasons) = reasons.as_array_mut() {
+                    if !reasons.iter().any(|reason| reason == "response_budget") {
+                        reasons.push(json!("response_budget"));
+                    }
+                }
+            }
         } else {
             return tool_result(id, json!({"code":"response_too_large"}), true);
         }

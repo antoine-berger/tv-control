@@ -291,6 +291,13 @@ pub fn bridge(path: &Path, state: &Path) -> Result<i32, &'static str> {
         &intent.revision,
         &intent.device,
     )?;
+    // Build metadata is diagnostic, not a grant or readiness proof. Failure to
+    // publish it must not take down an otherwise authorized controller.
+    if tv_adapters::runtime_intent::record_build(state, &generation, env!("CARGO_PKG_VERSION"))
+        .is_err()
+    {
+        eprintln!("Bridge build diagnostics unavailable; no running-version claim will be made.");
+    }
     let journal = path
         .parent()
         .ok_or("configuration_path_invalid")?

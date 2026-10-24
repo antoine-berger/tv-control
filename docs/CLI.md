@@ -90,9 +90,14 @@ Action availability depends on the [adapter](ADAPTERS.md). With the explicit gen
 ADB grant, app selectors may be observed names, package IDs or exact discovered
 components. Without it, configured app aliases keep their restricted behavior.
 Media arguments remain configured aliases. There is no free-form shell tool.
-The generic `wake`, `navigate`, `search` and `activate` shapes in [MCP](MCP.md#generic-adb-reads-and-intents)
+The generic `wake`, `navigate`, `search`, `activate` and `type_text` shapes in [MCP](MCP.md#generic-adb-reads-and-intents)
 are also accepted by `execute`. `execute`, `workflow`, MCP and the managed bridge
 share the same persistent mutation journal beside the configuration.
+UI references are intentionally process-local: separate `execute` invocations
+cannot reuse them. Reproduce reference-based flows from a terminal through one
+persistent `mcp CONFIG` stdio session, issuing `tv_read` and then `tv_control` in
+that same process. Use a fresh future expiry and a unique operation ID; the
+examples in MCP deliberately contain expired placeholders.
 
 ## Receipts and exit codes
 
@@ -131,16 +136,20 @@ budget to monotonic time without renewing it. Already expired requests are
 rejected; budgets above `max_budget_ms` are invalid. OS scheduling and process
 creation are not hard real-time operations.
 
-Request IDs deduplicate the same device/action within one running process and the
-configured retention window. A completed request replays its receipt with
-`cached: true`; that evidence is historical. An in-flight duplicate returns busy.
-Reusing an ID for a different device or action is invalid. Retained and active
-entries are never evicted to admit a new request; a full store returns busy.
+Request IDs deduplicate matching operations within the configured retention
+window. A completed request replays its receipt with `cached: true`; that evidence
+is historical. An in-flight duplicate returns busy. Reusing an ID for a different
+operation is invalid. Retained and active entries are never evicted to admit a
+new request; a full store returns busy.
 
-Each CLI invocation creates a new store. A persistent MCP process retains its
-store until exit, retention expiry or a crash. Restarts lose all entries, and
-coordination does not cover other processes or physical remotes. There is no
-durable journal or cross-process lease.
+`execute`, `workflow`, direct MCP and the managed bridge share the private durable
+`.tv-control-operations` journal beside the configuration. Processes using that
+same journal share physical-device resource exclusion, including generic and
+legacy mutations. Completed receipts survive restarts; an interrupted operation
+remains uncertain rather than authorizing another dispatch. This does not
+coordinate physical remotes, independent controllers or configurations copied
+into different state directories. Never retry an uncertain operation under a
+fresh ID to bypass its journal entry.
 
 Cancellation before dispatch returns `cancelled`. After possible dispatch,
 cancellation or timeout returns `outcome_unknown`. Process cleanup cannot undo a
@@ -195,3 +204,21 @@ interactive steps, runtime lifecycle and recovery.
 `bridge`, `onboard --launcher`, and `onboard --fixture FILE --json` are integration
 entry points used by the installer/runtime and offline tests, not alternate user
 setup shortcuts. The simulated journey always reports `ready:false`.
+
+### Doctor version evidence
+
+`doctor CONFIG --json` includes a `versions` object. `invoked_version` identifies
+this CLI binary (which is not necessarily the installation's stable launcher).
+`last_started_version` is the saved bridge version only when its private record
+matches the current generation and exact configuration snapshot.
+`last_started_matches_invoked` compares those package versions; it is `null` when
+no matching record exists. Same-version development builds are not distinguished.
+Older bridges did not record a build version and therefore report unknown.
+
+These local records can outlive their process. `running_version` is deliberately
+`null` and `running_verified` is `false`, including with `--probe`: that option
+observes the TV via this CLI, not the background bridge. A live MCP `initialize`
+response's `serverInfo.version` identifies the responding server. Neither an
+installed update nor a historical record proves that the running bridge updated.
+Doctor never restarts a bridge, repairs records or grants access. Use the normal
+explicit maintenance flow to restart with the installed version.

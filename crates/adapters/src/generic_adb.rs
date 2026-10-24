@@ -1,15 +1,17 @@
 //! Generic Android/Fire OS adapter. Discovery is data, never an authorization grant.
 use crate::{
-    adb::{parse_foreground, parse_playback, parse_volume},
+    adb::{media, parse_foreground, parse_playback, parse_volume},
     adb_server::ServerProbe,
     config::{Config, Device as ConfigDevice},
-    process::{Invocation, Process},
+    process::Process,
 };
 use std::{
     collections::BTreeMap,
-    os::unix::fs::MetadataExt,
     path::PathBuf,
-    sync::{Arc, Mutex},
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc, Mutex,
+    },
     time::{SystemTime, UNIX_EPOCH},
 };
 use tv_application::{generic::Device, Context};
@@ -17,15 +19,19 @@ use tv_domain::{generic::*, Failure, Observed, PlaybackEvidence, PortResult};
 
 mod cache;
 mod catalogue;
+mod interaction;
+mod observation;
 mod screenshot;
 #[cfg(test)]
 mod tests;
+mod transport;
 mod ui;
 use cache::valid_label;
 #[cfg(test)]
 use catalogue::parse_activities;
 use catalogue::{parse_candidates, valid_component, Candidate};
 use screenshot::validate_png;
+use transport::ProtocolCache;
 use ui::parse_ui;
 
 const MAX_APPS: usize = 256;
@@ -36,16 +42,6 @@ const REFERENCE_TTL_MS: u64 = 30_000;
 // Keep this internal read separate from the ordinary text/MCP response budget.
 const MAX_POWER_DUMP_BYTES: usize = 1024 * 1024;
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-struct ExecutableStamp {
-    device: u64,
-    inode: u64,
-    size: u64,
-    modified: (i64, i64),
-    changed: (i64, i64),
-}
-type ProtocolCache = Option<(Option<ExecutableStamp>, u32)>;
-
 pub struct GenericAdb {
     config: Arc<Config>,
     process: Arc<dyn Process>,
@@ -53,6 +49,7 @@ pub struct GenericAdb {
     protocol: Mutex<ProtocolCache>,
     views: Mutex<BTreeMap<String, IssuedView>>,
     session: u128,
+    view_sequence: AtomicU64,
     cache_dir: Option<PathBuf>,
     labels: Mutex<BTreeMap<String, String>>,
     scan_cursor: Mutex<BTreeMap<String, usize>>,
@@ -73,6 +70,7 @@ impl GenericAdb {
             probe,
             protocol: Mutex::new(None),
             views: Mutex::new(BTreeMap::new()),
+            view_sequence: AtomicU64::new(0),
             cache_dir: None,
             labels: Mutex::new(BTreeMap::new()),
             scan_cursor: Mutex::new(BTreeMap::new()),
@@ -86,172 +84,6 @@ impl GenericAdb {
     pub fn with_cache_dir(mut self, path: PathBuf) -> Self {
         self.cache_dir = Some(path);
         self
-    }
-    fn target(&self, alias: &str) -> PortResult<(&str, &str, u16)> {
-        match self.config.devices.get(alias) {
-            Some(ConfigDevice::Adb {
-                endpoint,
-                server_host,
-                server_port,
-                ..
-            }) => Ok((endpoint, server_host, *server_port)),
-            Some(_) => Err(Failure::before("unsupported")),
-            None => Err(Failure::before("unknown_device")),
-        }
-    }
-    fn protocol(&self, ctx: &Context<'_>) -> PortResult<u32> {
-        ctx.check()?;
-        let stamp = std::fs::metadata(&self.config.executables.adb)
-            .ok()
-            .map(|m| ExecutableStamp {
-                device: m.dev(),
-                inode: m.ino(),
-                size: m.len(),
-                modified: (m.mtime(), m.mtime_nsec()),
-                changed: (m.ctime(), m.ctime_nsec()),
-            });
-        let mut cache = self
-            .protocol
-            .try_lock()
-            .map_err(|_| Failure::before("adapter_state_unavailable"))?;
-        if let Some((old, version)) = *cache {
-            if old == stamp {
-                return Ok(version);
-            }
-        }
-        let result = self.process.run(
-            Invocation {
-                program: self.config.executables.adb.clone(),
-                args: vec!["version".into()],
-                env: BTreeMap::new(),
-                stdin: Vec::new(),
-                mutating: false,
-            },
-            ctx,
-        )?;
-        let version = std::str::from_utf8(&result.stdout)
-            .ok()
-            .filter(|_| result.success)
-            .and_then(|s| {
-                s.lines().find_map(|line| {
-                    line.strip_prefix("Android Debug Bridge version 1.0.")?
-                        .trim()
-                        .parse::<u32>()
-                        .ok()
-                })
-            })
-            .ok_or(Failure::before("adb_client_protocol_unavailable"))?;
-        ctx.check()?;
-        *cache = Some((stamp, version));
-        Ok(version)
-    }
-    fn shell(
-        &self,
-        alias: &str,
-        args: &[&str],
-        input: &[u8],
-        mutating: bool,
-        ctx: &Context<'_>,
-    ) -> PortResult<String> {
-        let output = self.shell_bytes(
-            alias,
-            args,
-            input,
-            mutating,
-            self.config.preferences.max_output_bytes,
-            ctx,
-        )?;
-        String::from_utf8(output).map_err(|_| {
-            if mutating {
-                Failure::uncertain("adb_command_failed")
-            } else {
-                Failure::before("adb_read_failed")
-            }
-        })
-    }
-    fn shell_bytes(
-        &self,
-        alias: &str,
-        args: &[&str],
-        input: &[u8],
-        mutating: bool,
-        limit: usize,
-        ctx: &Context<'_>,
-    ) -> PortResult<Vec<u8>> {
-        self.command_bytes(alias, "shell", args, input, mutating, limit, ctx)
-    }
-    #[allow(clippy::too_many_arguments)]
-    fn command_bytes(
-        &self,
-        alias: &str,
-        transport: &str,
-        args: &[&str],
-        input: &[u8],
-        mutating: bool,
-        limit: usize,
-        ctx: &Context<'_>,
-    ) -> PortResult<Vec<u8>> {
-        let (endpoint, host, port) = self.target(alias)?;
-        let protocol = self.protocol(ctx)?;
-        // Probe the existing server on every call. No manager-capable client is
-        // allowed to contact an incompatible server, even when its version is cached.
-        if self.probe.version(host, port, ctx)? != protocol {
-            return Err(Failure::before("adb_server_protocol_mismatch"));
-        }
-        ctx.check()?;
-        let command = args
-            .iter()
-            .map(|s| format!("'{}'", s.replace('\'', "'\\''")))
-            .collect::<Vec<_>>()
-            .join(" ");
-        let result = self.process.run(
-            Invocation {
-                program: self.config.executables.adb.clone(),
-                args: vec![
-                    "-H".into(),
-                    host.into(),
-                    "-P".into(),
-                    port.to_string().into(),
-                    "-s".into(),
-                    endpoint.into(),
-                    transport.into(),
-                    command.into(),
-                ],
-                env: BTreeMap::from([
-                    ("ADB_MDNS".into(), "0".into()),
-                    ("ADB_USB".into(), "0".into()),
-                ]),
-                stdin: input.to_vec(),
-                mutating,
-            },
-            ctx,
-        )?;
-        let error = || {
-            if mutating {
-                Failure::uncertain("adb_command_failed")
-            } else {
-                Failure::before("adb_read_failed")
-            }
-        };
-        if !result.success {
-            return Err(error());
-        }
-        if result.stdout.len() > limit {
-            return Err(if mutating {
-                Failure::uncertain("adb_output_limit")
-            } else {
-                Failure::before("adb_output_limit")
-            });
-        }
-        let output = result.stdout;
-        ctx.check().map_err(|e| {
-            if mutating {
-                Failure::uncertain(e.code)
-            } else {
-                e
-            }
-        })?;
-        Ok(output)
     }
     fn foreground(&self, alias: &str, ctx: &Context<'_>) -> PortResult<Option<String>> {
         parse_foreground(&self.shell(
@@ -285,25 +117,6 @@ impl GenericAdb {
         let output = String::from_utf8(output)
             .map_err(|_| Failure::before("app_discovery_output_invalid"))?;
         parse_candidates(&output)
-    }
-    fn read_ui(&self, alias: &str, ctx: &Context<'_>) -> PortResult<UiSnapshot> {
-        let raw = self.shell_bytes(
-            alias,
-            // Some Android builds cannot write the hierarchy through /proc/self/fd/1.
-            // Use a private, unique temporary file and clean it up on shell exit.
-            // This fixed script contains no device- or caller-supplied shell text.
-            &[
-                "sh",
-                "-c",
-                "umask 077; f=$(mktemp /data/local/tmp/tv-control-ui.XXXXXX) || exit 1; trap 'rm -f \"$f\"' EXIT; uiautomator dump --compressed \"$f\" >/dev/null && cat \"$f\"",
-            ],
-            &[],
-            false,
-            512 * 1024,
-            ctx,
-        )?;
-        let raw = String::from_utf8(raw).map_err(|_| Failure::before("ui_unavailable"))?;
-        parse_ui(alias, self.session, &raw)
     }
     fn launch(
         &self,
@@ -393,6 +206,17 @@ impl GenericAdb {
         }
         Ok(())
     }
+    fn media_dump(&self, alias: &str, ctx: &Context<'_>) -> PortResult<String> {
+        let bytes = self.shell_bytes(
+            alias,
+            &["dumpsys", "media_session"],
+            &[],
+            false,
+            256 * 1024,
+            ctx,
+        )?;
+        String::from_utf8(bytes).map_err(|_| Failure::before("media_state_unavailable"))
+    }
     fn playback(&self, alias: &str, resume: bool, ctx: &Context<'_>) -> PortResult<()> {
         let package = self
             .foreground(alias, ctx)?
@@ -405,6 +229,15 @@ impl GenericAdb {
             ctx,
         )?;
         let tag = session_tag(&sessions, &package)?;
+        let state = media::snapshot(&self.media_dump(alias, ctx)?, &tag, &package)?;
+        media::require_command(
+            &state,
+            &if resume {
+                MediaCommand::Resume
+            } else {
+                MediaCommand::Pause
+            },
+        )?;
         // Session selection is explicit. Global key events could target another app.
         self.shell(
             alias,
@@ -483,116 +316,29 @@ impl Device for GenericAdb {
     ) -> PortResult<Vec<App>> {
         self.read_apps(alias, query, ctx)
     }
+    fn media(&self, alias: &str, ctx: &Context<'_>) -> PortResult<Vec<MediaSession>> {
+        let listing = self.shell(
+            alias,
+            &["cmd", "media_session", "list-sessions"],
+            &[],
+            false,
+            ctx,
+        )?;
+        let sessions = media::sessions(&listing)?;
+        if sessions.is_empty() {
+            return Ok(vec![]);
+        }
+        let raw = self.media_dump(alias, ctx)?;
+        sessions
+            .iter()
+            .map(|(tag, package)| media::snapshot(&raw, tag, package))
+            .collect()
+    }
     fn observe_for(&self, alias: &str, intent: &Intent, ctx: &Context<'_>) -> PortResult<Observed> {
-        if matches!(intent, Intent::Mute | Intent::SetVolume { .. }) {
-            // No app/session or configured volume scale is needed to lower to zero.
-            // A valid native zero-based range is required before any mutation.
-            let raw = self.shell(
-                alias,
-                &["cmd", "media_session", "volume", "--stream", "3", "--get"],
-                &[],
-                false,
-                ctx,
-            )?;
-            let (index, max) = parse_volume(&raw)
-                .filter(|(_, max)| *max > 0 && *max <= 1000)
-                .ok_or(Failure::before("volume_state_unavailable"))?;
-            if let Some(ConfigDevice::Adb {
-                volume_max_index: Some(configured),
-                ..
-            }) = self.config.devices.get(alias)
-            {
-                if *configured != max {
-                    return Err(Failure::before("volume_calibration_changed"));
-                }
-            }
-            if let Intent::SetVolume { index: requested } = intent {
-                if *requested > max {
-                    return Err(Failure::before("volume_out_of_range"));
-                }
-            }
-            return Ok(Observed {
-                connected: true,
-                volume_max_index: Some(max),
-                volume_index: Some(index),
-                ..Observed::default()
-            });
-        }
-        if *intent == Intent::Wake {
-            // No foreground activity or media session is required while asleep.
-            let raw = self
-                .shell_bytes(
-                    alias,
-                    &["dumpsys", "power"],
-                    &[],
-                    false,
-                    MAX_POWER_DUMP_BYTES,
-                    ctx,
-                )
-                .and_then(|raw| {
-                    String::from_utf8(raw).map_err(|_| Failure::before("adb_read_failed"))
-                })
-                .map_err(|e| {
-                    if e.code == "adb_read_failed" {
-                        Failure::before("wake_transport_unavailable")
-                    } else {
-                        e
-                    }
-                })?;
-            return Ok(Observed {
-                connected: true,
-                awake: parse_awake(&raw),
-                ..Observed::default()
-            });
-        }
-        let package = self.foreground(alias, ctx)?;
-        let mut observed = Observed {
-            connected: true,
-            active_app: package.clone(),
-            playback_evidence: PlaybackEvidence::NativeState,
-            ..Observed::default()
-        };
-        if matches!(intent, Intent::Pause | Intent::Resume) {
-            if let Some(package) = package {
-                let raw = self.shell(alias, &["dumpsys", "media_session"], &[], false, ctx)?;
-                observed.playback = parse_playback(&raw, &package)?;
-            }
-        }
-        Ok(observed)
+        self.observe_intent(alias, intent, ctx)
     }
     fn observe(&self, alias: &str, ctx: &Context<'_>) -> PortResult<Observed> {
-        // A successful targeted shell observation already proves transport connectivity.
-        let package = self.foreground(alias, ctx)?;
-        let mut observed = Observed {
-            connected: true,
-            active_app: package.clone(),
-            playback_evidence: PlaybackEvidence::NativeState,
-            ..Observed::default()
-        };
-        if let Some(package) = package {
-            let raw = self.shell(alias, &["dumpsys", "media_session"], &[], false, ctx)?;
-            observed.playback = parse_playback(&raw, &package)?;
-        }
-        if let Some(ConfigDevice::Adb {
-            volume_max_index: Some(max),
-            ..
-        }) = self.config.devices.get(alias)
-        {
-            let raw = self.shell(
-                alias,
-                &["cmd", "media_session", "volume", "--stream", "3", "--get"],
-                &[],
-                false,
-                ctx,
-            )?;
-            let (index, actual_max) =
-                parse_volume(&raw).ok_or(Failure::before("volume_state_unavailable"))?;
-            if actual_max != *max {
-                return Err(Failure::before("volume_calibration_changed"));
-            }
-            observed.volume_index = Some(index);
-        }
-        Ok(observed)
+        self.observe_state(alias, ctx)
     }
     fn screenshot(&self, alias: &str, ctx: &Context<'_>) -> PortResult<Screenshot> {
         let png = self
@@ -617,18 +363,7 @@ impl Device for GenericAdb {
         Ok(Screenshot { png, width, height })
     }
     fn ui(&self, alias: &str, ctx: &Context<'_>) -> PortResult<UiSnapshot> {
-        let snapshot = self.read_ui(alias, ctx)?;
-        self.views
-            .lock()
-            .map_err(|_| Failure::before("adapter_state_unavailable"))?
-            .insert(
-                alias.to_owned(),
-                IssuedView {
-                    snapshot: snapshot.clone(),
-                    at: ctx.clock.monotonic_ms(),
-                },
-            );
-        Ok(snapshot)
+        self.issue_ui(alias, ctx)
     }
     fn apply(
         &self,
@@ -639,6 +374,14 @@ impl Device for GenericAdb {
     ) -> PortResult<()> {
         self.authorized(alias)?;
         ctx.check()?;
+        // Navigation or app changes invalidate previously issued references even
+        // if the UI later returns to an identical-looking screen.
+        if !matches!(intent, Intent::Activate { .. } | Intent::TypeText { .. }) {
+            self.views
+                .lock()
+                .map_err(|_| Failure::before("adapter_state_unavailable"))?
+                .remove(alias);
+        }
         match intent {
             Intent::Legacy { .. } => Err(Failure::before("unsupported")),
             Intent::OpenApp { .. } => self.launch(
@@ -705,6 +448,41 @@ impl Device for GenericAdb {
                 )?;
                 Ok(())
             }
+            Intent::Media { session, command } => {
+                let listing = self.shell(
+                    alias,
+                    &["cmd", "media_session", "list-sessions"],
+                    &[],
+                    false,
+                    ctx,
+                )?;
+                let sessions = media::sessions(&listing)?;
+                let (tag, package) = media::select(&sessions, session)?;
+                let state = media::snapshot(&self.media_dump(alias, ctx)?, tag, package)?;
+                media::require_command(&state, command)?;
+                let input: &[u8] = match command {
+                    MediaCommand::Pause => b"pause\nq\n",
+                    MediaCommand::Resume => b"play\nq\n",
+                    MediaCommand::Next => b"next\nq\n",
+                    MediaCommand::Previous => b"previous\nq\n",
+                };
+                let output = self.shell(
+                    alias,
+                    &["cmd", "media_session", "monitor", tag],
+                    input,
+                    true,
+                    ctx,
+                )?;
+                // Exit status zero is not proof the command reached the session.
+                if !output.contains(&format!("Monitoring session {tag}..."))
+                    || output.contains("No session found")
+                    || output.contains("Error")
+                    || output.contains("Invalid command")
+                {
+                    return Err(Failure::uncertain("media_dispatch_unconfirmed"));
+                }
+                Ok(())
+            }
             Intent::Pause => self.playback(alias, false, ctx),
             Intent::Resume => self.playback(alias, true, ctx),
             Intent::Navigate { keys } => {
@@ -724,90 +502,14 @@ impl Device for GenericAdb {
                 self.shell(alias, &args, &[], true, ctx)?;
                 Ok(())
             }
-            Intent::Activate { reference } => {
-                let (snapshot, at) = {
-                    let views = self
-                        .views
-                        .lock()
-                        .map_err(|_| Failure::before("adapter_state_unavailable"))?;
-                    let view = views
-                        .get(alias)
-                        .ok_or(Failure::before("ui_reference_unknown"))?;
-                    (view.snapshot.clone(), view.at)
-                };
-                if ctx.clock.monotonic_ms().saturating_sub(at) > REFERENCE_TTL_MS {
-                    return Err(Failure::before("ui_reference_expired"));
-                }
-                let element = snapshot
-                    .elements
-                    .iter()
-                    .find(|e| &e.reference == reference)
-                    .ok_or(Failure::before("ui_reference_unknown"))?;
-                let fresh = self.read_ui(alias, ctx)?;
-                if fresh != snapshot {
-                    return Err(Failure::before("ui_reference_stale"));
-                }
-                // Consume references before dispatch; even an uncertain tap cannot be replayed with them.
-                self.views
-                    .lock()
-                    .map_err(|_| Failure::before("adapter_state_unavailable"))?
-                    .remove(alias);
-                let [left, top, right, bottom] = element.bounds;
-                let x = left + (right - left) / 2;
-                let y = top + (bottom - top) / 2;
-                self.shell(
-                    alias,
-                    &["input", "tap", &x.to_string(), &y.to_string()],
-                    &[],
-                    true,
-                    ctx,
-                )?;
-                Ok(())
+            Intent::Activate { reference } | Intent::TypeText { reference, .. } => {
+                self.interact(alias, intent, reference, ctx)
             }
         }
     }
 }
 
 fn session_tag(raw: &str, package: &str) -> PortResult<String> {
-    let tags: Vec<_> = raw
-        .lines()
-        .filter_map(|line| {
-            let (tag, pkg) = line.trim().strip_prefix("tag=")?.split_once(", package=")?;
-            (!tag.is_empty()
-                && tag.len() <= 128
-                && tag
-                    .bytes()
-                    .all(|b| b.is_ascii_alphanumeric() || b"_.:-".contains(&b)))
-            .then_some((tag, pkg.trim()))
-        })
-        .collect();
-    let found: Vec<_> = tags.iter().filter(|(_, p)| *p == package).collect();
-    let [(tag, _)] = found.as_slice() else {
-        return Err(Failure::before(if found.is_empty() {
-            "media_session_not_found"
-        } else {
-            "media_session_ambiguous"
-        }));
-    };
-    if tags.iter().filter(|(other, _)| other == tag).count() != 1 {
-        return Err(Failure::before("media_tag_ambiguous"));
-    }
-    Ok((*tag).to_owned())
-}
-
-/// Accept only the top-level PowerManager wakefulness field, not per-display or
-/// historical log entries. Ambiguous/unknown vendor formats remain unverified.
-fn parse_awake(raw: &str) -> Option<bool> {
-    let mut values = raw
-        .lines()
-        .filter_map(|line| line.trim().strip_prefix("mWakefulness="));
-    let value = values.next()?;
-    if values.next().is_some() {
-        return None;
-    }
-    match value.trim() {
-        "Awake" => Some(true),
-        "Asleep" | "Dozing" | "Dreaming" => Some(false),
-        _ => None,
-    }
+    let sessions = media::sessions(raw)?;
+    media::unique_for_package(&sessions, package).map(str::to_owned)
 }

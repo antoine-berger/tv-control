@@ -5,7 +5,7 @@ use std::{
     hash::{Hash, Hasher},
 };
 use tv_domain::{
-    generic::{UiElement, UiSnapshot},
+    generic::{UiElement, UiSnapshot, UiTruncation},
     Failure, PortResult,
 };
 pub(super) fn parse_ui(device: &str, session: u128, raw: &str) -> PortResult<UiSnapshot> {
@@ -22,6 +22,8 @@ pub(super) fn parse_ui(device: &str, session: u128, raw: &str) -> PortResult<UiS
     xml.hash(&mut hash);
     let revision = format!("{:016x}", hash.finish());
     let mut elements = Vec::new();
+    let mut truncation = Vec::new();
+    let mut focused_count = 0;
     let mut rest = xml;
     let mut stack: Vec<&str> = Vec::new();
     let mut nodes = 0usize;
@@ -65,10 +67,23 @@ pub(super) fn parse_ui(device: &str, session: u128, raw: &str) -> PortResult<UiS
             return Err(Failure::before("ui_output_limit"));
         }
         let flag = |key: &str| attributes.get(key).is_some_and(|v| v == "true");
-        if !flag("enabled")
-            || flag("password")
-            || !(flag("clickable") || flag("focusable") || flag("focused"))
-        {
+        if flag("focused") {
+            focused_count += 1;
+        }
+        if flag("password") {
+            continue;
+        }
+        let actionable = flag("enabled") && (flag("clickable") || flag("focusable"));
+        let editable = flag("enabled")
+            && attributes
+                .get("class")
+                .is_some_and(|class| class == "android.widget.EditText");
+        let labelled = ["text", "content-desc"].iter().any(|key| {
+            attributes
+                .get(*key)
+                .is_some_and(|text| !text.trim().is_empty())
+        });
+        if !actionable && !editable && !flag("focused") && !labelled {
             continue;
         }
         let bounds =
@@ -79,11 +94,16 @@ pub(super) fn parse_ui(device: &str, session: u128, raw: &str) -> PortResult<UiS
             continue;
         }
         let text = attributes
-            .get("content-desc")
+            .get("text")
             .filter(|s| !s.is_empty())
-            .or_else(|| attributes.get("text"))
+            .or_else(|| attributes.get("content-desc"))
             .cloned()
             .unwrap_or_default();
+        if text.chars().filter(|c| !c.is_control()).count() > 256
+            && !truncation.contains(&UiTruncation::Text)
+        {
+            truncation.push(UiTruncation::Text);
+        }
         let text: String = text.chars().filter(|c| !c.is_control()).take(256).collect();
         let role = attributes
             .get("class")
@@ -93,20 +113,34 @@ pub(super) fn parse_ui(device: &str, session: u128, raw: &str) -> PortResult<UiS
             .take(64)
             .collect();
         if elements.len() == MAX_UI_ELEMENTS {
-            return Err(Failure::before("ui_output_limit"));
+            if !truncation.contains(&UiTruncation::Elements) {
+                truncation.push(UiTruncation::Elements);
+            }
+            continue;
         }
         elements.push(UiElement {
             reference: format!("{revision}:{}", elements.len()),
             text,
             role,
             focused: flag("focused"),
+            actionable,
+            editable,
+            package: attributes
+                .get("package")
+                .filter(|p| crate::config::package(p))
+                .cloned(),
             bounds,
         });
     }
     if !stack.is_empty() {
         return Err(invalid());
     }
-    Ok(UiSnapshot { revision, elements })
+    Ok(UiSnapshot {
+        revision,
+        elements,
+        truncation,
+        focused_count,
+    })
 }
 fn tag_end(s: &str) -> Option<usize> {
     let mut quote = None;

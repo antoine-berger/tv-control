@@ -202,7 +202,9 @@ pub fn run(command: &str, args: &[String]) -> Result<i32, &'static str> {
         }
         "doctor" => {
             let path = config_path.ok_or("configuration_required")?;
-            let config = Arc::new(Config::from_json(&setup::read_bounded(&path)?)?);
+            let snapshot = setup::read_bounded(&path)?;
+            let config = Arc::new(Config::from_json(&snapshot)?);
+            let versions = crate::journey::runtime_diagnostics(&path, &snapshot);
             if options.probe && !options.dry {
                 let alias = options.get("--device").unwrap_or("screen");
                 let clock = SystemClock::default();
@@ -217,13 +219,13 @@ pub fn run(command: &str, args: &[String]) -> Result<i32, &'static str> {
                 );
                 let success = receipt.status == Status::Observed;
                 emit(
-                    json!({"status":if success{"state_observed"}else{"probe_failed"},"message":"Read-only controller probe completed; no mutation or setup was requested.","receipt":tv_adapters::wire::receipt(&receipt),"next_steps":["A successful state read does not qualify playback, volume or hosted chat latency.","If the target is unavailable, check authorization, isolated daemon ownership and rediscover dynamic ports; no reconnect or pairing is attempted."]}),
+                    json!({"status":if success{"state_observed"}else{"probe_failed"},"message":"Read-only controller probe completed; no mutation or setup was requested.","versions":versions,"receipt":tv_adapters::wire::receipt(&receipt),"next_steps":["A successful state read does not qualify playback, volume or hosted chat latency.","If the target is unavailable, check authorization, isolated daemon ownership and rediscover dynamic ports; no reconnect or pairing is attempted."]}),
                     options.json,
                 );
                 Ok(if success { 0 } else { 2 })
             } else {
                 emit(
-                    json!({"status":"configuration_valid","message":"Configuration is valid. Offline checks do not verify device access.","device_access":false,"control_verified":false,"executables":{"adb_present":config.executables.adb.is_file(),"curl_present":config.executables.curl.is_file()},"next_steps":["Authorize and prepare the dedicated ADB connection explicitly before doctor --probe.","No daemon, pairing, account access or tunnel was started."]}),
+                    json!({"status":"configuration_valid","message":"Configuration is valid. Offline checks do not verify device access.","versions":versions,"device_access":false,"control_verified":false,"executables":{"adb_present":config.executables.adb.is_file(),"curl_present":config.executables.curl.is_file()},"next_steps":["Authorize and prepare the dedicated ADB connection explicitly before doctor --probe.","No daemon, pairing, account access or tunnel was started."]}),
                     options.json,
                 );
                 Ok(0)

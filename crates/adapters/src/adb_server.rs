@@ -2,6 +2,7 @@
 use std::{
     io::{self, Read, Write},
     net::{IpAddr, SocketAddr, TcpStream},
+    os::fd::AsRawFd,
     time::Duration,
 };
 use tv_application::Context;
@@ -36,7 +37,9 @@ impl ServerProbe for SmartSocketProbe {
             match stream.write(&bytes[sent..]) {
                 Ok(0) => return Err(Failure::before("adb_server_probe_failed")),
                 Ok(n) => sent += n,
-                Err(e) if e.kind() == io::ErrorKind::WouldBlock => ctx.wait(self.poll_ms)?,
+                Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
+                    wait_socket(&stream, libc::POLLOUT, self.poll_ms, ctx)?
+                }
                 Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
                 Err(_) => return Err(Failure::before("adb_server_probe_failed")),
             }
@@ -48,7 +51,9 @@ impl ServerProbe for SmartSocketProbe {
             match stream.read(&mut response[read..]) {
                 Ok(0) => return Err(Failure::before("adb_server_probe_failed")),
                 Ok(n) => read += n,
-                Err(e) if e.kind() == io::ErrorKind::WouldBlock => ctx.wait(self.poll_ms)?,
+                Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
+                    wait_socket(&stream, libc::POLLIN, self.poll_ms, ctx)?
+                }
                 Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
                 Err(_) => return Err(Failure::before("adb_server_probe_failed")),
             }
@@ -63,4 +68,23 @@ impl ServerProbe for SmartSocketProbe {
         )
         .map_err(|_| Failure::before("adb_server_probe_failed"))
     }
+}
+
+fn wait_socket(stream: &TcpStream, events: i16, poll_ms: u64, ctx: &Context<'_>) -> PortResult<()> {
+    crate::process::wait_ready(
+        &mut [libc::pollfd {
+            fd: stream.as_raw_fd(),
+            events,
+            revents: 0,
+        }],
+        poll_ms,
+        ctx,
+    )
+    .map_err(|failure| {
+        if failure.code == "process_poll_failed" {
+            Failure::before("adb_server_probe_failed")
+        } else {
+            failure
+        }
+    })
 }

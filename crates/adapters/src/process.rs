@@ -52,6 +52,30 @@ pub(crate) fn nonblocking(fd: RawFd) -> io::Result<()> {
     }
     Ok(())
 }
+/// Wait for I/O, not a fixed sleep. The timeout remains a cancellation quantum;
+/// callers re-check the original absolute deadline after every wake, including EINTR.
+/// Keep the Context::wait 50 ms cancellation bound even with a larger poll setting.
+pub(crate) fn wait_ready(
+    descriptors: &mut [libc::pollfd],
+    poll_ms: u64,
+    ctx: &Context<'_>,
+) -> PortResult<()> {
+    ctx.check()?;
+    let timeout = poll_ms.clamp(1, 50).min(ctx.remaining_ms()) as i32;
+    // SAFETY: descriptors is a valid mutable slice; poll borrows it only for this call.
+    let result = unsafe {
+        libc::poll(
+            descriptors.as_mut_ptr(),
+            descriptors.len() as libc::nfds_t,
+            timeout,
+        )
+    };
+    if result < 0 && io::Error::last_os_error().kind() != io::ErrorKind::Interrupted {
+        return Err(Failure::before("process_poll_failed"));
+    }
+    ctx.check()
+}
+
 fn read_available(
     reader: &mut impl Read,
     mut capture: Option<&mut Vec<u8>>,
@@ -129,6 +153,7 @@ impl Process for BoundedProcess {
         let mut bytes = Vec::new();
         let mut count = 0;
         let mut status = None;
+        let mut reap_wait_ms = 1u64;
         loop {
             ctx.check().map_err(|e| failure(e.code))?;
             if let Some(pipe) = input.as_mut() {
@@ -170,8 +195,43 @@ impl Process for BoundedProcess {
                     });
                 }
             }
-            ctx.clock
-                .sleep_ms(self.poll_ms.max(1).min(ctx.remaining_ms()));
+            // Closed pipes must not be polled: persistent HUP would busy-spin
+            // while a child remains alive after closing its output descriptors.
+            let mut descriptors = Vec::with_capacity(3);
+            if !out_closed {
+                descriptors.push(libc::pollfd {
+                    fd: stdout.as_raw_fd(),
+                    events: libc::POLLIN,
+                    revents: 0,
+                });
+            }
+            if !err_closed {
+                descriptors.push(libc::pollfd {
+                    fd: stderr.as_raw_fd(),
+                    events: libc::POLLIN,
+                    revents: 0,
+                });
+            }
+            if sent == invocation.stdin.len() {
+                input = None;
+            }
+            if let Some(pipe) = &input {
+                descriptors.push(libc::pollfd {
+                    fd: pipe.as_raw_fd(),
+                    events: libc::POLLOUT,
+                    revents: 0,
+                });
+            }
+            // Pipes may close just before waitpid can observe exit. Reap promptly
+            // without spinning; back off to the cancellation quantum if it stays alive.
+            let wait_ms = if descriptors.is_empty() {
+                let wait = reap_wait_ms.min(self.poll_ms.max(1));
+                reap_wait_ms = reap_wait_ms.saturating_mul(2);
+                wait
+            } else {
+                self.poll_ms
+            };
+            wait_ready(&mut descriptors, wait_ms, ctx).map_err(|e| failure(e.code))?;
         }
     }
 }

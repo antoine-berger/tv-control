@@ -258,8 +258,17 @@ class MCP(unittest.TestCase):
             proc.stdin.write(b'{"jsonrpc":"2.0","method":"notifications/initialized"}\n')
             proc.stdin.flush()
             result = exchange({"jsonrpc":"2.0","id":2,"method":"tools/list"})
-            self.assertEqual({t["name"] for t in result["result"]["tools"]}, {"tv_control", "tv_capabilities", "tv_read", "tv_operation"})
-            self.assertEqual(exchange({"jsonrpc":"2.0","id":3,"method":"ping"})["result"], {})
+            first=result["result"];names=[t["name"] for t in first["tools"]]
+            self.assertIn("tv_control",names)  # legacy onboarding probes first page
+            cursor=first.get("nextCursor");seen=set();rpc_id=3
+            while cursor is not None:
+                self.assertNotIn(cursor,seen);seen.add(cursor)
+                result=exchange({"jsonrpc":"2.0","id":rpc_id,"method":"tools/list","params":{"cursor":cursor}});rpc_id+=1
+                names.extend(t["name"] for t in result["result"]["tools"])
+                cursor=result["result"].get("nextCursor")
+            self.assertEqual(len(names),len(set(names)))
+            self.assertEqual(set(names), {"tv_control", "tv_capabilities", "tv_read", "tv_operation"})
+            self.assertEqual(exchange({"jsonrpc":"2.0","id":rpc_id,"method":"ping"})["result"], {})
             self.assertIsNone(proc.poll())
         finally:
             proc.stdin.close()

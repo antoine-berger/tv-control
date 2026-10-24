@@ -3,7 +3,7 @@ use super::*;
 use std::{
     collections::hash_map::DefaultHasher,
     hash::{Hash, Hasher},
-    os::unix::fs::PermissionsExt,
+    os::unix::fs::{MetadataExt, PermissionsExt},
 };
 impl GenericAdb {
     fn cache_file(&self) -> Option<crate::pipeline_store::AtomicFile> {

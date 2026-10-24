@@ -49,3 +49,6 @@ RSS excludes separate curl/ADB clients, the ADB daemon and any tunnel. OS
 scheduling and unrelated load were not controlled. Optimization-profile comparisons
 and measurements on actual router firmware remain future work. Use the
 [acceptance protocol](../docs/ACCEPTANCE.md) for user-to-physical-effect claims.
+
+[Readiness-polling experiment](readiness-polling.md) records a local before/after
+measurement of bounded subprocess overhead, with a reproducible ignored test.

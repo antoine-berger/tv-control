@@ -73,13 +73,101 @@ pub fn read_generation(
     revision: &str,
     device: &str,
 ) -> Result<String, &'static str> {
+    let bytes = read_bridge_record(directory, "bridge-generation.json")?;
+    let generation: BridgeGeneration =
+        serde_json::from_slice(&bytes).map_err(|_| "bridge_generation_invalid")?;
+    generation.validate()?;
+    if generation.installation_id != installation_id
+        || generation.revision != revision
+        || generation.device != device
+    {
+        return Err("bridge_generation_binding_mismatch");
+    }
+    Ok(generation.generation)
+}
+
+/// Historical build evidence only: this does not prove that a process is alive.
+/// Kept separately so old generation readers and downgrade recovery remain compatible.
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct BridgeBuild {
+    schema: u32,
+    generation: String,
+    version: String,
+}
+impl BridgeBuild {
+    fn validate(&self) -> Result<(), &'static str> {
+        if self.schema != 1
+            || !tv_domain::identifier(&self.generation)
+            || self.version.is_empty()
+            || self.version.len() > 64
+            || !self
+                .version
+                .bytes()
+                .all(|c| c.is_ascii_alphanumeric() || b".-+".contains(&c))
+        {
+            return Err("bridge_build_invalid");
+        }
+        Ok(())
+    }
+}
+
+pub fn record_build(
+    directory: &Path,
+    generation: &BridgeGeneration,
+    version: &str,
+) -> Result<(), &'static str> {
+    let build = BridgeBuild {
+        schema: 1,
+        generation: generation.generation.clone(),
+        version: version.into(),
+    };
+    build.validate()?;
+    if read_generation(
+        directory,
+        &generation.installation_id,
+        &generation.revision,
+        &generation.device,
+    )? != build.generation
+    {
+        return Err("bridge_build_binding_mismatch");
+    }
+    let mut file = AtomicFile::open(directory.join("bridge-build.json"), 8192)?;
+    file.write(serde_json::to_vec(&build).map_err(|_| "bridge_build_invalid")?)
+}
+
+/// Read the last-started build only when its generation matches the supplied intent.
+/// A stopped process can leave valid records; callers must not label this a live version.
+pub fn last_started_version(
+    directory: &Path,
+    installation_id: &str,
+    revision: &str,
+    device: &str,
+) -> Result<String, &'static str> {
+    let generation = read_generation(directory, installation_id, revision, device)?;
+    let bytes = read_bridge_record(directory, "bridge-build.json").map_err(|code| match code {
+        "bridge_generation_unavailable" => "bridge_build_unavailable",
+        "bridge_generation_pending" => "bridge_build_pending",
+        _ => "bridge_build_invalid",
+    })?;
+    let build: BridgeBuild = serde_json::from_slice(&bytes).map_err(|_| "bridge_build_invalid")?;
+    build.validate()?;
+    if build.generation != generation
+        || read_generation(directory, installation_id, revision, device)? != generation
+    {
+        return Err("bridge_build_binding_mismatch");
+    }
+    Ok(build.version)
+}
+
+fn read_bridge_record(directory: &Path, name: &str) -> Result<Vec<u8>, &'static str> {
     private_directory(directory)?;
     // Reading while the bridge publishes is intentional. Do not use AtomicFile's
     // interrupted-write recovery here: that would remove a live writer's temp link.
     let file = OpenOptions::new()
         .read(true)
         .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC)
-        .open(directory.join("bridge-generation.json"))
+        .open(directory.join(name))
         .map_err(|e| {
             if e.kind() == std::io::ErrorKind::NotFound {
                 "bridge_generation_unavailable"
@@ -108,16 +196,7 @@ pub fn read_generation(
     if bytes.len() > 8192 {
         return Err("bridge_generation_invalid");
     }
-    let generation: BridgeGeneration =
-        serde_json::from_slice(&bytes).map_err(|_| "bridge_generation_invalid")?;
-    generation.validate()?;
-    if generation.installation_id != installation_id
-        || generation.revision != revision
-        || generation.device != device
-    {
-        return Err("bridge_generation_binding_mismatch");
-    }
-    Ok(generation.generation)
+    Ok(bytes)
 }
 
 fn private_directory(directory: &Path) -> Result<(), &'static str> {

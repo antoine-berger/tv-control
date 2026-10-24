@@ -16,3 +16,19 @@ The upstream `basic/build` script generates this APK using `aapt2 compile` and
 The fixture validates the real compiler format independently of the handmade
 malformed/variant fixtures in the unit tests. It is test data, not a deployed
 application or proof of behavior on a live TV.
+
+## Synthetic media-session dump
+
+`media-session.txt` is a synthetic, non-device fixture with invented identity and
+metadata. Its record header/fields follow AOSP `MediaSessionRecord.dump` and
+`toString` (source blob `5f7c86f7b670dfbd42e68882f98c4de01b4a7f48`):
+https://android.googlesource.com/platform/frameworks/base/+/refs/heads/main/services/core/java/com/android/server/media/MediaSessionRecord.java
+
+Targeted monitor command support was checked against AOSP `MediaShellCommand`
+(source blob `19f16cc3800090d8099cd7b2281293b6d4cf9648`):
+https://android.googlesource.com/platform/frameworks/base/+/refs/heads/main/services/core/java/com/android/server/media/MediaShellCommand.java
+
+These sources were inspected on 2026-10-24. The monitor accepts play, pause, next,
+previous and quit, not stop or seek. The record dump includes playback position
+and a metadata description, not reliable duration/media-ID fields. This fixture
+qualifies parsing of that text format only, not live TV behavior or media delivery.

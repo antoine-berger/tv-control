@@ -187,7 +187,7 @@ fn curl_secret_is_stdin_configuration_and_redirects_not_enabled() {
 }
 #[test]
 fn adb_parses_only_target_session_and_omits_metadata() {
-    let raw="package=org.other.player\nstate=PlaybackState {state=3, speed=1.0}\npackage=org.example.player\nmetadata=private title\nstate=PlaybackState {state=2, speed=0.0}";
+    let raw="  other org.other.player/other/7 (userId=0)\n    package=org.other.player\n    active=true\n    state=PlaybackState {state=3, speed=1.0}\n  player org.example.player/player/7 (userId=0)\n    package=org.example.player\n    active=true\n    metadata=private title\n    state=PlaybackState {state=2, speed=0.0}";
     assert_eq!(
         parse_playback(raw, "org.example.player").unwrap(),
         Playback::Paused
@@ -195,7 +195,7 @@ fn adb_parses_only_target_session_and_omits_metadata() {
 }
 #[test]
 fn adb_rejects_ambiguous_sessions() {
-    let raw="package=org.example.player\nstate=PlaybackState {state=2}\npackage=org.example.player\nstate=PlaybackState {state=3}";
+    let raw="  first org.example.player/first/7 (userId=0)\n    package=org.example.player\n    active=true\n    state=PlaybackState {state=2}\n  second org.example.player/second/7 (userId=0)\n    package=org.example.player\n    active=true\n    state=PlaybackState {state=3}";
     assert_eq!(
         parse_playback(raw, "org.example.player").unwrap_err().code,
         "media_session_ambiguous"

@@ -309,3 +309,76 @@ fn failed_finish_does_not_leave_immortal_running_owner() {
         matches!(j.get("a").unwrap(), Operation::Complete(v) if v.status == Status::OutcomeUnknown)
     );
 }
+
+#[test]
+fn media_command_and_target_are_durable_request_identity() {
+    use tv_domain::generic::MediaCommand;
+    let temp = Temp::new();
+    let journal = temp.journal(4);
+    let mut r = request("media");
+    r.intent = Intent::Media {
+        session: "org.example.player/player".into(),
+        command: MediaCommand::Next,
+    };
+    assert!(matches!(
+        journal.reserve(&r, "tv", 100).unwrap(),
+        Reservation::Acquired
+    ));
+    journal
+        .finish(&r, &reply("media", Status::Observed), 200)
+        .unwrap();
+    drop(journal);
+    let journal = temp.journal(4);
+    assert!(matches!(
+        journal.reserve(&r, "tv", 300).unwrap(),
+        Reservation::Existing(Operation::Complete(_))
+    ));
+    for intent in [
+        Intent::Media {
+            session: "org.example.player/player".into(),
+            command: MediaCommand::Previous,
+        },
+        Intent::Media {
+            session: "org.example.other/player".into(),
+            command: MediaCommand::Next,
+        },
+    ] {
+        r.intent = intent;
+        assert!(matches!(
+            journal.reserve(&r, "tv", 300).unwrap(),
+            Reservation::Conflict
+        ));
+    }
+}
+
+#[test]
+fn text_intent_survives_restart_and_conflicts_on_changed_target_or_text() {
+    let t = Temp::new();
+    let j = t.journal(4);
+    let mut r = request("text");
+    r.intent = Intent::TypeText {
+        reference: "snapshot:1:0".into(),
+        text: "title".into(),
+    };
+    assert!(matches!(
+        j.reserve(&r, "tv", 100).unwrap(),
+        Reservation::Acquired
+    ));
+    j.finish(&r, &reply("text", Status::Observed), 200).unwrap();
+    drop(j);
+    let j = t.journal(4);
+    assert!(
+        matches!(j.reserve(&r, "tv", 300).unwrap(), Reservation::Existing(Operation::Complete(v)) if v.status == Status::Observed)
+    );
+    for (reference, text) in [("snapshot:1:0", "different"), ("snapshot:2:0", "title")] {
+        let mut changed = r.clone();
+        changed.intent = Intent::TypeText {
+            reference: reference.into(),
+            text: text.into(),
+        };
+        assert!(matches!(
+            j.reserve(&changed, "tv", 300).unwrap(),
+            Reservation::Conflict
+        ));
+    }
+}

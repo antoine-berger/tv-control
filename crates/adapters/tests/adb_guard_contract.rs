@@ -63,7 +63,7 @@ fn globally_duplicate_media_tag_cannot_dispatch() {
     let config = cfg();
     let process = ProcessMock::new(vec![
         VERSION,
-        "tag=player, package=org.other.player\ntag=player, package=org.example.player\n",
+        "Sessions:\ntag=player, package=org.other.player\ntag=player, package=org.example.player\n",
     ]);
     let clock = SystemClock::default();
     let flag = CancelFlag::default();
@@ -118,4 +118,94 @@ fn incompatible_mock_server_only_receives_readonly_version_probe() {
     let calls = process.calls.lock().unwrap();
     assert_eq!(calls.len(), 1);
     assert_eq!(calls[0].args, vec![std::ffi::OsString::from("version")]);
+}
+
+#[test]
+fn fragmented_version_response_wakes_without_a_fixed_poll_delay() {
+    let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let server = std::thread::spawn(move || {
+        let (mut socket, _) = listener.accept().unwrap();
+        let mut request = [0u8; 16];
+        socket.read_exact(&mut request).unwrap();
+        for fragment in [b"OK".as_slice(), b"AY000", b"40029"] {
+            socket.write_all(fragment).unwrap();
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        request
+    });
+    let clock = SystemClock::default();
+    let flag = CancelFlag::default();
+    let ctx = Context {
+        clock: &clock,
+        cancellation: &flag,
+        deadline_monotonic_ms: clock.monotonic_ms() + 1000,
+    };
+    let result = SmartSocketProbe { poll_ms: 2000 }.version("127.0.0.1", port, &ctx);
+    assert_eq!(server.join().unwrap(), *b"000chost:version");
+    assert_eq!(result, Ok(41));
+}
+
+#[test]
+fn truncated_version_response_is_not_replayed() {
+    let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let server = std::thread::spawn(move || {
+        let (mut socket, _) = listener.accept().unwrap();
+        let mut request = [0u8; 16];
+        socket.read_exact(&mut request).unwrap();
+        socket.write_all(b"OKAY0004").unwrap();
+        request
+    });
+    let clock = SystemClock::default();
+    let flag = CancelFlag::default();
+    let error = SmartSocketProbe { poll_ms: 2 }
+        .version("127.0.0.1", port, &context(&clock, &flag))
+        .unwrap_err();
+    assert_eq!(server.join().unwrap(), *b"000chost:version");
+    assert_eq!(error.code, "adb_server_probe_failed");
+    assert_eq!(error.effect, Effect::None);
+}
+
+#[test]
+fn stalled_probe_preserves_context_cancellation_quantum_with_a_large_poll_setting() {
+    use std::{
+        sync::Arc,
+        time::{Duration, Instant},
+    };
+    let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let flag = Arc::new(CancelFlag::default());
+    let cancel = flag.clone();
+    let server = std::thread::spawn(move || {
+        let (mut socket, _) = listener.accept().unwrap();
+        let mut request = [0u8; 16];
+        socket.read_exact(&mut request).unwrap();
+        // Cancel only once the probe is waiting for a response.
+        std::thread::sleep(Duration::from_millis(75));
+        cancel.cancel();
+        let mut tail = [0u8; 1];
+        socket
+            .set_read_timeout(Some(Duration::from_secs(4)))
+            .unwrap();
+        assert_eq!(socket.read(&mut tail).unwrap(), 0);
+    });
+    let clock = SystemClock::default();
+    let ctx = Context {
+        clock: &clock,
+        cancellation: &*flag,
+        deadline_monotonic_ms: clock.monotonic_ms() + 5000,
+    };
+    let start = Instant::now();
+    let error = SmartSocketProbe { poll_ms: 2000 }
+        .version("127.0.0.1", port, &ctx)
+        .unwrap_err();
+    let elapsed = start.elapsed();
+    server.join().unwrap();
+    assert_eq!(error.code, "cancelled");
+    assert_eq!(error.effect, Effect::None);
+    assert!(
+        elapsed < Duration::from_secs(1),
+        "cancellation waited for the full polling interval: {elapsed:?}"
+    );
 }
