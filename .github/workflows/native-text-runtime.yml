@@ -46,6 +46,7 @@ jobs:
           python3 native-text/emulator/test_process_group.py
           python3 native-text/emulator/test_proof_result.py
           python3 native-text/emulator/test_owned_errors.py
+          python3 native-text/emulator/test_readiness.py --java "$JAVA_HOME_21_X64/bin/java"
           cargo test --manifest-path native-text/host/Cargo.toml --locked --offline
       - name: Build project-owned fixture and instrumentation APKs
         shell: bash

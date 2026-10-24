@@ -222,3 +222,24 @@ AOSP, with PlayStore disabled and no Google APIs/GMS image. A GMS-to-AOSP switch
 is therefore not an available explanation/fix. Software CPU/rendering pressure
 remains only a hypothesis until diagnostics establish it; resolution/RAM/backend
 changes would need a separately reviewed environment patch.
+
+### Read-only fixture readiness before input
+
+After each successful launch, a separate test-only `ready` instrumentation mode
+polls accessibility for at most 20 seconds of device uptime, at 200 ms intervals,
+with at most 100 probes and the existing 60-second host instrumentation deadline.
+Success requires the active root package to be the fixture and exactly one editor
+with the exact fixture package/resource ID/native EditText class, focused, editable,
+enabled, visible, and nonempty bounds. Missing/system roots are observations to
+wait through, never dismissed. Nodes/roots are recycled each probe. A probe that
+finishes at/after the deadline cannot produce success. IPC may itself block; the
+host deadline remains the outer bound.
+
+This mode never reads/writes text, invokes accessibility actions, changes selection,
+or consumes any request token. Hint/password/selection negative fixtures remain
+eligible for readiness and still face all original engine checks afterward.
+Readiness failure prevents the input command. Success permits only the original
+single input invocation and then all original post-input assertions unchanged.
+IME/accessibility secure settings are compared again after readiness. No promise
+is made that readiness prevents the fixture losing focus afterward; that must still
+fail the original proof rather than trigger mutation replay.

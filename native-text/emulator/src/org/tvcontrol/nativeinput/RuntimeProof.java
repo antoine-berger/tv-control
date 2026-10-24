@@ -76,6 +76,8 @@ public final class RuntimeProof extends NativeTextInstrumentation {
     }
     private AccessibilityNodeInfo editor(String id) {
         stage = Stage.ROOT_LOOKUP;
+        matches = MatchCount.NOT_CHECKED;
+        overlay = Overlay.NOT_CHECKED;
         AccessibilityNodeInfo root = automation.getRootInActiveWindow();
         if (root == null) { rootCategory = RootCategory.MISSING; return null; }
         try {
@@ -130,8 +132,32 @@ public final class RuntimeProof extends NativeTextInstrumentation {
     private static void field(DataOutputStream out, String s) throws Exception {
         byte[] b = s.getBytes(StandardCharsets.UTF_8); out.writeInt(b.length); out.write(b);
     }
+    private boolean fixtureReady() {
+        observeDeviceState();
+        AccessibilityNodeInfo node = editor(ID);
+        if (node == null) return false;
+        try {
+            Rect bounds = new Rect();
+            node.getBoundsInScreen(bounds);
+            return rootCategory == RootCategory.FIXTURE
+                && "org.tvcontrol.fixture".contentEquals(node.getPackageName() == null ? "" : node.getPackageName())
+                && ID.equals(node.getViewIdResourceName())
+                && "android.widget.EditText".contentEquals(node.getClassName() == null ? "" : node.getClassName())
+                && node.isFocused() && node.isEditable() && node.isEnabled()
+                && node.isVisibleToUser() && !bounds.isEmpty();
+        } finally { node.recycle(); }
+    }
     public void testFixture() throws Exception {
         String mode = arguments.getString("mode");
+        if ("ready".equals(mode)) {
+            assertTrue("fixture accessibility readiness deadline", Readiness.await(
+                new Readiness.Probe() { public boolean ready() { return fixtureReady(); } },
+                new Readiness.Clock() {
+                    public long now() { return SystemClock.uptimeMillis(); }
+                    public void sleep(long millis) { SystemClock.sleep(millis); }
+                }));
+            return;
+        }
         boolean insertion = "normal".equals(mode);
         AccessibilityNodeInfo n = editor(ID);
         assertNotNull("fixture editor absent", n);

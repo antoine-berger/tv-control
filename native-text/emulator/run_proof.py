@@ -144,7 +144,15 @@ def main():
             shell("am", "force-stop", "org.tvcontrol.fixture")
             launch = parse_activity_start(shell("am", "start", "-W", "-n", "org.tvcontrol.fixture/.FixtureActivity", "--es", "mode", mode))
             print("Fixture launch:", mode, launch, flush=True)
-            time.sleep(0.5)
+            readiness_result = shell("am", "instrument", "-w", "-e", "mode", "ready",
+                "org.tvcontrol.nativehelper/org.tvcontrol.nativeinput.RuntimeProof", timeout=60)
+            readiness = parse_proof_result(readiness_result)
+            if readiness["proof"] != "passed":
+                raise RuntimeError("fixture readiness failed: " + mode + " "
+                    + json.dumps(readiness, sort_keys=True))
+            if snapshot() != initial:
+                raise RuntimeError("readiness changed IME/accessibility secure settings")
+            print("PASS read-only fixture readiness:", mode, flush=True)
             if mode == "key-remap":
                 shell("input", "text", "Tanya")
             result = shell("am", "instrument", "-w", "-e", "mode", mode,
