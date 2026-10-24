@@ -10,7 +10,7 @@ import tempfile
 import subprocess
 import time
 from process_group import leader_exited, stop_unreaped_group
-from proof_result import parse_proof_result
+from proof_result import parse_proof_result, parse_activity_start
 
 MODES = ("key-remap", "normal", "hint", "password", "visible-password", "selection", "focus", "stale-window", "cancel")
 
@@ -140,7 +140,8 @@ def main():
         command([adb, "-s", serial, "install", "-r", str(args.build / "proof.apk")], timeout=120)
         for mode in MODES:
             shell("am", "force-stop", "org.tvcontrol.fixture")
-            shell("am", "start", "-W", "-n", "org.tvcontrol.fixture/.FixtureActivity", "--es", "mode", mode)
+            launch = parse_activity_start(shell("am", "start", "-W", "-n", "org.tvcontrol.fixture/.FixtureActivity", "--es", "mode", mode))
+            print("Fixture launch:", mode, launch, flush=True)
             time.sleep(0.5)
             if mode == "key-remap":
                 shell("input", "text", "Tanya")
@@ -150,7 +151,11 @@ def main():
             if diagnostic["proof"] != "passed":
                 raise RuntimeError("runtime fixture assertion failed: " + mode
                     + " stage=" + diagnostic["stage"] + " error=" + diagnostic["error"]
-                    + " synthetic_readback=" + diagnostic["readback"])
+                    + " synthetic_readback=" + diagnostic["readback"]
+                    + " launch=" + launch + " root=" + diagnostic["root"]
+                    + " matches=" + diagnostic["matches"] + " report_ids=" + diagnostic["report_ids"]
+                    + " interactive=" + diagnostic["interactive"]
+                    + " keyguard_locked=" + diagnostic["keyguard_locked"])
             if snapshot() != initial:
                 raise RuntimeError("runner changed IME/accessibility secure settings: " + mode)
             print("PASS runtime fixture:", mode, "; IME/accessibility secure settings unchanged")

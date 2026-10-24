@@ -181,3 +181,13 @@ Diagnostic candidate builds locally. Shared helper DEX remains unchanged at
 proof-only DEX is
 `3d0181b2bc79ae775828bd9dadd4ff11346ac4b6b8df3a7d6b5dd2e0e94e1556`.
 No diagnostic candidate has been published or run yet; renewed review is required.
+
+Editor-lookup diagnostics additionally expose fixed categories only: root package
+is compared against the owned fixture/helper, AOSP Latin IME, and Android/systemui;
+all other packages become OTHER (never printed). Match count is ZERO/ONE/MULTIPLE.
+The proof reads its own REPORT_VIEW_IDS flag and public PowerManager.isInteractive /
+KeyguardManager.isKeyguardLocked without writing settings or waking/unlocking.
+Unavailable observations remain UNKNOWN. These observations do not change selectors,
+assertions, or helper behavior. Activity-manager launch output is reduced to a fixed
+category; FIXTURE_OK means a reported successful launch, not proof it stayed visible
+or did not subsequently crash. No launch category bypasses the existing assertions.

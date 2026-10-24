@@ -1,6 +1,10 @@
 package org.tvcontrol.nativeinput;
 
 import android.graphics.Rect;
+import android.content.Context;
+import android.app.KeyguardManager;
+import android.os.PowerManager;
+import android.accessibilityservice.AccessibilityServiceInfo;
 import android.os.Bundle;
 import android.os.SystemClock;
 import android.view.accessibility.AccessibilityNodeInfo;
@@ -21,16 +25,47 @@ public final class RuntimeProof extends NativeTextInstrumentation {
         REQUEST_CONSUMED, REPLAY_INVOKE, REPLAY_STATUS, REPLAY_READBACK, CLEANUP, DONE }
     enum ErrorCode { NONE, ASSERTION, EXCEPTION }
     enum SyntheticReadback { NOT_CHECKED, EXPECTED_REMAP, UNCHANGED_LITERAL, EMPTY, OTHER }
+    enum RootCategory { NOT_CHECKED, FIXTURE, HELPER, IME, SYSTEM, OTHER, MISSING }
+    enum MatchCount { NOT_CHECKED, ZERO, ONE, MULTIPLE }
+    enum ObservedState { UNKNOWN, YES, NO }
+    private RootCategory rootCategory = RootCategory.NOT_CHECKED;
+    private MatchCount matches = MatchCount.NOT_CHECKED;
+    private ObservedState reportIds = ObservedState.UNKNOWN;
+    private ObservedState interactive = ObservedState.UNKNOWN;
+    private ObservedState keyguardLocked = ObservedState.UNKNOWN;
+    private static ObservedState observed(boolean value) { return value ? ObservedState.YES : ObservedState.NO; }
+    private void observeDeviceState() {
+        // Read-only public APIs, diagnostic only; never changes proof decisions.
+        try {
+            PowerManager power = (PowerManager)getTargetContext().getSystemService(Context.POWER_SERVICE);
+            if (power != null) interactive = observed(power.isInteractive());
+            KeyguardManager keyguard = (KeyguardManager)getTargetContext().getSystemService(Context.KEYGUARD_SERVICE);
+            if (keyguard != null) keyguardLocked = observed(keyguard.isKeyguardLocked());
+            AccessibilityServiceInfo info = automation.getServiceInfo();
+            if (info != null) reportIds = observed((info.flags & AccessibilityServiceInfo.FLAG_REPORT_VIEW_IDS) != 0);
+        } catch (RuntimeException ignored) { /* Unavailable diagnostics stay UNKNOWN. */ }
+    }
+    private static RootCategory category(CharSequence name) {
+        if (name == null) return RootCategory.MISSING;
+        String value = name.toString();
+        if ("org.tvcontrol.fixture".equals(value)) return RootCategory.FIXTURE;
+        if ("org.tvcontrol.nativehelper".equals(value)) return RootCategory.HELPER;
+        if ("com.android.inputmethod.latin".equals(value)) return RootCategory.IME;
+        if ("android".equals(value) || "com.android.systemui".equals(value)) return RootCategory.SYSTEM;
+        return RootCategory.OTHER;
+    }
     private Stage stage = Stage.CONNECT_AUTOMATION;
     private SyntheticReadback syntheticReadback = SyntheticReadback.NOT_CHECKED;
     private UiAutomation automation;
     private AccessibilityNodeInfo editor(String id) {
         stage = Stage.ROOT_LOOKUP;
         AccessibilityNodeInfo root = automation.getRootInActiveWindow();
-        if (root == null) return null;
+        if (root == null) { rootCategory = RootCategory.MISSING; return null; }
         try {
+            rootCategory = category(root.getPackageName());
             stage = Stage.EDITOR_LOOKUP;
             List<AccessibilityNodeInfo> nodes = root.findAccessibilityNodeInfosByViewId(id);
+            matches = nodes.isEmpty() ? MatchCount.ZERO : nodes.size() == 1 ? MatchCount.ONE : MatchCount.MULTIPLE;
             if (nodes.size() == 1) return nodes.get(0);
             for (AccessibilityNodeInfo n : nodes) n.recycle();
             return null;
@@ -52,6 +87,7 @@ public final class RuntimeProof extends NativeTextInstrumentation {
             assertNotNull("automation", automation);
             stage = Stage.WAIT_IDLE;
             automation.waitForIdle(200, 2000);
+            observeDeviceState();
             testFixture();
             stage = Stage.DONE;
             result.putString("tv_native_runtime_proof", "passed");
@@ -64,6 +100,11 @@ public final class RuntimeProof extends NativeTextInstrumentation {
             result.putString("tv_native_runtime_stage", stage.name());
             result.putString("tv_native_runtime_error", error.name());
             result.putString("tv_native_runtime_readback", syntheticReadback.name());
+            result.putString("tv_native_runtime_root", rootCategory.name());
+            result.putString("tv_native_runtime_matches", matches.name());
+            result.putString("tv_native_runtime_report_ids", reportIds.name());
+            result.putString("tv_native_runtime_interactive", interactive.name());
+            result.putString("tv_native_runtime_keyguard_locked", keyguardLocked.name());
             finish(0, result);
         }
     }

@@ -4,6 +4,27 @@ ERRORS = frozenset(("NONE", "ASSERTION", "EXCEPTION"))
 READBACKS = frozenset(("NOT_CHECKED", "EXPECTED_REMAP", "UNCHANGED_LITERAL", "EMPTY", "OTHER"))
 ALLOWED = {"proof": frozenset(("passed", "failed")), "stage": STAGES, "error": ERRORS, "readback": READBACKS}
 
+ALLOWED.update(root=frozenset("NOT_CHECKED FIXTURE HELPER IME SYSTEM OTHER MISSING".split()),
+               matches=frozenset("NOT_CHECKED ZERO ONE MULTIPLE".split()))
+for key in ("report_ids", "interactive", "keyguard_locked"):
+    ALLOWED[key] = frozenset(("UNKNOWN", "YES", "NO"))
+
+
+def parse_activity_start(raw):
+    """Return fixed launch categories only; never echo activity-manager output."""
+    if len(raw) > 128 * 1024:
+        return "INVALID"
+    lines = raw.splitlines()
+    if any(line.startswith(("Error:", "Error type", "Exception")) for line in lines):
+        return "ERROR"
+    statuses = [line[len("Status: "):] for line in lines if line.startswith("Status: ")]
+    if statuses != ["ok"]:
+        return "NOT_CONFIRMED"
+    activities = [line[len("Activity: "):] for line in lines if line.startswith("Activity: ")]
+    if activities != ["org.tvcontrol.fixture/.FixtureActivity"]:
+        return "WRONG_ACTIVITY"
+    return "FIXTURE_OK"
+
 
 def parse_proof_result(raw):
     if len(raw) > 128 * 1024 or "INSTRUMENTATION_FAILED" in raw:
