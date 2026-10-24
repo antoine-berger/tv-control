@@ -19,14 +19,19 @@ import zlib
 BINARY = pathlib.Path(sys.argv.pop(1) if len(sys.argv) > 1 else 'target/release/tv-control').resolve()
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 ADB = r'''
-import html,json,pathlib,shlex,sys
+import html,json,os,pathlib,shlex,subprocess,sys
 root=pathlib.Path(__file__).parent
 args=sys.argv[1:]
 if args==['version']:
     print('Android Debug Bridge version 1.0.41');sys.exit()
 command=shlex.split(args[-1])
+merge_input_stderr = command[:4]==['sh','-c','exec input "$@" 2>&1','tv-control-input']
+if merge_input_stderr: command=['input',*command[4:]]
 state_path=root/'state.json'
 state=json.loads(state_path.read_text())
+if command[0]=='input' and len(command)>1 and state.get('input_stderr'):
+    state['input_attempts']=state.get('input_attempts',0)+1;state_path.write_text(json.dumps(state))
+    print('Error: private rejected input',file=sys.stdout if merge_input_stderr else sys.stderr);sys.exit(0)
 if command[:3]==['cmd','package','query-activities']:
     if ('android.intent.action.VIEW' in command and state.get('url_unsupported')) or 'android.intent.action.SEARCH' in command or 'android.intent.category.LAUNCHER' in command:
         print('No activities found')
@@ -34,6 +39,9 @@ if command[:3]==['cmd','package','query-activities']:
         print('2 activities found:')
         for i,(package,label) in enumerate([('com.fixture.video','YouTube'),('com.fixture.music','YouTube Music')]):
             print(f'  Activity #{i}:\n    ActivityInfo:\n      name={package}.Main\n      packageName={package}\n      labelRes=0x0 nonLocalizedLabel={label} icon=0x0\n      ApplicationInfo:\n        packageName={package}')
+elif command[:2]==['sh','-c'] and command[2].startswith('dumpsys tv_input 2>&1; printf '):
+    result=subprocess.run(command,env={**os.environ,'PATH':str(root)+os.pathsep+os.environ.get('PATH',os.defpath)})
+    sys.exit(result.returncode)
 elif command[:2]==['dumpsys','package']:
     package=command[2]
     version=state.get('app_version','5.30.340')
@@ -72,6 +80,12 @@ elif command==['input','keyevent','224']:
     if 'power_dump_bytes_after_wake' in state: state['power_dump_bytes']=state['power_dump_bytes_after_wake']
     if state.get('power')!='VendorUnknown': state['power']='Awake'
     state_path.write_text(json.dumps(state))
+elif command[:2]==['input','keyevent'] and command[2:] in [['126'],['127'],['86'],['87'],['88']]:
+    state.setdefault('remote_media_keys',[]).append(command[2])
+    state_path.write_text(json.dumps(state))
+    if state.get('remote_media_diagnostic'): print('Error: injection rejected')
+    if state.get('remote_media_stderr'): print('Error: input rejected',file=sys.stdout if merge_input_stderr else sys.stderr)
+    if state.get('remote_media_failure'): sys.exit(1)
 elif command==['dumpsys','activity','activities']:
     print('mResumedActivity: ActivityRecord{123 u0 '+state['package']+'/.Main t1}')
 elif command[:2]==['am','start']:
@@ -184,6 +198,42 @@ class GenericMcp(unittest.TestCase):
     def tool(self,name,args):return self.rpc('tools/call',{'name':name,'arguments':args})
     def control(self,identity,action):
         return self.tool('tv_control',{'request_id':identity,'device':'screen','expires_at_unix_ms':int(time.time()*1000)+9000,'action':action})
+    def test_inputs_are_fresh_bounded_and_do_not_claim_selected_source(self):
+        self.close_process()
+        cfg=json.loads(self.config.read_text());cfg['preferences']['max_output_bytes']=4096;cfg['generic_adb_control']=False
+        self.config.write_text(json.dumps(cfg));self.start()
+        dumper=self.root/'dumpsys'
+        dumper.write_text('#!'+sys.executable+'\nimport json,pathlib,sys\ns=json.loads((pathlib.Path(__file__).parent/"state.json").read_text())\nprint(s.get("input_dump",""),end="",file=sys.stderr if s.get("input_dump_stderr") else sys.stdout)\nsys.exit(s.get("input_dump_status",0))\n')
+        dumper.chmod(0o700)
+        body=(ROOT/'crates/adapters/tests/fixtures/tv_input.txt').read_text()
+        state=json.loads((self.root/'state.json').read_text())
+        state['input_dump']=body
+        (self.root/'state.json').write_text(json.dumps(state))
+        args={'device':'screen','expires_at_unix_ms':int(time.time()*1000)+9000,'read':{'type':'inputs'}}
+        result=self.tool('tv_read',args)['structuredContent']
+        self.assertEqual(result.get('current_user'),10,result)
+        self.assertEqual(len(result['inputs']),3)
+        self.assertEqual(result['selected'],'unknown')
+        self.assertEqual(result['showing_video'],'unknown')
+        self.assertEqual([i['hdmi_port'] for i in result['inputs'] if i['id'].endswith('HW42')],[3])
+        state['input_dump_status']=1
+        (self.root/'state.json').write_text(json.dumps(state))
+        self.assertEqual(self.tool('tv_read',args)['structuredContent']['code'],'adb_read_failed')
+        state['input_dump']="Can't find service: tv_input\n"
+        state['input_dump_stderr']=True
+        (self.root/'state.json').write_text(json.dumps(state))
+        self.assertEqual(self.tool('tv_read',args)['structuredContent']['code'],'tv_inputs_service_missing')
+        state['input_dump_stderr']=False
+        entries=''.join(f"    org.example/.Input/{'x'*400}{i}: info: TvInputInfo{{id=org.example/.Input/{'x'*400}{i}, pkg=org.example, service=org.example.Input}}; state: 0\n" for i in range(40))
+        state['input_dump']=body.replace('UserState (10):\n  inputMap: inputId -> TvInputState\n','UserState (10):\n  inputMap: inputId -> TvInputState\n'+entries)
+        state['input_dump_status']=0
+        (self.root/'state.json').write_text(json.dumps(state))
+        result=self.tool('tv_read',args)['structuredContent']
+        self.assertTrue(result['truncated'])
+        self.assertGreater(len(result['inputs']),0)
+        self.assertLess(len(result['inputs']),32)
+        self.assertEqual(self.rpc('ping',{}),{})
+
     def test_selected_app_details_are_fresh_read_only_evidence(self):
         path=self.root/'state.json'
         for package in ('com.fixture.video','com.fixture.music'):
@@ -201,6 +251,67 @@ class GenericMcp(unittest.TestCase):
                 self.assertEqual(path.read_bytes(),before,'read changed TV state')
         missing=self.tool('tv_read',{'device':'screen','expires_at_unix_ms':int(time.time()*1000)+9000,'read':{'type':'app_details','app':'YouTube'}})['structuredContent']
         self.assertEqual(missing['code'],'app_not_found')
+    def test_remote_media_global_dispatch_and_restart_dedup_without_session_claim(self):
+        path=self.root/'state.json'
+        for n,(command,key) in enumerate([('play','126'),('pause','127'),('stop','86'),('next','87'),('previous','88')]):
+            state=json.loads(path.read_text());state.update(package='com.fixture.other' if n%2 else 'com.fixture.video',session_duplicate=True,playback=2);path.write_text(json.dumps(state))
+            action={'type':'remote_media','command':command}
+            result=self.control('key_'+command,action)['structuredContent']
+            self.assertEqual(result['status'],'observed',result)
+            self.assertEqual(result['code'],'command_dispatched_state_observed')
+            self.assertNotIn('playback',result.get('state',{}))
+            self.assertNotIn('session',result)
+            self.assertEqual(json.loads(path.read_text())['remote_media_keys'][-1],key)
+            self.close_process();self.start()
+            self.assertTrue(self.control('key_'+command,action)['structuredContent']['cached'])
+            self.assertEqual(len(json.loads(path.read_text())['remote_media_keys']),n+1)
+        self.assertNotIn('media_commands',json.loads(path.read_text()))
+    def test_remote_media_old_sdk_or_missing_help_is_unsupported_without_writes(self):
+        path=self.root/'state.json'
+        for n,(sdk,help_text) in enumerate([('10','keyevent <key code number or name>'),('35','')]):
+            state=json.loads(path.read_text());state.update(sdk=sdk,input_help=help_text);path.write_text(json.dumps(state))
+            before=path.read_bytes()
+            result=self.control('unsupported_key_'+str(n),{'type':'remote_media','command':'play'})['structuredContent']
+            self.assertEqual(result['status'],'unsupported',result)
+            self.assertEqual(result['code'],'remote_media_unsupported')
+            self.assertEqual(path.read_bytes(),before,'unsupported key mutated device state')
+            self.assertNotIn('remote_media_keys',json.loads(path.read_text()))
+    def test_remote_media_uncertain_output_and_exit_never_replay(self):
+        path=self.root/'state.json'
+        for flag in ['remote_media_diagnostic','remote_media_stderr','remote_media_failure']:
+            state=json.loads(path.read_text());state[flag]=True;path.write_text(json.dumps(state))
+            action={'type':'remote_media','command':'next'}
+            result=self.control(flag,action)['structuredContent']
+            self.assertEqual(result['status'],'outcome_unknown',result)
+            count=len(json.loads(path.read_text())['remote_media_keys'])
+            self.close_process();self.start()
+            replay=self.control(flag,action)['structuredContent']
+            self.assertTrue(replay['cached']);self.assertEqual(replay['status'],'outcome_unknown')
+            self.assertEqual(len(json.loads(path.read_text())['remote_media_keys']),count)
+            state=json.loads(path.read_text());del state[flag];path.write_text(json.dumps(state))
+    def test_all_fixed_input_stderr_rejections_are_uncertain_and_restart_deduplicated(self):
+        path=self.root/'state.json'
+        actions=[{'type':'wake'},{'type':'standby'},{'type':'navigate','keys':['down','select']},{'type':'long_select'},{'type':'activate'},{'type':'type_text','text':"a b's $HOME `id`; & | \\"}]
+        for n,action in enumerate(actions):
+            state=json.loads(path.read_text());state.update(input_stderr=True,power='Awake' if action['type']=='standby' else 'Asleep',entered_text='');path.write_text(json.dumps(state))
+            if action['type'] in ['activate','type_text']:
+                ui=self.tool('tv_read',{'device':'screen','expires_at_unix_ms':int(time.time()*1000)+9000,'read':{'type':'ui'}})['structuredContent']
+                action['reference']=next(item['ref'] for item in ui['elements'] if item['editable'])
+            identity='input_diagnostic_'+str(n)
+            result=self.control(identity,action)['structuredContent']
+            self.assertEqual(result['status'],'outcome_unknown',result)
+            self.assertEqual(result['code'],'input_dispatch_unconfirmed')
+            self.assertNotIn('private rejected',json.dumps(result))
+            count=json.loads(path.read_text())['input_attempts']
+            self.close_process();self.start()
+            replay=self.control(identity,action)['structuredContent']
+            self.assertTrue(replay['cached']);self.assertEqual(replay['status'],'outcome_unknown')
+            self.assertEqual(json.loads(path.read_text())['input_attempts'],count)
+    def test_failed_session_control_does_not_fallback_to_remote_media(self):
+        path=self.root/'state.json';state=json.loads(path.read_text());state['media_command_fail']=True;path.write_text(json.dumps(state))
+        result=self.control('session_failure',{'type':'media','session':state['package']+'/player','command':'next'})['structuredContent']
+        self.assertEqual(result['status'],'outcome_unknown',result)
+        self.assertNotIn('remote_media_keys',json.loads(path.read_text()))
     def test_media_read_and_pause_verify_only_native_session_state(self):
         data=self.tool('tv_read',{'device':'screen','expires_at_unix_ms':int(time.time()*1000)+9000,'read':{'type':'media'}})['structuredContent']
         self.assertEqual(len(data['sessions']),1)

@@ -1,4 +1,5 @@
 //! Platform-neutral, bounded discovery and intent vocabulary.
+pub use crate::inputs::{InputConnection, InputListing, TvInput};
 use crate::{Observed, Playback, Status};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -66,6 +67,10 @@ pub enum Intent {
         session: String,
         command: MediaCommand,
     },
+    /// System-global media key; Android chooses the recipient, never a session target.
+    RemoteMedia {
+        command: RemoteMediaCommand,
+    },
     /// Platform long-press of DPAD_CENTER; no arbitrary hold duration.
     LongSelect,
     Navigate {
@@ -85,6 +90,26 @@ pub enum Intent {
         reference: String,
         text: String,
     },
+}
+/// Dedicated device-level media keys, excluding toggles and hold/seek semantics.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RemoteMediaCommand {
+    Play,
+    Pause,
+    Stop,
+    Next,
+    Previous,
+}
+impl RemoteMediaCommand {
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Play => "play",
+            Self::Pause => "pause",
+            Self::Stop => "stop",
+            Self::Next => "next",
+            Self::Previous => "previous",
+        }
+    }
 }
 /// Session-scoped commands supported by the bounded Android monitor interface.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -189,6 +214,7 @@ pub struct RemoteCapabilities {
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Read {
+    Inputs,
     AppDetails {
         app: String,
     },
@@ -215,6 +241,7 @@ pub struct ReadRequest {
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Data {
+    Inputs(InputListing),
     AppDetails(AppDetails),
     Media {
         sessions: Vec<MediaSession>,

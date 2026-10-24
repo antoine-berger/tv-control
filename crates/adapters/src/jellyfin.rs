@@ -75,7 +75,7 @@ impl<'a> Jellyfin<'a> {
                 device_id,
                 ..
             }) => Ok((server, user_id, device_id)),
-            _ => Err(Failure::before("unsupported")),
+            _ => Err(Failure::unsupported("unsupported")),
         }
     }
     fn get<T: serde::de::DeserializeOwned>(
@@ -202,7 +202,7 @@ impl<'a> Jellyfin<'a> {
                 | Action::PlayItem { .. }
                 | Action::SeekMedia { .. }
         ) {
-            return Err(Failure::before("unsupported"));
+            return Err(Failure::unsupported("unsupported"));
         }
         let (server, session) = self.session(alias, ctx)?;
         if matches!(action, Action::Pause | Action::Resume)
@@ -213,7 +213,7 @@ impl<'a> Jellyfin<'a> {
         if matches!(action, Action::PlayItem { .. } | Action::SeekMedia { .. })
             && session.supports_media_control != Some(true)
         {
-            return Err(Failure::before("media_control_unsupported"));
+            return Err(Failure::unsupported("media_control_unsupported"));
         }
         // The Android TV legacy handler may toggle for Pause/Unpause. Read immediately before sending,
         // send once, and never retry an ambiguous response. External user races remain possible.
@@ -258,7 +258,7 @@ impl<'a> Jellyfin<'a> {
                         return Err(Failure::before("seek_media_identity_mismatch"));
                     }
                     if p.can_seek != Some(true) {
-                        return Err(Failure::before("seek_unsupported"));
+                        return Err(Failure::unsupported("seek_unsupported"));
                     }
                     format!(
                         "/Sessions/{}/Playing/Seek?seekPositionTicks={}",
@@ -269,10 +269,10 @@ impl<'a> Jellyfin<'a> {
                     let wanted = match plan.media_kind.as_deref() {
                         Some("audio") => "Audio",
                         Some("video") => "Video",
-                        _ => return Err(Failure::before("media_kind_unsupported")),
+                        _ => return Err(Failure::unsupported("media_kind_unsupported")),
                     };
                     if !session.playable_media_types.iter().any(|t| t == wanted) {
-                        return Err(Failure::before("play_item_capability_unavailable"));
+                        return Err(Failure::unsupported("play_item_capability_unavailable"));
                     }
                     format!("/Sessions/{}/Playing?playCommand=PlayNow&itemIds={}&mediaSourceId={}&startPositionTicks={}", encode(&session.id), encode(item_id), encode(source_id), plan.position_ticks)
                 }
@@ -286,7 +286,7 @@ impl<'a> Jellyfin<'a> {
                     plan.position_ticks
                 )
             }
-            _ => return Err(Failure::before("unsupported")),
+            _ => return Err(Failure::unsupported("unsupported")),
         };
         ctx.check()?;
         let response = self.http.send(

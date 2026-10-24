@@ -5,6 +5,9 @@ use tv_domain::{generic::*, Observed, PortResult};
 pub trait Device: Send + Sync {
     fn resource(&self, device: &str) -> PortResult<String>;
     fn authorized(&self, device: &str) -> PortResult<()>;
+    fn inputs(&self, _device: &str, _ctx: &Context<'_>) -> PortResult<InputListing> {
+        Err(tv_domain::Failure::unsupported("tv_inputs_unsupported"))
+    }
     fn apps(&self, device: &str, ctx: &Context<'_>) -> PortResult<Vec<App>>;
     /// Query is only a hydration priority hint; resolution still uses observed labels.
     fn apps_for(
@@ -16,7 +19,7 @@ pub trait Device: Send + Sync {
         self.apps(device, ctx)
     }
     fn app_details(&self, _device: &str, _app: &App, _ctx: &Context<'_>) -> PortResult<AppDetails> {
-        Err(tv_domain::Failure::before("unsupported"))
+        Err(tv_domain::Failure::unsupported("unsupported"))
     }
     fn observe(&self, device: &str, ctx: &Context<'_>) -> PortResult<Observed>;
     fn observe_for(
@@ -28,7 +31,7 @@ pub trait Device: Send + Sync {
         self.observe(device, ctx)
     }
     fn media(&self, _device: &str, _ctx: &Context<'_>) -> PortResult<Vec<MediaSession>> {
-        Err(tv_domain::Failure::before("unsupported"))
+        Err(tv_domain::Failure::unsupported("unsupported"))
     }
     fn ui(&self, device: &str, ctx: &Context<'_>) -> PortResult<UiSnapshot>;
     fn remote_capabilities(
@@ -36,7 +39,7 @@ pub trait Device: Send + Sync {
         _device: &str,
         _ctx: &Context<'_>,
     ) -> PortResult<RemoteCapabilities> {
-        Err(tv_domain::Failure::before("unsupported"))
+        Err(tv_domain::Failure::unsupported("unsupported"))
     }
     fn screenshot(&self, _device: &str, _ctx: &Context<'_>) -> PortResult<Screenshot> {
         Err(tv_domain::Failure::before("screenshot_unsupported"))
@@ -83,7 +86,7 @@ use std::{
     collections::BTreeMap,
     sync::{Arc, Mutex},
 };
-use tv_domain::{identifier, Effect, Failure, Playback, Status};
+use tv_domain::{identifier, Failure, Playback, Status};
 
 struct CachedApps {
     apps: Vec<App>,
@@ -118,7 +121,7 @@ impl<D: Device, C: Clock> Service<D, C> {
     fn context<'a>(&'a self, expiry: u64, cancel: &'a dyn Cancellation) -> PortResult<Context<'a>> {
         let now = self.clock.unix_ms();
         if expiry <= now {
-            return Err(Failure::before("expired"));
+            return Err(Failure::expired("expired"));
         }
         let remaining = expiry - now;
         if remaining > self.max_budget_ms {
@@ -247,12 +250,12 @@ impl<D: Device, C: Clock> Service<D, C> {
         self.device
             .apply(&request.device, &request.intent, resolved.as_ref(), ctx)?;
         loop {
-            ctx.check().map_err(|e| Failure::uncertain(e.code))?;
+            ctx.check().map_err(|e| e.after_dispatch())?;
             let observed = self
                 .device
                 .observe_for(&request.device, &request.intent, ctx)
-                .map_err(|e| Failure::uncertain(e.code))?;
-            ctx.check().map_err(|e| Failure::uncertain(e.code))?;
+                .map_err(|e| e.after_dispatch())?;
+            ctx.check().map_err(|e| e.after_dispatch())?;
             reply.observed = Some(diagnostic_state(&observed));
             if request.intent == Intent::Standby
                 && (!observed.connected || observed.awake.is_none())
@@ -268,6 +271,7 @@ impl<D: Device, C: Clock> Service<D, C> {
             if matches!(
                 request.intent,
                 Intent::Navigate { .. }
+                    | Intent::RemoteMedia { .. }
                     | Intent::LongSelect
                     | Intent::Search { .. }
                     | Intent::OpenUrl { .. }
@@ -298,8 +302,7 @@ impl<D: Device, C: Clock> Service<D, C> {
                 reply.observed = Some(observed);
                 return Ok(());
             }
-            ctx.wait(self.poll_ms)
-                .map_err(|e| Failure::uncertain(e.code))?;
+            ctx.wait(self.poll_ms).map_err(|e| e.after_dispatch())?;
         }
     }
 }
@@ -311,6 +314,7 @@ impl<D: Device, C: Clock> Control for Service<D, C> {
         self.device.resource(&req.device)?;
         let ctx = self.context(req.expires_at_unix_ms, cancel)?;
         let result = match req.read {
+            Read::Inputs => Data::Inputs(self.device.inputs(&req.device, &ctx)?),
             Read::AppDetails { app } => {
                 if !valid_text(&app, 512) {
                     return Err(Failure::before("invalid_app"));
@@ -515,6 +519,7 @@ fn valid_intent(intent: &Intent) -> bool {
         | Intent::Mute
         | Intent::Pause
         | Intent::Resume
+        | Intent::RemoteMedia { .. }
         | Intent::LongSelect => true,
     }
 }
@@ -607,22 +612,7 @@ fn diagnostic_state(state: &Observed) -> Observed {
 }
 fn fail(reply: &mut Reply, e: Failure) {
     reply.code = e.code.into();
-    reply.status = if e.effect == Effect::MayHaveChanged {
-        Status::OutcomeUnknown
-    } else {
-        match e.code {
-            "expired" => Status::Expired,
-            "cancelled" => Status::Cancelled,
-            "unsupported"
-            | "standby_unsupported"
-            | "search_unsupported"
-            | "url_unsupported"
-            | "input_text_unsupported"
-            | "text_verification_unsupported"
-            | "media_command_unsupported" => Status::Unsupported,
-            _ => Status::Failed,
-        }
-    };
+    reply.status = e.status();
 }
 fn catalogue_revision(apps: &[App]) -> String {
     // Revision is only a change detector, not an authorization or UI token.
@@ -756,7 +746,7 @@ impl crate::Control for LegacyGuard {
                 return result;
             }
             Err(e) => {
-                result.status = Status::Failed;
+                result.status = e.status();
                 result.code = e.code;
                 return result;
             }
@@ -789,9 +779,25 @@ impl crate::Control for LegacyGuard {
 }
 
 #[cfg(test)]
-mod standby_failure_tests {
+mod dispatch_failure_tests {
     use super::*;
 
+    #[test]
+    fn unsupported_remote_media_never_downgrades_dispatch_uncertainty() {
+        let mut reply = Reply {
+            request_id: "remote-media".into(),
+            status: Status::Failed,
+            code: String::new(),
+            observed: None,
+            choices: vec![],
+            cached: false,
+            local_elapsed_ms: 0,
+        };
+        fail(&mut reply, Failure::unsupported("remote_media_unsupported"));
+        assert_eq!(reply.status, Status::Unsupported);
+        fail(&mut reply, Failure::uncertain("remote_media_unsupported"));
+        assert_eq!(reply.status, Status::OutcomeUnknown);
+    }
     #[test]
     fn unsupported_standby_never_downgrades_dispatch_uncertainty() {
         let mut reply = Reply {
@@ -803,7 +809,7 @@ mod standby_failure_tests {
             cached: false,
             local_elapsed_ms: 0,
         };
-        fail(&mut reply, Failure::before("standby_unsupported"));
+        fail(&mut reply, Failure::unsupported("standby_unsupported"));
         assert_eq!(reply.status, Status::Unsupported);
         fail(&mut reply, Failure::uncertain("standby_unsupported"));
         assert_eq!(reply.status, Status::OutcomeUnknown);

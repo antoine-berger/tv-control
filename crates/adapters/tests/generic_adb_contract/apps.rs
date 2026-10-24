@@ -83,7 +83,7 @@ fn navigation_is_one_bounded_command() {
     assert_eq!(calls.len(), 2);
     assert_eq!(
         calls[1].args.last().unwrap(),
-        "'input' 'keyevent' '20' '20' '23'"
+        "'sh' '-c' 'exec input \"$@\" 2>&1' 'tv-control-input' 'keyevent' '20' '20' '23'"
     );
     assert!(calls[1].mutating);
 }

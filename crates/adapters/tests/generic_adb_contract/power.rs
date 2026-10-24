@@ -23,7 +23,10 @@ fn wake_uses_dedicated_key_and_native_power_without_foreground() {
         Some(true)
     );
     let calls = process.calls.lock().unwrap();
-    assert_eq!(calls[2].args.last().unwrap(), "'input' 'keyevent' '224'");
+    assert_eq!(
+        calls[2].args.last().unwrap(),
+        "'sh' '-c' 'exec input \"$@\" 2>&1' 'tv-control-input' 'keyevent' '224'"
+    );
     assert!(calls[2].mutating);
     assert!(!calls[1].mutating);
 }
@@ -67,7 +70,10 @@ fn wake_reads_complete_power_dump_beyond_the_text_budget() {
     let calls = process.calls.lock().unwrap();
     assert_eq!(calls.len(), 5);
     assert_eq!(calls[1].args.last().unwrap(), "'dumpsys' 'power'");
-    assert_eq!(calls[2].args.last().unwrap(), "'input' 'keyevent' '224'");
+    assert_eq!(
+        calls[2].args.last().unwrap(),
+        "'sh' '-c' 'exec input \"$@\" 2>&1' 'tv-control-input' 'keyevent' '224'"
+    );
     assert_eq!(calls.iter().filter(|call| call.mutating).count(), 1);
 }
 #[test]

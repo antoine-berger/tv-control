@@ -135,7 +135,7 @@ impl Jellyfin<'_> {
             item.kind.as_str(),
             "Movie" | "Episode" | "Audio" | "MusicVideo" | "Video"
         ) {
-            return Err(Failure::before("media_kind_unsupported"));
+            return Err(Failure::unsupported("media_kind_unsupported"));
         }
         let source = item
             .sources

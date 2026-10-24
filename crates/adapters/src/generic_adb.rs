@@ -20,6 +20,7 @@ use tv_domain::{generic::*, Failure, Observed, PlaybackEvidence, PortResult};
 mod app_details;
 mod cache;
 mod catalogue;
+mod inputs;
 mod interaction;
 mod observation;
 mod screenshot;
@@ -176,7 +177,7 @@ impl GenericAdb {
         )?;
         let handlers = parse_candidates(&raw)?;
         if !handlers.iter().any(|candidate| candidate.app.id == app.id) {
-            return Err(Failure::before("url_unsupported"));
+            return Err(Failure::unsupported("url_unsupported"));
         }
         let output = self.shell(
             alias,
@@ -306,6 +307,9 @@ impl Device for GenericAdb {
         }
         Ok(())
     }
+    fn inputs(&self, alias: &str, ctx: &Context<'_>) -> PortResult<InputListing> {
+        self.read_inputs(alias, ctx)
+    }
     fn apps(&self, alias: &str, ctx: &Context<'_>) -> PortResult<Vec<App>> {
         self.read_apps(alias, None, ctx)
     }
@@ -406,7 +410,7 @@ impl Device for GenericAdb {
                 .remove(alias);
         }
         match intent {
-            Intent::Legacy { .. } => Err(Failure::before("unsupported")),
+            Intent::Legacy { .. } => Err(Failure::unsupported("unsupported")),
             Intent::OpenApp { .. } => self.launch(
                 alias,
                 app.ok_or(Failure::before("app_not_resolved"))?,
@@ -427,7 +431,12 @@ impl Device for GenericAdb {
             ),
             Intent::Wake => {
                 // KEYCODE_WAKEUP is idempotent: never toggle an already-awake TV off.
-                self.shell(alias, &["input", "keyevent", "224"], &[], true, ctx)?;
+                self.inject_input(
+                    alias,
+                    &["keyevent", "224"],
+                    "input_dispatch_unconfirmed",
+                    ctx,
+                )?;
                 Ok(())
             }
             Intent::Standby => {
@@ -436,13 +445,18 @@ impl Device for GenericAdb {
                 let sdk =
                     self.shell(alias, &["getprop", "ro.build.version.sdk"], &[], false, ctx)?;
                 if !sdk.trim().parse::<u16>().ok().is_some_and(|sdk| sdk >= 20) {
-                    return Err(Failure::before("standby_unsupported"));
+                    return Err(Failure::unsupported("standby_unsupported"));
                 }
                 let help = self.shell(alias, &["input"], &[], false, ctx)?;
                 if !input_help_capabilities(&help).0 {
-                    return Err(Failure::before("standby_unsupported"));
+                    return Err(Failure::unsupported("standby_unsupported"));
                 }
-                self.shell(alias, &["input", "keyevent", "223"], &[], true, ctx)?;
+                self.inject_input(
+                    alias,
+                    &["keyevent", "223"],
+                    "input_dispatch_unconfirmed",
+                    ctx,
+                )?;
                 Ok(())
             }
             Intent::SetVolume { index } => {
@@ -523,18 +537,52 @@ impl Device for GenericAdb {
             }
             Intent::Pause => self.playback(alias, false, ctx),
             Intent::Resume => self.playback(alias, true, ctx),
+            Intent::RemoteMedia { command } => {
+                // Dedicated keys only. Input help proves syntax, not recipient/app acceptance.
+                let sdk =
+                    self.shell(alias, &["getprop", "ro.build.version.sdk"], &[], false, ctx)?;
+                let minimum = match command {
+                    RemoteMediaCommand::Play | RemoteMediaCommand::Pause => 11,
+                    _ => 3,
+                };
+                if !sdk
+                    .trim()
+                    .parse::<u16>()
+                    .ok()
+                    .is_some_and(|sdk| sdk >= minimum)
+                {
+                    return Err(Failure::unsupported("remote_media_unsupported"));
+                }
+                let help = self.shell(alias, &["input"], &[], false, ctx)?;
+                if !input_help_capabilities(&help).0 {
+                    return Err(Failure::unsupported("remote_media_unsupported"));
+                }
+                let key = match command {
+                    RemoteMediaCommand::Play => "126",
+                    RemoteMediaCommand::Pause => "127",
+                    RemoteMediaCommand::Stop => "86",
+                    RemoteMediaCommand::Next => "87",
+                    RemoteMediaCommand::Previous => "88",
+                };
+                self.inject_input(
+                    alias,
+                    &["keyevent", key],
+                    "remote_media_dispatch_unconfirmed",
+                    ctx,
+                )?;
+                Ok(())
+            }
             Intent::LongSelect => {
                 // Probe syntax each time: do not infer support from OS version or cache
                 // device help across reconnects. This probe cannot inject a key.
                 let help = self.shell(alias, &["input"], &[], false, ctx)?;
                 if !input_help_capabilities(&help).1 {
-                    return Err(Failure::before("unsupported"));
+                    return Err(Failure::unsupported("unsupported"));
                 }
-                self.shell(
+                self.inject_input(
                     alias,
-                    &["input", "keyevent", "--longpress", "23"],
-                    &[],
-                    true,
+                    &["keyevent", "--longpress", "23"],
+                    "input_dispatch_unconfirmed",
                     ctx,
                 )?;
                 Ok(())
@@ -543,7 +591,7 @@ impl Device for GenericAdb {
                 if keys.is_empty() || keys.len() > 16 {
                     return Err(Failure::before("invalid_navigation"));
                 }
-                let mut args = vec!["input", "keyevent"];
+                let mut args = vec!["keyevent"];
                 args.extend(keys.iter().map(|key| match key {
                     Key::Up => "19",
                     Key::Down => "20",
@@ -555,7 +603,7 @@ impl Device for GenericAdb {
                     Key::Menu => "82",
                     Key::Settings => "176",
                 }));
-                self.shell(alias, &args, &[], true, ctx)?;
+                self.inject_input(alias, &args, "input_dispatch_unconfirmed", ctx)?;
                 Ok(())
             }
             Intent::Activate { reference } | Intent::TypeText { reference, .. } => {

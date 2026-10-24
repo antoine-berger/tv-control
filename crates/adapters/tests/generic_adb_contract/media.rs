@@ -157,7 +157,7 @@ fn known_unsupported_session_command_never_dispatches() {
         assert_eq!(
             adb.apply("screen", &intent, None, &ctx(&clock, &flag))
                 .unwrap_err(),
-            Failure::before("media_command_unsupported")
+            Failure::unsupported("media_command_unsupported")
         );
         assert!(process
             .calls

@@ -9,7 +9,7 @@ use std::{
         unix::process::CommandExt,
     },
     path::PathBuf,
-    process::{Child, Command, Stdio},
+    process::{Command, Stdio},
 };
 use tv_application::Context;
 use tv_domain::*;
@@ -33,17 +33,9 @@ pub struct BoundedProcess {
     pub poll_ms: u64,
 }
 
-struct OwnedGroup(Child);
-impl Drop for OwnedGroup {
-    fn drop(&mut self) {
-        // SAFETY: process_group(0) created an invocation-owned group; no caller-supplied PID.
-        unsafe {
-            libc::kill(-(self.0.id() as i32), libc::SIGKILL);
-        }
-        let _ = self.0.kill();
-        let _ = self.0.wait();
-    }
-}
+mod owned_group;
+use owned_group::OwnedGroup;
+
 pub(crate) fn nonblocking(fd: RawFd) -> io::Result<()> {
     // SAFETY: fd is borrowed from a live owned Child pipe; fcntl does not retain it.
     let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
@@ -117,7 +109,7 @@ impl Process for BoundedProcess {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .process_group(0);
-        let mut owned = OwnedGroup(
+        let mut owned = OwnedGroup::new(
             cmd.spawn()
                 .map_err(|_| Failure::before("process_spawn_failed"))?,
         );
@@ -128,110 +120,124 @@ impl Process for BoundedProcess {
                 Failure::before(code)
             }
         };
-        let mut input = Some(owned.0.stdin.take().ok_or(failure("process_pipe_failed"))?);
-        let mut stdout = owned
-            .0
-            .stdout
-            .take()
-            .ok_or(failure("process_pipe_failed"))?;
-        let mut stderr = owned
-            .0
-            .stderr
-            .take()
-            .ok_or(failure("process_pipe_failed"))?;
-        for fd in [
-            input
-                .as_ref()
-                .ok_or(failure("process_pipe_failed"))?
-                .as_raw_fd(),
-            stdout.as_raw_fd(),
-            stderr.as_raw_fd(),
-        ] {
-            nonblocking(fd).map_err(|_| failure("process_pipe_failed"))?;
-        }
-        let mut sent = 0;
-        let mut bytes = Vec::new();
-        let mut count = 0;
-        let mut status = None;
-        let mut reap_wait_ms = 1u64;
-        loop {
-            ctx.check().map_err(|e| failure(e.code))?;
-            if let Some(pipe) = input.as_mut() {
-                if sent == invocation.stdin.len() {
-                    input = None;
-                } else {
-                    match pipe.write(&invocation.stdin[sent..]) {
-                        Ok(0) => return Err(failure("process_input_failed")),
-                        Ok(n) => sent += n,
-                        Err(e)
-                            if e.kind() == io::ErrorKind::WouldBlock
-                                || e.kind() == io::ErrorKind::Interrupted => {}
-                        Err(_) => return Err(failure("process_input_failed")),
+        let result = (|| {
+            let mut input = Some(
+                owned
+                    .child
+                    .stdin
+                    .take()
+                    .ok_or(failure("process_pipe_failed"))?,
+            );
+            let mut stdout = owned
+                .child
+                .stdout
+                .take()
+                .ok_or(failure("process_pipe_failed"))?;
+            let mut stderr = owned
+                .child
+                .stderr
+                .take()
+                .ok_or(failure("process_pipe_failed"))?;
+            for fd in [
+                input
+                    .as_ref()
+                    .ok_or(failure("process_pipe_failed"))?
+                    .as_raw_fd(),
+                stdout.as_raw_fd(),
+                stderr.as_raw_fd(),
+            ] {
+                nonblocking(fd).map_err(|_| failure("process_pipe_failed"))?;
+            }
+            let mut sent = 0;
+            let mut bytes = Vec::new();
+            let mut count = 0;
+            let mut status = None;
+            let mut reap_wait_ms = 1u64;
+            loop {
+                ctx.check().map_err(|e| failure(e.code))?;
+                if let Some(pipe) = input.as_mut() {
+                    if sent == invocation.stdin.len() {
+                        input = None;
+                    } else {
+                        match pipe.write(&invocation.stdin[sent..]) {
+                            Ok(0) => return Err(failure("process_input_failed")),
+                            Ok(n) => sent += n,
+                            Err(e)
+                                if e.kind() == io::ErrorKind::WouldBlock
+                                    || e.kind() == io::ErrorKind::Interrupted => {}
+                            Err(_) => return Err(failure("process_input_failed")),
+                        }
                     }
                 }
-            }
-            let out_closed = read_available(
-                &mut stdout,
-                Some(&mut bytes),
-                &mut count,
-                self.max_output,
-                ctx,
-            )
-            .map_err(failure)?;
-            let err_closed = read_available(&mut stderr, None, &mut count, self.max_output, ctx)
+                let out_closed = read_available(
+                    &mut stdout,
+                    Some(&mut bytes),
+                    &mut count,
+                    self.max_output,
+                    ctx,
+                )
                 .map_err(failure)?;
-            if status.is_none() {
-                status = owned
-                    .0
-                    .try_wait()
-                    .map_err(|_| failure("process_wait_failed"))?;
-            }
-            if let Some(exit) = status {
-                if out_closed && err_closed {
-                    ctx.check().map_err(|e| failure(e.code))?;
-                    return Ok(Output {
-                        stdout: bytes,
-                        success: exit.success(),
+                let err_closed =
+                    read_available(&mut stderr, None, &mut count, self.max_output, ctx)
+                        .map_err(failure)?;
+                if status.is_none() {
+                    status = owned.poll_exit().map_err(|e| {
+                        failure("process_wait_failed").with_os_error(e.raw_os_error())
+                    })?;
+                }
+                if let Some(exit) = status {
+                    if out_closed && err_closed {
+                        ctx.check().map_err(|e| failure(e.code))?;
+                        return Ok(Output {
+                            stdout: bytes,
+                            success: exit,
+                        });
+                    }
+                }
+                // Closed pipes must not be polled: persistent HUP would busy-spin
+                // while a child remains alive after closing its output descriptors.
+                let mut descriptors = Vec::with_capacity(3);
+                if !out_closed {
+                    descriptors.push(libc::pollfd {
+                        fd: stdout.as_raw_fd(),
+                        events: libc::POLLIN,
+                        revents: 0,
                     });
                 }
+                if !err_closed {
+                    descriptors.push(libc::pollfd {
+                        fd: stderr.as_raw_fd(),
+                        events: libc::POLLIN,
+                        revents: 0,
+                    });
+                }
+                if sent == invocation.stdin.len() {
+                    input = None;
+                }
+                if let Some(pipe) = &input {
+                    descriptors.push(libc::pollfd {
+                        fd: pipe.as_raw_fd(),
+                        events: libc::POLLOUT,
+                        revents: 0,
+                    });
+                }
+                // Pipes may close just before waitid can observe exit. Observe promptly
+                // without spinning; back off to the cancellation quantum if it stays alive.
+                let wait_ms = if descriptors.is_empty() {
+                    let wait = reap_wait_ms.min(self.poll_ms.max(1));
+                    reap_wait_ms = reap_wait_ms.saturating_mul(2);
+                    wait
+                } else {
+                    self.poll_ms
+                };
+                wait_ready(&mut descriptors, wait_ms, ctx).map_err(|e| failure(e.code))?;
             }
-            // Closed pipes must not be polled: persistent HUP would busy-spin
-            // while a child remains alive after closing its output descriptors.
-            let mut descriptors = Vec::with_capacity(3);
-            if !out_closed {
-                descriptors.push(libc::pollfd {
-                    fd: stdout.as_raw_fd(),
-                    events: libc::POLLIN,
-                    revents: 0,
-                });
-            }
-            if !err_closed {
-                descriptors.push(libc::pollfd {
-                    fd: stderr.as_raw_fd(),
-                    events: libc::POLLIN,
-                    revents: 0,
-                });
-            }
-            if sent == invocation.stdin.len() {
-                input = None;
-            }
-            if let Some(pipe) = &input {
-                descriptors.push(libc::pollfd {
-                    fd: pipe.as_raw_fd(),
-                    events: libc::POLLOUT,
-                    revents: 0,
-                });
-            }
-            // Pipes may close just before waitpid can observe exit. Reap promptly
-            // without spinning; back off to the cancellation quantum if it stays alive.
-            let wait_ms = if descriptors.is_empty() {
-                let wait = reap_wait_ms.min(self.poll_ms.max(1));
-                reap_wait_ms = reap_wait_ms.saturating_mul(2);
-                wait
-            } else {
-                self.poll_ms
-            };
-            wait_ready(&mut descriptors, wait_ms, ctx).map_err(|e| failure(e.code))?;
-        }
+        })();
+        // Cleanup errors are never silently reported as successful dispatch (or
+        // hidden behind cancellation); preserve effect classification and errno.
+        owned
+            .cleanup()
+            .map_err(|e| failure("process_cleanup_failed").with_os_error(e.raw_os_error()))?;
+        result
     }
 }

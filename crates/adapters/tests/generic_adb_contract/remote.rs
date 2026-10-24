@@ -47,7 +47,7 @@ fn long_select_requires_fresh_help_and_has_only_one_closed_key() {
     assert_eq!(effects.len(), 1);
     assert_eq!(
         effects[0].args.last().unwrap(),
-        "'input' 'keyevent' '--longpress' '23'"
+        "'sh' '-c' 'exec input \"$@\" 2>&1' 'tv-control-input' 'keyevent' '--longpress' '23'"
     );
 }
 #[test]
@@ -79,11 +79,15 @@ fn new_navigation_keys_and_maximum_repeat_use_one_bounded_dispatch() {
     for (keys, expected) in [
         (
             vec![Key::Menu, Key::Settings],
-            "'input' 'keyevent' '82' '176'".to_string(),
+            "'sh' '-c' 'exec input \"$@\" 2>&1' 'tv-control-input' 'keyevent' '82' '176'"
+                .to_string(),
         ),
         (
             vec![Key::Down; 16],
-            format!("'input' 'keyevent'{}", " '20'".repeat(16)),
+            format!(
+                "'sh' '-c' 'exec input \"$@\" 2>&1' 'tv-control-input' 'keyevent'{}",
+                " '20'".repeat(16)
+            ),
         ),
     ] {
         let (adb, process, _) = adapter(true, &[VERSION, ""]);

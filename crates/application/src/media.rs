@@ -49,7 +49,7 @@ impl<R: Reader, C: Clock> Control for Service<R, C> {
             .expires_at_unix_ms
             .checked_sub(now)
             .filter(|v| *v > 0)
-            .ok_or(Failure::before("expired"))?;
+            .ok_or(Failure::expired("expired"))?;
         if remaining > self.max_budget_ms {
             return Err(Failure::before("budget_exceeds_policy"));
         }

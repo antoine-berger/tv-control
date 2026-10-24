@@ -255,3 +255,157 @@ fn media_action_fingerprint_and_source_evidence_survive_durable_restart() {
         assert_eq!(count.load(Ordering::SeqCst), 1);
     }
 }
+
+#[test]
+fn remote_media_is_always_observed_and_durable_identity_prevents_replay() {
+    use tv_domain::generic::RemoteMediaCommand;
+    for command in [
+        RemoteMediaCommand::Play,
+        RemoteMediaCommand::Pause,
+        RemoteMediaCommand::Stop,
+        RemoteMediaCommand::Next,
+        RemoteMediaCommand::Previous,
+    ] {
+        let t = Temp::new();
+        let path = t.0.join("journal");
+        let applied = Arc::new(AtomicUsize::new(1)); // Already paused must still dispatch an explicit key.
+        let mut req = request("remote-key");
+        req.intent = Intent::RemoteMedia { command };
+        for cached in [false, true] {
+            let journal = Arc::new(OperationJournal::open(&path, 16, 60000).unwrap());
+            let service = Service::new(
+                FakeDevice(applied.clone()),
+                journal,
+                SystemClock::default(),
+                10000,
+                5,
+            );
+            let result = service.execute(req.clone(), &CancelFlag::default());
+            assert_eq!(result.status, Status::Observed);
+            assert_eq!(result.code, "command_dispatched_state_observed");
+            assert_eq!(result.cached, cached);
+            assert_eq!(applied.load(Ordering::SeqCst), 2);
+            let mut conflict = req.clone();
+            conflict.intent = Intent::RemoteMedia {
+                command: if command == RemoteMediaCommand::Stop {
+                    RemoteMediaCommand::Play
+                } else {
+                    RemoteMediaCommand::Stop
+                },
+            };
+            assert_eq!(
+                service.execute(conflict, &CancelFlag::default()).code,
+                "request_id_conflict"
+            );
+        }
+    }
+}
+#[test]
+fn remote_media_interrupted_journal_reservation_is_never_replayed() {
+    use tv_application::generic::Journal;
+    let t = Temp::new();
+    let path = t.0.join("journal");
+    let mut req = request("interrupted-key");
+    req.intent = Intent::RemoteMedia {
+        command: tv_domain::generic::RemoteMediaCommand::Next,
+    };
+    {
+        let journal = OperationJournal::open(&path, 16, 60000).unwrap();
+        assert!(matches!(
+            journal
+                .reserve(&req, "physical-tv", SystemClock::default().unix_ms())
+                .unwrap(),
+            tv_application::generic::Reservation::Acquired
+        ));
+    }
+    let applied = Arc::new(AtomicUsize::new(0));
+    let service = Service::new(
+        FakeDevice(applied.clone()),
+        Arc::new(OperationJournal::open(&path, 16, 60000).unwrap()),
+        SystemClock::default(),
+        10000,
+        5,
+    );
+    let result = service.execute(req, &CancelFlag::default());
+    assert_ne!(result.status, Status::Verified);
+    assert_eq!(applied.load(Ordering::SeqCst), 0);
+}
+
+struct RefusingDevice {
+    failure: Failure,
+    observations: Arc<AtomicUsize>,
+    dispatches: Arc<AtomicUsize>,
+}
+impl Device for RefusingDevice {
+    fn resource(&self, _: &str) -> PortResult<String> {
+        Ok("physical-tv".into())
+    }
+    fn authorized(&self, _: &str) -> PortResult<()> {
+        Ok(())
+    }
+    fn apps(&self, _: &str, _: &Context<'_>) -> PortResult<Vec<App>> {
+        Ok(vec![])
+    }
+    fn observe(&self, _: &str, _: &Context<'_>) -> PortResult<Observed> {
+        self.observations.fetch_add(1, Ordering::SeqCst);
+        Err(self.failure)
+    }
+    fn ui(&self, _: &str, _: &Context<'_>) -> PortResult<UiSnapshot> {
+        Err(self.failure)
+    }
+    fn apply(&self, _: &str, _: &Intent, _: Option<&App>, _: &Context<'_>) -> PortResult<()> {
+        self.dispatches.fetch_add(1, Ordering::SeqCst);
+        Ok(())
+    }
+}
+
+#[test]
+fn custom_failure_classification_survives_durable_restart_without_dispatch_or_reobservation() {
+    for (failure, status) in [
+        (
+            Failure::unsupported("new_capability_refused"),
+            Status::Unsupported,
+        ),
+        (Failure::expired("custom_deadline"), Status::Expired),
+        (Failure::cancelled("custom_cancellation"), Status::Cancelled),
+        (Failure::before("future_unsupported"), Status::Failed),
+    ] {
+        for uncertain in [false, true] {
+            let t = Temp::new();
+            let failure = if uncertain {
+                failure.after_dispatch()
+            } else {
+                failure
+            };
+            let expected = if uncertain {
+                Status::OutcomeUnknown
+            } else {
+                status
+            };
+            let observations = Arc::new(AtomicUsize::new(0));
+            let dispatches = Arc::new(AtomicUsize::new(0));
+            let req = request("classification");
+            for restart in [false, true] {
+                let journal =
+                    Arc::new(OperationJournal::open(&t.0.join("journal"), 16, 60000).unwrap());
+                let service = Service::new(
+                    RefusingDevice {
+                        failure,
+                        observations: observations.clone(),
+                        dispatches: dispatches.clone(),
+                    },
+                    journal,
+                    SystemClock::default(),
+                    10000,
+                    5,
+                );
+                let result = service.execute(req.clone(), &CancelFlag::default());
+                assert_eq!(result.status, expected);
+                assert_eq!(result.code, failure.code);
+                assert_eq!(result.cached, restart);
+            }
+            assert_eq!(observations.load(Ordering::SeqCst), 1);
+            assert_eq!(dispatches.load(Ordering::SeqCst), 0);
+        }
+    }
+}

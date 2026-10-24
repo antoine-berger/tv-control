@@ -35,7 +35,7 @@ fn standby_qualifies_and_dispatches_only_dedicated_sleep_key() {
     assert_eq!(mutations.len(), 1);
     assert_eq!(
         mutations[0].args.last().unwrap(),
-        "'input' 'keyevent' '223'"
+        "'sh' '-c' 'exec input \"$@\" 2>&1' 'tv-control-input' 'keyevent' '223'"
     );
     assert!(!calls
         .iter()

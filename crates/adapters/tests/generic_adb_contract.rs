@@ -126,3 +126,9 @@ mod text_result;
 
 #[path = "generic_adb_contract/app_details.rs"]
 mod app_details;
+#[path = "generic_adb_contract/input_diagnostics.rs"]
+mod input_diagnostics;
+#[path = "generic_adb_contract/inputs.rs"]
+mod inputs;
+#[path = "generic_adb_contract/remote_media.rs"]
+mod remote_media;

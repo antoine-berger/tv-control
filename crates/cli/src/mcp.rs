@@ -73,7 +73,7 @@ fn bounded_tool_result(id: Value, mut value: Value, is_error: bool, max_bytes: u
         if frame.to_string().len() < max_bytes {
             return frame;
         }
-        let field = ["apps", "elements", "choices", "sessions"]
+        let field = ["apps", "elements", "choices", "sessions", "inputs"]
             .into_iter()
             .find(|field| {
                 value

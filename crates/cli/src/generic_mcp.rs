@@ -34,6 +34,9 @@ enum Action {
         session: String,
         command: WireMediaCommand,
     },
+    RemoteMedia {
+        command: WireRemoteMediaCommand,
+    },
     Repeat {
         direction: WireDirection,
         count: u8,
@@ -53,6 +56,15 @@ enum Action {
         reference: String,
         text: String,
     },
+}
+#[derive(Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum WireRemoteMediaCommand {
+    Play,
+    Pause,
+    Stop,
+    Next,
+    Previous,
 }
 #[derive(Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -93,6 +105,7 @@ struct Reading {
 #[derive(Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 enum ReadKind {
+    Inputs {},
     AppDetails {
         app: String,
     },
@@ -142,6 +155,7 @@ pub fn routes_generic(config: &tv_adapters::config::Config, name: &str, args: &V
                 | "open_url"
                 | "activate"
                 | "media"
+                | "remote_media"
                 | "type_text"
                 | "repeat"
                 | "long_select"
@@ -204,6 +218,7 @@ impl Call {
                     device: r.device,
                     expires_at_unix_ms: r.expires_at_unix_ms,
                     read: match r.read {
+                        ReadKind::Inputs {} => Read::Inputs,
                         ReadKind::Media {} => Read::Media,
                         ReadKind::State {} => Read::State,
                         ReadKind::RemoteCapabilities {} => Read::RemoteCapabilities,
@@ -258,6 +273,15 @@ impl Call {
                                 WireMediaCommand::Resume => MediaCommand::Resume,
                                 WireMediaCommand::Next => MediaCommand::Next,
                                 WireMediaCommand::Previous => MediaCommand::Previous,
+                            },
+                        },
+                        Action::RemoteMedia { command } => Intent::RemoteMedia {
+                            command: match command {
+                                WireRemoteMediaCommand::Play => RemoteMediaCommand::Play,
+                                WireRemoteMediaCommand::Pause => RemoteMediaCommand::Pause,
+                                WireRemoteMediaCommand::Stop => RemoteMediaCommand::Stop,
+                                WireRemoteMediaCommand::Next => RemoteMediaCommand::Next,
+                                WireRemoteMediaCommand::Previous => RemoteMediaCommand::Previous,
                             },
                         },
                         Action::LongSelect {} => Intent::LongSelect,
@@ -319,6 +343,7 @@ impl Call {
             Self::Read(r) => match control.read(r, cancel) {
                 Ok(data) => (
                     match data {
+                        Data::Inputs(listing) => input_listing(&listing),
                         Data::RemoteCapabilities(c) => {
                             json!({"android_sdk":c.android_sdk,"app":c.active_app,"keyevent_help":c.keyevent_help,"longpress_help":c.longpress_help,"standby_key_supported":c.standby_key_supported,"standby_effect":"device_dependent","app_key_acceptance":"unknown","evidence":"device_input_help"})
                         }
@@ -425,6 +450,20 @@ fn playback(p: Playback) -> &'static str {
         Playback::Unknown => "unknown",
     }
 }
+fn input_listing(listing: &InputListing) -> Value {
+    json!({"current_user":listing.current_user,"inputs":listing.inputs.iter().map(|input| {
+        json!({"id":input.id,"package":input.package,"service":input.service,
+            "connection":match input.connection {
+                InputConnection::Connected => "connected",
+                InputConnection::Standby => "standby",
+                InputConnection::Disconnected => "disconnected",
+                InputConnection::Unknown => "unknown",
+            },"hdmi_port":input.hdmi_port})
+    }).collect::<Vec<_>>(),"truncated":listing.truncated,
+        "label":"unknown","hidden":"unknown","input_type":"unknown",
+        "selected":"unknown","showing_video":"unknown","evidence":"tv_input_dump"})
+}
+
 fn app_details(details: &AppDetails) -> Value {
     let search = match &details.native_search {
         NativeSearch::Handler { component } => {
@@ -512,7 +551,7 @@ pub fn extend_tools(tools: &mut Value) {
         .iter_mut()
         .find(|t| t["name"] == "tv_control")
         .expect("control tool");
-    control["description"] = json!("Never retry outcome_unknown. Native volume index, not %. Mute: stream 3 zero, not speaker proof. Media: session from read media. Search/URL/next/previous: dispatch only. Text: focused editable ref; ASCII except %/?, matching accessibility readback; mismatch unknown, no repair. Unique IDs.");
+    control["description"] = json!("Never retry outcome_unknown. Native volume index, not %. Mute: stream 3 zero, not speaker proof. Media: precise session from read media. Remote_media: system-global key, Android routes; dispatch only, no fallback. Search/URL/next/previous: dispatch only. Text: focused editable ref; ASCII except %/?, matching accessibility readback; mismatch unknown, no repair. Unique IDs.");
     let actions = control["inputSchema"]["properties"]["action"]["oneOf"]
         .as_array_mut()
         .unwrap();
@@ -522,6 +561,7 @@ pub fn extend_tools(tools: &mut Value) {
         }
     }
     actions.extend([
+        json!({"type":"object","properties":{"type":{"const":"remote_media"},"command":{"enum":["play","pause","stop","next","previous"]}},"required":["type","command"],"additionalProperties":false}),
         json!({"type":"object","properties":{"type":{"const":"media"},"session":{"type":"string","maxLength":384},"command":{"enum":["pause","resume","next","previous"]}},"required":["type","session","command"],"additionalProperties":false}),
         json!({"type":"object","properties":{"type":{"const":"type_text"},"reference":{"type":"string","minLength":1,"maxLength":200},"text":{"type":"string","minLength":1,"maxLength":500}},"required":["type","reference","text"],"additionalProperties":false}),
         json!({"type":"object","properties":{"type":{"const":"repeat"},"direction":{"enum":["up","down","left","right"]},"count":{"type":"integer","minimum":1,"maximum":16}},"required":["type","direction","count"],"additionalProperties":false}),
@@ -550,13 +590,61 @@ pub fn extend_tools(tools: &mut Value) {
         }
     });
     actions.push(json!({"type":"object","properties":{"type":{"enum":simple}},"required":["type"],"additionalProperties":false}));
-    list.push(json!({"name":"tv_read","description":"Read TV. Volume: stream 3 index/max. Untrusted text.","inputSchema":{"type":"object","properties":{"device":{"type":"string","pattern":"^[A-Za-z0-9_-]{1,64}$"},"expires_at_unix_ms":{"type":"integer","minimum":1},"read":{"oneOf":[{"type":"object","properties":{"type":{"const":"app_details"},"app":{"type":"string","minLength":1,"maxLength":512}},"required":["type","app"],"additionalProperties":false},{"type":"object","properties":{"type":{"enum":["state","volume","power","media","remote_capabilities","ui","screenshot"]}},"required":["type"],"additionalProperties":false},{"type":"object","properties":{"type":{"const":"apps"},"query":{"type":"string","maxLength":200},"since":{"type":"string","maxLength":64},"limit":{"type":"integer","minimum":1,"maximum":32,"default":12},"refresh":{"type":"boolean","default":false}},"required":["type"],"additionalProperties":false}]}},"required":["device","expires_at_unix_ms","read"],"additionalProperties":false},"annotations":{"readOnlyHint":true,"openWorldHint":false}}));
+    list.push(json!({"name":"tv_read","description":"Read TV. Volume: stream 3 index/max. Untrusted text.","inputSchema":{"type":"object","properties":{"device":{"type":"string","pattern":"^[A-Za-z0-9_-]{1,64}$"},"expires_at_unix_ms":{"type":"integer","minimum":1},"read":{"oneOf":[{"type":"object","properties":{"type":{"const":"app_details"},"app":{"type":"string","minLength":1,"maxLength":512}},"required":["type","app"],"additionalProperties":false},{"type":"object","properties":{"type":{"enum":["state","volume","power","media","remote_capabilities","inputs","ui","screenshot"]}},"required":["type"],"additionalProperties":false},{"type":"object","properties":{"type":{"const":"apps"},"query":{"type":"string","maxLength":200},"since":{"type":"string","maxLength":64},"limit":{"type":"integer","minimum":1,"maximum":32,"default":12},"refresh":{"type":"boolean","default":false}},"required":["type"],"additionalProperties":false}]}},"required":["device","expires_at_unix_ms","read"],"additionalProperties":false},"annotations":{"readOnlyHint":true,"openWorldHint":false}}));
     list.push(json!({"name":"tv_operation","description":"Recover/cancel; no rollback.","inputSchema":{"type":"object","properties":{"request_id":{"type":"string","pattern":"^[A-Za-z0-9_-]{1,64}$"},"cancel":{"type":"boolean","default":false}},"required":["request_id"],"additionalProperties":false},"annotations":{"readOnlyHint":false,"destructiveHint":false,"idempotentHint":true,"openWorldHint":false}}));
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn remote_media_wire_is_closed_and_cannot_claim_a_target() {
+        for command in ["play", "pause", "stop", "next", "previous"] {
+            let args = json!({"request_id":"key","device":"screen","expires_at_unix_ms":1,"action":{"type":"remote_media","command":command}});
+            assert!(Call::parse("tv_control", args.clone()).is_ok());
+            for extra in ["session", "app", "keycode", "repeat", "duration_ms"] {
+                let mut bad = args.clone();
+                bad["action"][extra] = json!("anything");
+                assert!(Call::parse("tv_control", bad).is_err());
+            }
+        }
+        for command in [
+            "resume",
+            "play_pause",
+            "volume_up",
+            "power",
+            "seek",
+            "fast_forward",
+            "rewind",
+            "85",
+        ] {
+            assert!(Call::parse("tv_control",json!({"request_id":"key","device":"screen","expires_at_unix_ms":1,"action":{"type":"remote_media","command":command}})).is_err());
+        }
+    }
+    #[test]
+    fn input_inventory_wire_cannot_select_or_infer_video() {
+        let args = json!({"device":"screen","expires_at_unix_ms":1,"read":{"type":"inputs"}});
+        assert!(matches!(
+            Call::parse("tv_read", args.clone()).unwrap(),
+            Call::Read(ReadRequest {
+                read: Read::Inputs,
+                ..
+            })
+        ));
+        for extra in ["input", "select", "command", "user", "refresh"] {
+            let mut bad = args.clone();
+            bad["read"][extra] = json!("arbitrary");
+            assert!(Call::parse("tv_read", bad).is_err());
+        }
+        let value = input_listing(&InputListing {
+            current_user: 0,
+            inputs: vec![],
+            truncated: false,
+        });
+        for field in ["label", "hidden", "input_type", "selected", "showing_video"] {
+            assert_eq!(value[field], "unknown");
+        }
+    }
     #[test]
     fn app_details_wire_is_closed_and_does_not_claim_runtime_or_url_support() {
         let args = json!({"device":"screen","expires_at_unix_ms":1,"read":{"type":"app_details","app":"org.example.player"}});

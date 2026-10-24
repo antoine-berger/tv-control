@@ -22,7 +22,7 @@ impl GenericAdb {
                 server_port,
                 ..
             }) => Ok((endpoint, server_host, *server_port)),
-            Some(_) => Err(Failure::before("unsupported")),
+            Some(_) => Err(Failure::unsupported("unsupported")),
             None => Err(Failure::before("unknown_device")),
         }
     }
@@ -71,6 +71,23 @@ impl GenericAdb {
         ctx.check()?;
         *cache = Some((stamp, version));
         Ok(version)
+    }
+    /// Only internal closed input operations use this helper. Dynamic text is a
+    /// positional argument, never shell source; stderr shares the bounded capture.
+    pub(super) fn inject_input(
+        &self,
+        alias: &str,
+        args: &[&str],
+        diagnostic_code: &'static str,
+        ctx: &Context<'_>,
+    ) -> PortResult<()> {
+        let mut command = vec!["sh", "-c", "exec input \"$@\" 2>&1", "tv-control-input"];
+        command.extend_from_slice(args);
+        let output = self.shell(alias, &command, &[], true, ctx)?;
+        if !output.trim().is_empty() {
+            return Err(Failure::uncertain(diagnostic_code));
+        }
+        Ok(())
     }
     pub(super) fn shell(
         &self,
@@ -171,13 +188,8 @@ impl GenericAdb {
             });
         }
         let output = result.stdout;
-        ctx.check().map_err(|e| {
-            if mutating {
-                Failure::uncertain(e.code)
-            } else {
-                e
-            }
-        })?;
+        ctx.check()
+            .map_err(|e| if mutating { e.after_dispatch() } else { e })?;
         Ok(output)
     }
 }

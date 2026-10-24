@@ -308,3 +308,21 @@ fn ui_transport_truncation_preserves_focus_count_and_reports_reason_once() {
     assert_eq!(ui["truncated"], true);
     assert!(!ui["elements"].as_array().unwrap().is_empty());
 }
+
+#[test]
+fn input_inventory_obeys_minimum_wire_budget_with_explicit_truncation() {
+    let inputs = (0..32).map(|n| json!({"id":format!("org.example/.Input/{}{}", "x".repeat(450), n),"package":"p".repeat(255),"service":"s".repeat(255),"connection":"connected","hdmi_port":3})).collect::<Vec<_>>();
+    let frame = bounded_tool_result(
+        json!(1),
+        json!({"inputs":inputs,"selected":"unknown","showing_video":"unknown"}),
+        false,
+        4096,
+    );
+    assert!(frame.to_string().len() < 4096);
+    assert_eq!(frame["result"]["structuredContent"]["truncated"], true);
+    assert!(!frame["result"]["structuredContent"]["inputs"]
+        .as_array()
+        .unwrap()
+        .is_empty());
+    assert_eq!(frame["result"]["structuredContent"]["selected"], "unknown");
+}

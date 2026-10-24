@@ -1,0 +1,26 @@
+User Ids (Current user: 10):
+  0
+  10
+UserState (0):
+  inputMap: inputId -> TvInputState
+    org.other/.Input/HW1: info: TvInputInfo{id=org.other/.Input/HW1, pkg=org.other, service=org.other.Input}; state: 2
+  packageSet:
+UserState (10):
+  inputMap: inputId -> TvInputState
+    org.example/.Input/HW42: info: TvInputInfo{id=org.example/.Input/HW42, pkg=org.example, service=org.example.Input}; state: 0
+    org.example/.Input/HDMI111: info: TvInputInfo{id=org.example/.Input/HDMI111, pkg=org.example, service=org.example.Input}; state: 1
+    org.example/.Tuner: info: TvInputInfo{id=org.example/.Tuner, pkg=org.example, service=org.example.Tuner}; state: 2
+  packageSet:
+    org.example
+TvInputHardwareManager Info:
+  mConnections: deviceId -> Connection
+  mHardwareList:
+    TvInputHardwareInfo {id=42, type=9, audio_type=0, audio_addr=, hdmi_port=3, cable_connection_status=0}
+    TvInputHardwareInfo {id=1, type=9, audio_type=0, audio_addr=, hdmi_port=1}
+  mHdmiDeviceList:
+  mHardwareInputIdMap: deviceId -> inputId
+    42: org.example/.Input/HW42
+    1: org.other/.Input/HW1
+  mHdmiInputIdMap: id -> inputId
+    111: org.example/.Input/HDMI111
+  mInputMap: inputId -> inputInfo

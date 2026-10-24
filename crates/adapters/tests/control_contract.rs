@@ -760,3 +760,39 @@ fn late_catalogue_cannot_verify_already_satisfied_paused_seek() {
         assert!(r.observed.is_none());
     }
 }
+
+#[test]
+fn custom_classifications_are_shared_by_legacy_control_and_cached_without_retry() {
+    for (failure, expected) in [
+        (
+            Failure::unsupported("new_capability_refused"),
+            Status::Unsupported,
+        ),
+        (Failure::expired("custom_deadline"), Status::Expired),
+        (Failure::cancelled("custom_cancellation"), Status::Cancelled),
+    ] {
+        for uncertain in [false, true] {
+            let mut s = service(vec![state(Playback::Playing, 0)]);
+            s.devices.failure = Some(if uncertain {
+                failure.after_dispatch()
+            } else {
+                failure
+            });
+            let req = request(Action::Pause);
+            let result = s.execute(req.clone(), &CancelFlag::default());
+            assert_eq!(
+                result.status,
+                if uncertain {
+                    Status::OutcomeUnknown
+                } else {
+                    expected
+                }
+            );
+            assert_eq!(result.code, failure.code);
+            let repeated = s.execute(req, &CancelFlag::default());
+            assert!(repeated.cached);
+            assert_eq!(repeated.status, result.status);
+            assert_eq!(s.devices.calls.load(Ordering::SeqCst), 1);
+        }
+    }
+}

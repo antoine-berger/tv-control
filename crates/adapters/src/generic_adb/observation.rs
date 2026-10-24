@@ -8,6 +8,13 @@ impl GenericAdb {
         intent: &Intent,
         ctx: &Context<'_>,
     ) -> PortResult<Observed> {
+        if matches!(intent, Intent::RemoteMedia { .. }) {
+            return Ok(Observed {
+                connected: true,
+                active_app: self.foreground(alias, ctx)?,
+                ..Observed::default()
+            });
+        }
         if let Intent::Media { session, .. } = intent {
             let listing = self.shell(
                 alias,

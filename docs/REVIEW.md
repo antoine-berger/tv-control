@@ -119,3 +119,23 @@ The generic core has no per-app fallback or hardcoded application exceptions.
 Existing minimum-frame paginated discovery and installer proof checks remain
 required. These offline results do not qualify actual app behavior on hardware.
 No native text helper prototype is included in this source candidate.
+
+## Explicit media keys and input inventory (v0.4.10 source candidate)
+
+System-global media keys are explicit requests, never fallbacks for session-scoped
+commands. Dispatch does not identify the receiving app or prove playback. Input
+inventory is a fresh read-only TIF observation; it neither selects a source nor
+controls CEC, playback, audio or power. Saved sanitized dumps are parser fixtures,
+not evidence that a live command succeeded on another device.
+
+Failure classification is typed independently of diagnostic strings. Combined
+regressions preserve unsupported remote-key qualification, uncertain dispatch,
+and the difference between unsupported input formats and truncated reads. Codes,
+effects, wire vocabulary and historical journal receipts retain their semantics.
+Follow the coordinated shared-journal reader upgrade instructions for the new
+intent; never delete uncertain-operation history or replay to repair an upgrade.
+
+This candidate includes no native text helper/prototype. Offline tests and
+minimum-frame paginated discovery/installer proof do not qualify hardware media
+keys, input switching, CEC or physical playback. The multi-digit patch version is
+covered by the normal installer/release/verifier contract suite.

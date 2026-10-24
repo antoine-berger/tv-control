@@ -78,6 +78,7 @@ enum IntentWire {
     Pause,
     Resume,
     Media { session: String, command: String },
+    RemoteMedia { command: String },
     Navigate { keys: Vec<String> },
     LongSelect,
     Search { app: String, query: String },
@@ -103,6 +104,9 @@ impl From<&Intent> for IntentWire {
             Intent::Resume => Self::Resume,
             Intent::Media { session, command } => Self::Media {
                 session: session.clone(),
+                command: command.name().into(),
+            },
+            Intent::RemoteMedia { command } => Self::RemoteMedia {
                 command: command.name().into(),
             },
             Intent::LongSelect => Self::LongSelect,

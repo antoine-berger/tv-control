@@ -93,7 +93,7 @@ pub(crate) fn require_command(state: &MediaSession, command: &MediaCommand) -> P
         .as_ref()
         .is_some_and(|supported| !supported.contains(command))
     {
-        return Err(Failure::before("media_command_unsupported"));
+        return Err(Failure::unsupported("media_command_unsupported"));
     }
     Ok(())
 }
@@ -289,7 +289,7 @@ mod tests {
         ] {
             assert_eq!(
                 require_command(&zero, &command).unwrap_err(),
-                Failure::before("media_command_unsupported")
+                Failure::unsupported("media_command_unsupported")
             );
         }
         let unknown = snapshot(

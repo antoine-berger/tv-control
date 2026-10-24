@@ -49,7 +49,7 @@ fn fresh_ui_ref_is_consumed_and_expiry_cannot_dispatch() {
             .args
             .last()
             .unwrap(),
-        "'input' 'tap' '60' '40'"
+        "'sh' '-c' 'exec input \"$@\" 2>&1' 'tv-control-input' 'tap' '60' '40'"
     );
     let (adb, process, _) = adapter(true, &[VERSION, UI]);
     let view = adb.ui("screen", &ctx(&clock, &flag)).unwrap();
@@ -120,7 +120,7 @@ fn text_input_is_one_literal_argument_and_consumes_reference() {
             .args
             .last()
             .unwrap(),
-        "'input' 'text' 'a b'\\''s $HOME `id`; & | \\'"
+        "'sh' '-c' 'exec input \"$@\" 2>&1' 'tv-control-input' 'text' 'a b'\\''s $HOME `id`; & | \\'"
     );
     assert_eq!(
         adb.apply("screen", &action, None, &ctx(&clock, &flag))

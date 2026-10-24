@@ -1,0 +1,36 @@
+User Ids (Current user: 0):
+  0
+UserState (0):
+  inputMap: inputId -> TvInputState
+    org.example.video/.tv.usecase.tvinput.playback.TvInputService: info: TvInputInfo{id=org.example.video/.tv.usecase.tvinput.playback.TvInputService, pkg=org.example.video, service=org.example.video.tv.usecase.tvinput.playback.TvInputService}; state: 0
+    org.example.video/org.example.preview.tv.usecase.tvinput.playback.VideoPreviewInputService: info: TvInputInfo{id=org.example.video/org.example.preview.tv.usecase.tvinput.playback.VideoPreviewInputService, pkg=org.example.video, service=org.example.preview.tv.usecase.tvinput.playback.VideoPreviewInputService}; state: 0
+    org.example.tvinput/.TvPassThroughService/HW17: info: TvInputInfo{id=org.example.tvinput/.TvPassThroughService/HW17, pkg=org.example.tvinput, service=org.example.tvinput.TvPassThroughService}; state: 1
+    org.example.tvinput/.TunerInputService/HW2: info: TvInputInfo{id=org.example.tvinput/.TunerInputService/HW2, pkg=org.example.tvinput, service=org.example.tvinput.TunerInputService}; state: 0
+    org.example.tvinput/.TvPassThroughService/HW15: info: TvInputInfo{id=org.example.tvinput/.TvPassThroughService/HW15, pkg=org.example.tvinput, service=org.example.tvinput.TvPassThroughService}; state: 1
+    org.example.channels/org.example.iptv.service.InputService: info: TvInputInfo{id=org.example.channels/org.example.iptv.service.InputService, pkg=org.example.channels, service=org.example.iptv.service.InputService}; state: 0
+    org.example.tvinput/.TvPassThroughService/HW16: info: TvInputInfo{id=org.example.tvinput/.TvPassThroughService/HW16, pkg=org.example.tvinput, service=org.example.tvinput.TvPassThroughService}; state: 1
+  packageSet:
+    org.example.video
+    org.example.channels
+    org.example.tvinput
+
+TvInputHardwareManager Info:
+  mHardwareList:
+    TvInputHardwareInfo {id=1, type=2, audio_type=-2147467264, audio_addr=, cable_connection_status=0}
+    TvInputHardwareInfo {id=2, type=2, audio_type=-2147467264, audio_addr=, cable_connection_status=0}
+    TvInputHardwareInfo {id=3, type=3, audio_type=-2147450880, audio_addr=, cable_connection_status=0}
+    TvInputHardwareInfo {id=15, type=9, audio_type=-2147483616, audio_addr=, hdmi_port=1, cable_connection_status=0}
+    TvInputHardwareInfo {id=16, type=9, audio_type=-2147483616, audio_addr=, hdmi_port=2, cable_connection_status=0}
+    TvInputHardwareInfo {id=17, type=9, audio_type=-2147483616, audio_addr=, hdmi_port=3, cable_connection_status=0}
+  mHdmiDeviceList:
+  mHardwareInputIdMap: deviceId -> inputId
+    2: org.example.tvinput/.TunerInputService/HW2
+    15: org.example.tvinput/.TvPassThroughService/HW15
+    16: org.example.tvinput/.TvPassThroughService/HW16
+    17: org.example.tvinput/.TvPassThroughService/HW17
+  mHdmiInputIdMap: id -> inputId
+  mInputMap: inputId -> inputInfo
+    org.example.tvinput/.TunerInputService/HW2: TvInputInfo{id=org.example.tvinput/.TunerInputService/HW2, pkg=org.example.tvinput, service=org.example.tvinput.TunerInputService}
+    org.example.tvinput/.TvPassThroughService/HW15: TvInputInfo{id=org.example.tvinput/.TvPassThroughService/HW15, pkg=org.example.tvinput, service=org.example.tvinput.TvPassThroughService}
+    org.example.tvinput/.TvPassThroughService/HW16: TvInputInfo{id=org.example.tvinput/.TvPassThroughService/HW16, pkg=org.example.tvinput, service=org.example.tvinput.TvPassThroughService}
+    org.example.tvinput/.TvPassThroughService/HW17: TvInputInfo{id=org.example.tvinput/.TvPassThroughService/HW17, pkg=org.example.tvinput, service=org.example.tvinput.TvPassThroughService}

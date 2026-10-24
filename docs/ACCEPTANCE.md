@@ -56,6 +56,23 @@ avoid disrupting an active user. Run only separately authorized bounded,
 reversible actions and restore the initial state where safe and observable.
 Stop if identity changes, the user takes over or state becomes ambiguous.
 
+For playback trials, use explicitly approved public media or dedicated test
+fixtures. Do not use personal watch-progress content without the user's explicit
+choice of that content and the test. Before starting, set a bounded playback
+window and arrange independent, authorized cleanup that does not depend on another
+model turn or user reply. Never leave private media playing while waiting for
+either. Stop the trial immediately on user intervention; do not compete with a
+physical remote or replay an uncertain command. If cleanup cannot be established
+safely, do not start playback. Do not automatically reset watch history or progress
+afterward: those are separate user-data changes, not harmless test cleanup.
+
+Preserve the existing mute state and audio routes; do not use sound as an implicit
+success signal. When the user requires a sleeping TV to remain asleep, restrict
+qualification to permitted read-only checks and never wake it to complete QA.
+A general test request does not override these constraints. Keep all private media
+titles, filesystem paths, device/account identifiers and captures out of public
+reports and repository fixtures.
+
 Performance testing does not include loud audio, purchases, deletions, account
 selection, pairing, persistent authentication or router/network modifications.
 Keep real configurations and evidence private and out of Git. Controller-only

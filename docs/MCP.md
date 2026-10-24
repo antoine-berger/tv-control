@@ -578,3 +578,107 @@ unchanged by this read.
 URL cannot prove general URL support; a particular URI must be resolved separately.
 Output/transport/deadline failures remain bounded errors, not negative capability
 claims. Platform read-command failures can leave individual evidence unknown.
+
+### Explicit device media keys
+
+`tv_control` accepts `action: {"type":"remote_media","command":"pause"}` with
+exactly `play`, `pause`, `stop`, `next`, or `previous`. This is a dedicated remote
+key, **system-global**: Android chooses the recipient. It does not target the
+foreground app or a media session: it may affect a background recipient, start
+playback, or do nothing. Prefer `media` with an
+explicit discovered session when precise targeting is needed. This action is
+never an automatic fallback from session controls, and never retries dispatch.
+
+Success is `observed` / `command_dispatched_state_observed`, not verified playback,
+content delivery, or a recipient claim. `active_app` is only foreground diagnostic
+evidence, not the recipient; playback remains unknown. A fresh SDK and input-help
+probe establish platform syntax eligibility, not app support. Any unexpected
+command output or post-dispatch failure is uncertain. The shared private input-injection helper forwards separately quoted arguments
+to a fixed shell command and merges device stderr into its bounded capture because
+Android can print a rejection on stderr while exiting zero; raw diagnostics are
+not exposed as receipts. Recover the same request ID
+with `tv_operation`, never replay it under a new ID. Durable deduplication and UI
+reference invalidation use the normal control path.
+
+The Android [KeyEvent API](https://developer.android.com/reference/android/view/KeyEvent)
+defines dedicated play/pause (126/127, API 11) and stop/next/previous (86/87/88,
+API 3). [AOSP input](https://android.googlesource.com/platform/frameworks/base/+/81f52b053da6/services/core/java/com/android/server/input/InputShellCommand.java)
+implements `input keyevent NUMBER` as down/up injection. No toggle 85, arbitrary
+key, hold/seek, power, volume, or route control is exposed here. Native injection
+acknowledgement does not prove a media app handled the event. No hardware behavior
+is qualified by the fixture tests.
+
+Before first use, upgrade/restart **all** processes sharing the operation journal:
+older readers cannot deserialize the new `remote_media` intent. Mixed readers and
+downgrading after recording this action are unsupported. Preserve the journal;
+never delete no-replay evidence to work around an older-reader error.
+
+### Read-only TV input inventory
+
+`tv_read` with `read: {"type":"inputs"}` reads fresh Android TV Input Framework
+inventory for the current Android user. It needs no generic mutation consent and
+never switches source, launches a handler, sends CEC/vendor commands, or changes
+power/audio/UI references. No helper APK is needed.
+
+The result contains `current_user`, up to 32 sorted `inputs` (`id`, `package`,
+`service`, `connection`, nullable `hdmi_port`), and `truncated`. The MCP response
+budget may shorten the list further with `truncated: true`, including at the
+minimum 4096-byte budget. `connected`, `standby`, and `disconnected` describe the
+framework's **connection availability**, not selected source, visible video, or
+physical device presence. Unrecognized numeric states remain `unknown`.
+
+Only an explicit, unique hardware-ID → input-ID mapping joined to a hardware
+record of HDMI type establishes a physical port. Input names, `/HW` suffixes,
+CEC device IDs, package names and manufacturer conventions never infer ports.
+Labels, hidden flags, full input type, selected source and showing-video state
+are unavailable from this dump and explicitly reported `unknown`; an empty
+inventory is not proof that a TV has no physical ports. Discovered text remains
+untrusted data, not commands or authorization.
+
+This bounded adapter recognizes the AOSP `TvInputManagerService` current-user
+`inputMap` and `TvInputHardwareManager` hardware sections. Other-user inputs and
+session histories are not inventory evidence. Ambiguous duplicates or unfamiliar
+formats fail closed. Stable diagnostics distinguish `tv_inputs_service_missing`,
+`tv_inputs_permission_denied`, `tv_inputs_dump_empty`,
+`tv_inputs_format_unsupported`, and `tv_inputs_dump_truncated`. The first four are
+unsupported capability/evidence results; truncation is a failed incomplete read,
+not a partial inventory. A structurally complete empty input map succeeds with
+`inputs: []`. Ordinary transport/cancellation/deadline failures remain unchanged.
+
+Parser provenance: AOSP Android 12 (`frameworks/base` revision
+`c53e71dc397de7486c9a8899f71598c3c3a18d44`), with synthetic anonymized
+fixtures mirroring the documented section layout:
+[TvInputManagerService](https://android.googlesource.com/platform/frameworks/base/+/c53e71dc397de7486c9a8899f71598c3c3a18d44/services/core/java/com/android/server/tv/TvInputManagerService.java),
+[TvInputHardwareManager](https://android.googlesource.com/platform/frameworks/base/+/c53e71dc397de7486c9a8899f71598c3c3a18d44/services/core/java/com/android/server/tv/TvInputHardwareManager.java),
+[TvInputInfo](https://android.googlesource.com/platform/frameworks/base/+/c53e71dc397de7486c9a8899f71598c3c3a18d44/media/java/android/media/tv/TvInputInfo.java),
+and [TvInputHardwareInfo](https://android.googlesource.com/platform/frameworks/base/+/c53e71dc397de7486c9a8899f71598c3c3a18d44/media/java/android/media/tv/TvInputHardwareInfo.java).
+`TvInputInfo.toString()` exposes ID/package/service only, not labels/hidden/type.
+Fixtures establish parser/transport contracts, not source-selection or playback
+qualification on a physical TV.
+
+The adapter uses a fixed, non-interpolated shell wrapper around `dumpsys tv_input`
+to merge its diagnostics and append its numeric exit status. The terminal frame
+is validated before parsing; missing, ambiguous or interrupted frames never
+produce an inventory. Nonzero status only permits classification of known missing
+service/permission diagnostics, never successful inventory. ADB transport errors
+remain distinct. This is implementation-specific dump evidence, not a stable
+Android SDK API; future/vendor formats can legitimately return unsupported.
+
+Hardware HDMI is the HAL constant `9`, not the public `TvInputInfo.TYPE_HDMI`
+value `1007`: see the pinned
+[TV input HAL](https://android.googlesource.com/platform/hardware/interfaces/+/4a8246e3757732cb787327c3f8ad5cbacf910d1e/tv/input/1.0/types.hal).
+A zero process status alone is insufficient: the pinned
+[dumpsys implementation](https://android.googlesource.com/platform/frameworks/native/+/3e846409f064570d19769748a3050882c29fa999/cmds/dumpsys/dumpsys.cpp)
+can print a missing-service error to stderr while returning zero. The adapter
+therefore classifies the captured body as well as checking the status frame.
+
+### Input injection diagnostic boundary
+
+Wake, standby, navigation, long-select, activation and focused text use the same
+private bounded input helper as explicit remote-media keys. Zero-exit stderr
+diagnostics are uncertain (`input_dispatch_unconfirmed` for these actions), not
+proof of no effect. The command is fixed; validated text is a positional argument,
+never shell source. Read-only help probes are unchanged. Diagnostics stop further
+postcondition reads, consume applicable UI references and remain durable no-replay
+receipts. Silent dispatch still requires the existing action-specific evidence;
+it does not prove physical playback, silence or committed underlying text.

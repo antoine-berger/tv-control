@@ -121,7 +121,7 @@ impl GenericAdb {
             views.remove(alias);
         }
         if let Intent::TypeText { text, .. } = intent {
-            self.shell(alias, &["input", "text", text], &[], true, ctx)?;
+            self.inject_input(alias, &["text", text], "input_dispatch_unconfirmed", ctx)?;
             // Shell success proves key dispatch, not even matching accessibility text.
             // Readback remains UI evidence only, not proof of underlying committed text.
             // One post-read only: never repeat or try to repair uncertain input.
@@ -130,11 +130,10 @@ impl GenericAdb {
             let [left, top, right, bottom] = element.bounds;
             let x = left + (right - left) / 2;
             let y = top + (bottom - top) / 2;
-            self.shell(
+            self.inject_input(
                 alias,
-                &["input", "tap", &x.to_string(), &y.to_string()],
-                &[],
-                true,
+                &["tap", &x.to_string(), &y.to_string()],
+                "input_dispatch_unconfirmed",
                 ctx,
             )?;
         }
@@ -178,7 +177,7 @@ impl GenericAdb {
             }
             Ok(())
         };
-        verify().map_err(|e| Failure::uncertain(e.code))
+        verify().map_err(|e| e.after_dispatch())
     }
 }
 
@@ -194,7 +193,7 @@ fn expected_accessibility_text(
     editor: &UiElement,
     text: &str,
 ) -> PortResult<String> {
-    let unsupported = || Failure::before("text_verification_unsupported");
+    let unsupported = || Failure::unsupported("text_verification_unsupported");
     let before = editor
         .accessibility_text
         .as_deref()
@@ -225,7 +224,7 @@ fn validate_input_text(text: &str) -> PortResult<()> {
         .bytes()
         .all(|b| (b' '..=b'~').contains(&b) && b != b'%' && b != b'?')
     {
-        return Err(Failure::before("input_text_unsupported"));
+        return Err(Failure::unsupported("input_text_unsupported"));
     }
     Ok(())
 }

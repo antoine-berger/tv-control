@@ -235,3 +235,29 @@ For bug reports, include the source commit, platform, adapter/client versions,
 sanitized configuration shape and result codes. Describe expected versus
 observed behavior and whether dispatch may have occurred. Never replay an uncertain
 mutation just to reproduce a log.
+
+### Failure classification
+
+`Failure` carries a private semantic kind, separate from its stable diagnostic
+code. Use `unsupported(code)`, `expired(code)` or `cancelled(code)` for classified
+refusals; `before(code)` is operational by default. Both control paths use the
+central `Failure::status()` mapping, so adding a capability refusal needs no
+application code-name table. A code ending in `_unsupported` is not itself a
+classification (for example an operational failure describing an unsupported
+HTTP method or device state retains its existing behavior).
+
+For compatibility, only the exact historical `before("unsupported")`,
+`before("expired")` and `before("cancelled")` spellings retain their classifications.
+New code should use the explicit constructors. Keep this compatibility set fixed;
+do not add suffix rules. `after_dispatch()` preserves the code, classification and
+numeric OS evidence while making `OutcomeUnknown` authoritative. The kind is not
+serialized: wire codes and status vocabulary and durable journal shapes are
+unchanged. Existing journal statuses remain authoritative on replay; loading an
+old receipt does not reinterpret its code through the new classification.
+
+The domain type is an internal workspace API, not the MCP wire contract. Its new
+private kind intentionally prevents external struct literals: workspace consumers
+already use constructors. Any out-of-tree Rust consumer constructing a `Failure`
+literal must migrate to the appropriate constructor, followed by
+`with_os_error(...)` and, if needed, `after_dispatch()`. Existing public diagnostic
+and effect fields remain readable; `FailureKind` is not exported as a new API.

@@ -306,7 +306,7 @@ impl OfficialTunnel<'_> {
             .run(self.invocation(spec, args, key, mutating), ctx)?;
         ctx.check().map_err(|error| {
             if mutating {
-                Failure::uncertain(error.code)
+                error.after_dispatch()
             } else {
                 error
             }
@@ -483,7 +483,7 @@ impl OfficialTunnel<'_> {
         self.run_json(spec, args, Some(key), true, ctx)?;
         let health = self
             .status(spec, ctx)
-            .map_err(|error| Failure::uncertain(error.code))?;
+            .map_err(|error| error.after_dispatch())?;
         if !health.locally_ready() {
             return Err(Failure::uncertain(
                 health
@@ -523,7 +523,7 @@ impl OfficialTunnel<'_> {
         )?;
         let stopped = self
             .parse_status(spec, &value)
-            .map_err(|error| Failure::uncertain(error.code))?;
+            .map_err(|error| error.after_dispatch())?;
         if stopped.process_running {
             return Err(Failure::uncertain("tunnel_stop_unverified"));
         }

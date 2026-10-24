@@ -42,7 +42,7 @@ impl<'a> Adb<'a> {
             ..
         }) = self.config.devices.get(alias)
         else {
-            return Err(Failure::before("unsupported"));
+            return Err(Failure::unsupported("unsupported"));
         };
         // `adb version` is local-only. A manager-capable client must not reach a
         // known incompatible server, because AOSP may issue host:kill on mismatch.
@@ -146,7 +146,7 @@ impl<'a> Adb<'a> {
             ..
         }) = self.config.devices.get(alias)
         else {
-            return Err(Failure::before("unsupported"));
+            return Err(Failure::unsupported("unsupported"));
         };
         let mut observed = Observed {
             connected: true,
@@ -182,7 +182,7 @@ impl<'a> Adb<'a> {
             ..
         }) = self.config.devices.get(alias)
         else {
-            return Err(Failure::before("unsupported"));
+            return Err(Failure::unsupported("unsupported"));
         };
         match action {
             Action::OpenApp { app } => {
@@ -233,7 +233,9 @@ impl<'a> Adb<'a> {
                 }
             }
             Action::Pause | Action::Resume => {
-                let app = media_app.as_ref().ok_or(Failure::before("unsupported"))?;
+                let app = media_app
+                    .as_ref()
+                    .ok_or(Failure::unsupported("unsupported"))?;
                 let package = &self.config.apps[app].package;
                 let output = self.shell(
                     alias,
@@ -266,7 +268,7 @@ impl<'a> Adb<'a> {
                 )?;
             }
             Action::SetVolume { index } => {
-                let max = volume_max_index.ok_or(Failure::before("unsupported"))?;
+                let max = volume_max_index.ok_or(Failure::unsupported("unsupported"))?;
                 if *index > max {
                     return Err(Failure::before("volume_out_of_range"));
                 }
@@ -286,7 +288,7 @@ impl<'a> Adb<'a> {
                     ctx,
                 )?;
             }
-            _ => return Err(Failure::before("unsupported")),
+            _ => return Err(Failure::unsupported("unsupported")),
         }
         Ok(())
     }

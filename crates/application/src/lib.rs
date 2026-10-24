@@ -19,10 +19,10 @@ pub struct Context<'a> {
 impl Context<'_> {
     pub fn check(&self) -> PortResult<()> {
         if self.cancellation.is_cancelled() {
-            return Err(Failure::before("cancelled"));
+            return Err(Failure::cancelled("cancelled"));
         }
         if self.clock.monotonic_ms() >= self.deadline_monotonic_ms {
-            return Err(Failure::before("expired"));
+            return Err(Failure::expired("expired"));
         }
         Ok(())
     }
@@ -63,7 +63,7 @@ pub trait MediaCatalogue: Send + Sync {
         _position_ms: u64,
         _ctx: &Context<'_>,
     ) -> PortResult<MediaPlan> {
-        Err(Failure::before("unsupported"))
+        Err(Failure::unsupported("unsupported"))
     }
     fn resolve(&self, device: &str, alias: &str, ctx: &Context<'_>) -> PortResult<MediaPlan>;
 }
@@ -154,13 +154,13 @@ impl<D: DeviceControl, M: MediaCatalogue, S: StateStore, C: Clock> Service<D, M,
             .apply(&req.device, &req.action, plan.as_ref(), ctx)?;
         let mut previous = None;
         loop {
-            ctx.check().map_err(|e| Failure::uncertain(e.code))?;
+            ctx.check().map_err(|e| e.after_dispatch())?;
             let observed = self
                 .devices
                 .observe(&req.device, ctx)
-                .map_err(|e| Failure::uncertain(e.code))?;
+                .map_err(|e| e.after_dispatch())?;
             // A read that completed after expiry must never become a success.
-            ctx.check().map_err(|e| Failure::uncertain(e.code))?;
+            ctx.check().map_err(|e| e.after_dispatch())?;
             if matches!(
                 req.action,
                 Action::Resume | Action::ResumeMedia { .. } | Action::PlayItem { .. }
@@ -195,7 +195,7 @@ impl<D: DeviceControl, M: MediaCatalogue, S: StateStore, C: Clock> Service<D, M,
                             }
                             previous = Some(observed);
                             ctx.wait(self.policy.verification_poll_ms)
-                                .map_err(|e| Failure::uncertain(e.code))?;
+                                .map_err(|e| e.after_dispatch())?;
                             continue;
                         }
                     }
@@ -206,7 +206,7 @@ impl<D: DeviceControl, M: MediaCatalogue, S: StateStore, C: Clock> Service<D, M,
             {
                 previous = Some(observed);
                 ctx.wait(self.policy.verification_poll_ms)
-                    .map_err(|e| Failure::uncertain(e.code))?;
+                    .map_err(|e| e.after_dispatch())?;
                 continue;
             }
             if desired(&req.action, &observed, plan.as_ref(), previous.as_ref()) {
@@ -214,7 +214,7 @@ impl<D: DeviceControl, M: MediaCatalogue, S: StateStore, C: Clock> Service<D, M,
             }
             previous = Some(observed);
             ctx.wait(self.policy.verification_poll_ms)
-                .map_err(|e| Failure::uncertain(e.code))?;
+                .map_err(|e| e.after_dispatch())?;
         }
     }
 }
@@ -267,7 +267,7 @@ impl<D: DeviceControl, M: MediaCatalogue, S: StateStore, C: Clock> Control for S
             deadline_monotonic_ms: start.saturating_add(budget),
         };
         if let Err(e) = ctx.check() {
-            receipt.status = Status::Cancelled;
+            receipt.status = e.status();
             receipt.code = e.code;
             return receipt;
         }
@@ -300,21 +300,7 @@ impl<D: DeviceControl, M: MediaCatalogue, S: StateStore, C: Clock> Control for S
             }
             Err(e) => {
                 receipt.code = e.code;
-                receipt.status = if e.effect == Effect::MayHaveChanged {
-                    Status::OutcomeUnknown
-                } else {
-                    match e.code {
-                        "cancelled" => Status::Cancelled,
-                        "expired" => Status::Expired,
-                        "unsupported"
-                        | "media_command_unsupported"
-                        | "seek_unsupported"
-                        | "media_kind_unsupported"
-                        | "play_item_capability_unavailable"
-                        | "media_control_unsupported" => Status::Unsupported,
-                        _ => Status::Failed,
-                    }
-                };
+                receipt.status = e.status();
             }
         }
         receipt.local_elapsed_ms = self.clock.monotonic_ms().saturating_sub(start);

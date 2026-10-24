@@ -115,7 +115,7 @@ fn unreadable_ambiguous_or_unbounded_editor_refuses_before_dispatch() {
                 &ctx(&clock, &flag)
             )
             .unwrap_err(),
-            Failure::before("text_verification_unsupported")
+            Failure::unsupported("text_verification_unsupported")
         );
         assert!(process.calls.lock().unwrap().iter().all(|c| !c.mutating));
     }

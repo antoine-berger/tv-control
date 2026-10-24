@@ -216,5 +216,8 @@ fn app_detail_read_preserves_ui_references_and_does_not_rewrite_search_configura
     let calls = process.calls.lock().unwrap();
     let effects: Vec<_> = calls.iter().filter(|call| call.mutating).collect();
     assert_eq!(effects.len(), 1);
-    assert_eq!(effects[0].args.last().unwrap(), "'input' 'tap' '60' '40'");
+    assert_eq!(
+        effects[0].args.last().unwrap(),
+        "'sh' '-c' 'exec input \"$@\" 2>&1' 'tv-control-input' 'tap' '60' '40'"
+    );
 }
