@@ -109,7 +109,7 @@ def main():
     env = isolated_environment(args.sdk, args.work, ports.adb_port, ports.console_port)
     for name in ("home", "home/.android", "home/empty-vendor-keys", "tmp"):
         (args.work / name).mkdir(mode=0o700, exist_ok=True)
-    adb = PrivateAdb(args.sdk / "platform-tools/adb", ports, env)
+    adb = PrivateAdb(args.sdk / "platform-tools/adb", ports, env, args.work)
     emulator, log, log_thread, log_stop = None, None, None, None
     log_failed = threading.Event()
     owned_ready, completed = False, False

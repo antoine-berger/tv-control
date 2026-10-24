@@ -283,12 +283,26 @@ read-only diagnosis receives this additional independent 10-second bound.
 
 The first local runtime attempt passed the HVF preflight but the foreground ADB
 server aborted before readiness; no AVD was launched. Its cleanup receipt and
-independent process/port checks found no SDK leftovers. The startup cause is still
-under investigation: this is not a successful Android runtime qualification.
+independent process/port checks found no SDK leftovers. Exact SDK ARM64 static
+inspection and AOSP `socket_spec.cpp` established that the numeric listener host
+`127.0.0.1` takes the unsupported-hostname branch before binding. The server now
+uses the SDK's public `tcp:localhost:port` syntax, which calls the loopback helper
+directly without DNS; clients and the emulator retain their numeric loopback
+connection settings. This is not a successful Android runtime qualification.
 Startup diagnostics now preserve only fixed error categories, bounded allowlisted
 source locations and non-reaping exit metadata in the receipt before closing the
-temporary SDK log. Raw SDK output is never copied into that receipt. This change
-does not alter startup arguments, listener selection, retries or cleanup policy.
+temporary SDK log. Only on ADB startup failure, an explicitly authorized private
+tail of at most 8192 exact bytes is retained in `adb-startup-private-tail.log` using
+exclusive, no-symlink creation with mode0600 in the owned mode0700 work directory.
+It may contain confidential SDK diagnostics: do not print or publish its content.
+Only its fixed basename, size, hash and truncation metadata enter the receipt.
+Failed preservation makes cleanup unverified. No retries or permission fallback
+are added. The fixed startup command still undergoes the same ownership guards.
+
+Primary sources: [ADB socket specification](https://android.googlesource.com/platform/packages/modules/adb/+/refs/heads/main/socket_spec.cpp)
+and [POSIX loopback implementation](https://android.googlesource.com/platform/packages/modules/adb/+/refs/heads/main/sysdeps/posix/network.cpp).
+Current AOSP source is supporting evidence, not an assertion that its revision
+matches the SDK release; the exact SDK binary's disassembly supplied that check.
 
 This candidate adds `--mode ci-linux` and `--mode darwin-local`; mode selection is
 mandatory. Darwin requires a native ARM64 host, the official emulator's successful

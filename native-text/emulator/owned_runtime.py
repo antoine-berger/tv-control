@@ -203,20 +203,21 @@ def port_closed(port):
 
 
 class PrivateAdb:
-    def __init__(self, adb, ports, env):
+    def __init__(self, adb, ports, env, diagnostic_directory=None):
         self.adb, self.ports, self.env = adb, ports, env
         self.process = None
         self.log = None
         self.deadline = None
         self.startup_stage = "not_started"
         self.startup_diagnostic = None
+        self.diagnostic_directory = diagnostic_directory
         self.serial = f"emulator-{ports.console_port}"
 
     def start(self):
         try:
             self._start()
         except BaseException:
-            self.collect_startup_diagnostic()
+            self.collect_startup_diagnostic(failed=True)
             raise
 
     def _start(self):
@@ -229,7 +230,10 @@ class PrivateAdb:
         self.log = tempfile.TemporaryFile()
         self.startup_stage = "launch"
         self.ports.release_server()
-        self.process = subprocess.Popen([str(self.adb), "-L", self.env["ADB_SERVER_SOCKET"],
+        # SDK socket_spec_listen recognizes the literal "localhost" as IPv4
+        # loopback; numeric 127.0.0.1 is supported for connect, not listen.
+        # This branch calls network_loopback_server directly, without DNS.
+        self.process = subprocess.Popen([str(self.adb), "-L", f"tcp:localhost:{self.ports.adb_port}",
                                          "server", "nodaemon"], env=self.env,
                                         stdin=subprocess.DEVNULL, stdout=self.log,
                                         stderr=subprocess.STDOUT, start_new_session=True)
@@ -249,13 +253,15 @@ class PrivateAdb:
             raise RuntimeError("private ADB unexpectedly contains an existing target")
         self.startup_stage = "ready"
 
-    def collect_startup_diagnostic(self):
+    def collect_startup_diagnostic(self, failed=False):
         if self.startup_diagnostic is not None:
             return
         try:
-            diagnostic = capture_adb_diagnostic(self.log)
+            diagnostic = capture_adb_diagnostic(self.log, self.diagnostic_directory if failed else None)
         except (OSError, ValueError):
             diagnostic = {"capture": "unavailable", "categories": ["UNKNOWN"], "source_frames": []}
+            if failed and self.diagnostic_directory is not None:
+                diagnostic["raw_save_failed"] = True
         diagnostic["stage"] = self.startup_stage
         try:
             diagnostic["process"] = retained_exit_info(self.process) if self.process else {"state": "not_started"}
@@ -310,3 +316,5 @@ class PrivateAdb:
         # A remaining listener is an explicit cleanup failure, never success.
         if not port_closed(self.ports.adb_port):
             raise RuntimeError("private ADB listener remains after owned cleanup")
+        if self.startup_diagnostic.get("raw_save_failed"):
+            raise RuntimeError("private ADB startup diagnostic preservation failed")

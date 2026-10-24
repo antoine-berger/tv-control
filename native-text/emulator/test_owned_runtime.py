@@ -176,6 +176,18 @@ class MainCleanupTests(unittest.TestCase):
             signals.assert_not_called()
         self.assertFalse(json.loads((self.work / "runtime-receipt.json").read_text())["cleanup_verified"])
 
+    def test_private_diagnostic_failure_is_not_reported_as_verified_cleanup(self):
+        with patch.object(self.fake_adb, "start", side_effect=RuntimeError("fixture startup failed")), \
+             patch.object(self.fake_adb, "close", side_effect=RuntimeError("private ADB startup diagnostic preservation failed")), \
+             patch.object(run_proof.subprocess, "Popen") as spawn:
+            with self.assertRaisesRegex(RuntimeError, "cleanup unverified"):
+                run_proof.main()
+            spawn.assert_not_called()
+        receipt = json.loads((self.work / "runtime-receipt.json").read_text())
+        self.assertFalse(receipt["cleanup_verified"])
+        self.assertIn("adb-group-or-listener", receipt["cleanup_failures"])
+        self.assertIn("close-ports", self.events)
+
 
 if __name__ == "__main__":
     unittest.main()

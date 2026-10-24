@@ -1,6 +1,8 @@
-"""Fixed-category startup diagnostics; raw SDK output is never returned/saved."""
+"""Fixed public diagnostics; authorized raw tails remain private local files."""
+import hashlib
 import os
 import re
+import stat
 
 TAIL_LIMIT = 8192
 PATTERNS = (
@@ -31,10 +33,38 @@ def classify(raw, total_bytes):
             "source_frames": frames}
 
 
-def capture(log):
+def private_tail(raw, directory):
+    """Explicitly authorized private evidence; never emit its content anywhere."""
+    # Exact bounded bytes preserve an unknown SDK failure for human inspection.
+    # They are confidential even when classifiers recognize no credential form.
+    data = raw[-TAIL_LIMIT:]
+    directory_fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        info = os.fstat(directory_fd)
+        if info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) != 0o700:
+            raise ValueError("diagnostic directory is not private and owned")
+        name = "adb-startup-private-tail.log"
+        fd = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600,
+                     dir_fd=directory_fd)
+        with os.fdopen(fd, "wb") as target:
+            target.write(data)
+        return {"raw_saved": True, "raw_file": name,
+                "raw_bytes": len(data), "raw_sha256": hashlib.sha256(data).hexdigest()}
+    finally:
+        os.close(directory_fd)
+
+
+def capture(log, directory=None):
     if log is None:
         return {"capture": "not_started", "categories": ["UNKNOWN"], "source_frames": []}
     size = os.fstat(log.fileno()).st_size
     # pread never changes the shared file offset of a still-running child.
     data = os.pread(log.fileno(), min(size, TAIL_LIMIT), max(0, size - TAIL_LIMIT))
-    return classify(data, size)
+    result = classify(data, size)
+    result["raw_saved"] = False
+    if directory is not None:
+        try:
+            result.update(private_tail(data, directory))
+        except (OSError, ValueError):
+            result["raw_save_failed"] = True
+    return result
