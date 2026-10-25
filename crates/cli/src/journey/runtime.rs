@@ -328,9 +328,6 @@ pub fn disconnect(
         .parent()
         .ok_or("configuration_path_invalid")?
         .join("connection");
-    let store = Store::open(&state)?;
-    let checkpoint = store.load()?.ok_or("connection_progress_missing")?;
-    let id = checkpoint.tunnel_id.ok_or("tunnel_configuration_missing")?;
     let intent: RuntimeIntent = serde_json::from_slice(&private_read_limit(
         &state.join("runtime-intent.json"),
         6_400_000,
@@ -357,6 +354,27 @@ pub fn disconnect(
         cancellation: &interrupts,
         deadline_monotonic_ms: 10_000,
     };
+    // Disarm before taking the pipeline session lock: a supervisor must observe
+    // voluntary stop immediately and be able to finish its own bounded cleanup.
+    if crate::supervision::disarm_disconnect(&path, &intent.controller_binary, &ctx)
+        .map_err(|error| error.code)?
+    {
+        if as_json {
+            println!(
+                "{}",
+                json!({"status":"stopped","runtime_running":false,
+                "supervision_disabled":true,"credentials_removed":false})
+            );
+        } else {
+            println!(
+                "Controller stopped and supervision disabled. Private access state was preserved."
+            );
+        }
+        return Ok(0);
+    }
+    let store = Store::open(&state)?;
+    let checkpoint = store.load()?.ok_or("connection_progress_missing")?;
+    let id = checkpoint.tunnel_id.ok_or("tunnel_configuration_missing")?;
     let spec = TunnelSpec {
         binary: resolve_tunnel(&state, &ctx)?.ok_or("tunnel_client_missing")?,
         alias: format!("tv-{}", checkpoint.installation_id),

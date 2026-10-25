@@ -83,6 +83,14 @@ fn digest(process: &dyn Process, path: &Path, ctx: &Context<'_>) -> Result<Strin
     }
     Ok(value.to_ascii_lowercase())
 }
+/// Read-only SHA-256 using the same bounded system-tool contract as dependency verification.
+pub fn file_digest(
+    process: &dyn Process,
+    path: &Path,
+    ctx: &Context<'_>,
+) -> Result<String, &'static str> {
+    digest(process, path, ctx)
+}
 struct Stage(PathBuf);
 impl Drop for Stage {
     fn drop(&mut self) {

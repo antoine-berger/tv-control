@@ -7,6 +7,7 @@ mod guidance;
 mod local;
 mod maintenance;
 mod runtime;
+pub(crate) mod service_runtime;
 mod tunnel;
 
 use crate::terminal::{Interrupts, Terminal};

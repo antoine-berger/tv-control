@@ -196,7 +196,9 @@ for later completion. The explicit advanced stop command is:
 
 Stopping preserves configuration and TV trust. Removing local keys does not
 revoke trust on the TV; revoke the computer on the TV when retiring it. No OS
-startup service is installed. A future restart reuses an opted-in saved runtime key;
+startup service is installed by this journey. Optional macOS host supervision is
+a separate explicit opt-in described in [the CLI reference](CLI.md#opt-in-host-supervision);
+its stop/uninstall also preserve the existing access. A future restart reuses an opted-in saved runtime key;
 without one it needs a separately supplied key.
 
 The bridge treats SIGINT, SIGTERM and SIGHUP as cooperative cancellation: active
