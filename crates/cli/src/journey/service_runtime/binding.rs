@@ -277,6 +277,7 @@ fn capture_parts(
         &spec.state_dir.join("home"),
         &state.join("adb"),
         &state.join("adb/adb-home"),
+        &state.join("adb/adb-home/.android"),
     ] {
         directory(dir, uid)?;
     }
@@ -301,13 +302,13 @@ fn capture_parts(
         intent_path.as_path(),
         owner.as_path(),
         &state.join("runtime-credential.json"),
-        &state.join("adb/adb-home/adbkey"),
+        &state.join("adb/adb-home/.android/adbkey"),
     ] {
         add(&mut pins, path, uid, Kind::Private, process, ctx)?;
     }
     add(
         &mut pins,
-        &state.join("adb/adb-home/adbkey.pub"),
+        &state.join("adb/adb-home/.android/adbkey.pub"),
         uid,
         Kind::PublicKey,
         process,
