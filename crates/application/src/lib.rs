@@ -1,5 +1,6 @@
 //! Use cases and ports. Depends only on the domain and the standard library.
 pub mod pipeline;
+pub mod supervision;
 use tv_domain::*;
 
 pub trait Clock: Send + Sync {

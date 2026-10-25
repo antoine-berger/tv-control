@@ -60,6 +60,23 @@ operation-journal files remain untouched.
   run` from causing an OS restart loop outside the durable policy. Legacy
   installers or manual same-UID replacement are outside that guarantee.
 
+Short transaction contention uses an immutable CAS target and at most 50 ms of
+real time, bounded by the original deadline and cancellation. Only pre-transaction
+Busy/EffectNone is retried; never a lifecycle command or unknown publication.
+After Installed/Enabled is validated, exhausted contention may request an OS retry;
+the next invocation must still pass durable phase/budget admission. Before that
+validation, persistent contention exits conservatively without restart, leaving
+operator intervention necessary. Neither this tradeoff nor OS throttling promises
+availability when the private ledger cannot be read.
+Service install holds the ordinary installer's exact atomic mkdir publication lock
+across pin revalidation, durable preparation and bootstrap, closing the race
+between an installer guard and later service admission. An exclusively created
+private `.tv-control-supervision` marker in the installation prefix blocks installer
+changes independently of configuration location or XDG environment. Its exact
+installation/configuration/label binding is verified before unload; only an
+acknowledged owned unload and durable Removed receipt authorize removing it.
+Unknown registration preserves this guard. Unsafe/missing markers are not adopted.
+
 ## CLI and platform boundary
 
 Host-only CLI commands are `service plan`, `install`, `run`, `status`, `stop`,
@@ -93,7 +110,10 @@ artifact exclusively, before bootstrap. A bootstrap invocation therefore cannot
 connect a TV: the runner remains disarmed. Acknowledged success publishes
 Installed, still Stopped. Only a separate explicit resume arms the state and
 kickstarts this known-owned job. Failed/lost bootstrap acknowledgement leaves
-Unknown/Disabled; it is not retried, adopted or silently assigned a receipt.
+Unknown/Disabled through a bounded state-only cleanup context, even after the
+original cancellation. If that publication is itself unavailable, Prepared remains
+disarmed and unverified. Neither record authorizes retry, adoption or cleanup as
+though installation had been acknowledged.
 Stop may always disarm valid owned state. OS unload/removal requires an Installed
 receipt and unchanged artifact; an uncertain installation remains a reported
 cleanup blocker with its artifacts preserved for review. Stop racing an install

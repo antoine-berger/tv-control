@@ -154,8 +154,33 @@ allowed_member() {
         *) return 1 ;;
     esac
 }
+verify_service_removal() {
+    if [ -n "${XDG_CONFIG_HOME:-}" ]; then config_parent=$XDG_CONFIG_HOME/tv-control
+    elif [ -n "${HOME:-}" ]; then config_parent=$HOME/.config/tv-control
+    else fail home_unavailable; fi
+    case "$config_parent" in /*) ;; *) fail config_directory_must_be_absolute ;; esac
+    service_state=$config_parent/connection/supervision
+    # State can outlive the tunnel marker or be an unsafe dangling link. Only
+    # the verified active payload can decide that this launcher is safe to alter.
+    if [ -e "$service_state" ] || [ -L "$service_state" ]; then
+        printf '%s\n' TV_CONTROL_SERVICE_REMOVAL_V1_SAFE > "$work/service-guard-expected"
+        # Compare the whole bounded stdout frame: command substitution would hide
+        # extra trailing newlines. Older/unsupported helpers must fail closed.
+        if ! (ulimit -f 8 || exit 1; "$prefix/versions/$active/tv-control" service uninstall-check \
+            "$config_parent/tv-control.local.json" --launcher "$prefix/tv-control" \
+            </dev/null 3<&-) > "$work/service-guard-output" 2>/dev/null; then
+            fail service_uninstall_required_installation_preserved
+        fi
+        cmp -s "$work/service-guard-expected" "$work/service-guard-output" || fail service_uninstall_required_installation_preserved
+    fi
+}
 verify_installation() {
     if ! { [ -d "$prefix" ] && [ ! -L "$prefix" ]; }; then fail installation_missing; fi
+    # This installation-bound marker also covers non-default configurations and
+    # a changed HOME/XDG_CONFIG_HOME. Any presence is a blocker, never adoption.
+    if [ -e "$prefix/.tv-control-supervision" ] || [ -L "$prefix/.tv-control-supervision" ]; then
+        fail service_uninstall_required_installation_preserved
+    fi
     if ! { [ -f "$prefix/.tv-control-owner" ] && [ ! -L "$prefix/.tv-control-owner" ]; }; then fail prefix_not_owned_installation; fi
     [ "$(sed -n '1p' "$prefix/.tv-control-owner")" = TV_CONTROL_INSTALL_V1 ] || fail prefix_not_owned_installation
     [ -n "$(find "$prefix" -prune -user "$uid" -print)" ] || fail installation_owner_mismatch
@@ -190,6 +215,7 @@ verify_installation() {
     LC_ALL=C sort "$work/expected-dirs" > "$work/expected-dirs.sorted"
     find "$prefix" -type d -print | LC_ALL=C sort > "$work/actual-dirs"
     cmp -s "$work/expected-dirs.sorted" "$work/actual-dirs" || fail unexpected_installation_directories
+    verify_service_removal
 }
 run_setup() {
         config_parent=${XDG_CONFIG_HOME:-$HOME/.config}/tv-control

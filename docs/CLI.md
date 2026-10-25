@@ -22,6 +22,8 @@ tv-control workflow CONFIG ALIAS REQUEST_ID TTL_MS
 tv-control mcp CONFIG
 tv-control onboard CONFIG [--json]
 tv-control disconnect CONFIG [--json]
+tv-control service plan|status|stop|uninstall CONFIG
+tv-control service install|resume CONFIG --approve-persistence
 ```
 
 | Command | Behavior |
@@ -37,7 +39,8 @@ tv-control disconnect CONFIG [--json]
 | `workflow` | Expand a configured workflow to one series-resume request |
 | `mcp` | Run the local [MCP stdio server](MCP.md) until its transport closes |
 | `onboard` | Guide explicit access approvals, native checks, official tunnel supervision and cooperative conversation verification; JSON mode returns pending without granting access |
-| `disconnect` | Explicitly stop only the exact owned managed controller; preserve configuration and TV trust |
+| `disconnect` | Disarm owned host supervision when configured, then stop the exact owned controller; preserve configuration and TV trust |
+| `service` | Explicit, opt-in host supervision of an existing saved controller; macOS user LaunchAgent only |
 
 Capability listing describes configured support; it does not test runtime
 connectivity. `execute` input is bounded by `max_frame_bytes`.
@@ -261,3 +264,79 @@ request as MCP `tv_media_read`: configured Jellyfin device, absolute
 See [media metadata](MCP.md#read-only-jellyfin-media-metadata). Exit status is 0
 for an observation, 2 for a failed read, and 1 for invalid CLI/wire input.
 This command creates no operation journal, credentials or playback changes.
+
+## Opt-in host supervision
+
+The ordinary installer and onboarding do not install or enable an OS service.
+The macOS-only `service` commands manage the existing saved controller, using its
+saved access, identities and journal. They never create TV authorization, select
+content, or replay a saved TV operation. They do not make an asleep or offline Mac
+reachable. A missing runtime key, changed configuration or executable, ambiguous
+ownership, or an uncertain lifecycle action blocks recovery.
+
+`service plan CONFIG` reads the existing installation and prints a reviewable
+plist and the explicit installation/activation commands. It requires a launcher
+that supports this supervision protocol. It creates no artifact or service.
+`service status CONFIG` reports durable intent, counters and owner-lease presence;
+`runtime_ready_verified:false` means this is not a fresh TV/tunnel readiness check.
+
+After a user has approved persistent background execution, the separate steps are:
+
+```text
+tv-control service install CONFIG --approve-persistence
+tv-control service resume CONFIG --approve-persistence
+```
+
+Install writes a private, disarmed record and an installation-bound user LaunchAgent
+in `~/Library/LaunchAgents`, then bootstraps it in the current user's GUI domain.
+The initial invocation does no backend work. Resume is a separate explicit arm and
+kickstart, without force-killing another instance. A successful resume proves the
+supervisor has entered monitoring, not that a TV is ready. The saved runtime key is
+loaded from its existing private storage; no key is accepted through service
+arguments. Logs go to `/dev/null`; closed lifecycle codes are kept in private state.
+
+The agent uses RunAtLoad, KeepAlive with SuccessfulExit=false, a 30-second launch
+throttle, a 20-second exit timeout and umask 077. Each arm permits at most three
+controller start attempts and three unclean supervisor incarnations. Budgets are
+durable and do not reset on respawn or readiness. A live degraded runtime is not
+blindly restarted. INT/TERM/HUP run bounded owned cleanup; an enabled runner exits
+nonzero after verified cleanup so launchd can restart it. An explicit stop persists
+Stopped first, then drains the owner and verifies absence. Unknown cleanup or an
+in-flight start is never retried as a new lifecycle mutation.
+
+```text
+tv-control service stop CONFIG
+tv-control service uninstall CONFIG
+```
+
+Stop preserves the installed agent but disarms it. Existing `disconnect` also
+disarms it. Uninstall requires verified owned cleanup, unloads the exact admitted
+job and removes only its matching artifact and private supervision files. It keeps
+TV/tunnel credentials, identities, configuration and operation journal. Failed or
+lost bootstrap acknowledgement leaves a disarmed, unverified registration; it is
+not automatically adopted, booted out or deleted. Preserve these artifacts for
+review instead of retrying installation.
+
+A private installation-scoped `.tv-control-supervision` marker also blocks updates
+and software uninstall independently of the configuration path or XDG environment.
+It is created exclusively before bootstrap and removed only after acknowledged
+owned unload and durable removal. An unverified installation keeps this marker.
+Updates, downgrades and ordinary software uninstall refuse an owned service
+registration: uninstall this service first, perform the software operation, then
+review the plan and opt in again. Service admission and the current installer use
+the same atomic installation lock. Legacy installers/manual same-user replacement
+are outside that guarantee. Linux returns `service_platform_unsupported`; no
+service manager is silently substituted. `service run` is an internal launch-agent
+entry point, not an activation command or an MCP tool.
+
+Short journal-lock contention is retried for at most 50 ms under the original
+operation context; the target revision and record stay unchanged. An exhausted
+lock wait after an Enabled record was validated can request an OS retry without
+replaying the backend. Missing/unsafe state, permission refusal and lock failure
+before that validation exit conservatively without restart. Thus durable ledger
+unavailability still needs operator intervention. OS throttling is distinct from
+the durable budget for controller actions.
+
+This feature is qualified by local fixtures and static plist checks. Installation,
+login/logout, host sleep/wake and real controller recovery require a separately
+approved hardware qualification; simulated tests do not establish availability.

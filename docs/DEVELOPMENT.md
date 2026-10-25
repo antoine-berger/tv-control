@@ -48,6 +48,9 @@ Each crate README identifies its entry points and tests. For common changes:
 - TV discovery and saved setup: adapter `setup`/`discovery` and CLI `onboarding`.
 - Managed connection lifecycle: application `pipeline`/`onboarding`, adapter
   runtime/tunnel/proof modules, then CLI `journey`.
+- Host supervision: pure application `supervision`, private adapter state and
+  `service_platform`, CLI `supervision`/`journey::service_runtime`. Test only fake
+  runtime/process ports; never load a real LaunchAgent in repository checks.
 - MCP tools and wire format: CLI `mcp`, adapter `wire` and `scripts/test_mcp.py`.
 - Installation/release: `install.sh`, `scripts/package.py`, `scripts/release.py`
   and `.github/workflows/ci.yml`. Package membership is deliberately allowlisted.

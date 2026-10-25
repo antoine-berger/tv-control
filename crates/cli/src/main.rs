@@ -5,6 +5,7 @@ mod journey_fixture;
 mod mcp;
 mod media_mcp;
 mod onboarding;
+mod supervision;
 mod terminal;
 use serde_json::{json, Value};
 use std::{
@@ -135,6 +136,13 @@ fn capabilities(cfg: &Config) -> Value {
 
 fn run() -> Result<i32, &'static str> {
     let args: Vec<_> = std::env::args().collect();
+    if args.len() == 3 && args[1] == "service" && args[2] == "protocol" {
+        println!("TV_CONTROL_SUPERVISION_V1");
+        return Ok(0);
+    }
+    if args.get(1).is_some_and(|value| value == "service") {
+        return supervision::run(&args[2..]);
+    }
     if args.get(1).is_some_and(|s| s == "onboard")
         && args.len() == 6
         && args[3] == "--fixture"
@@ -195,7 +203,7 @@ fn run() -> Result<i32, &'static str> {
         if args[1] == "--version" {
             println!("tv-control {}", env!("CARGO_PKG_VERSION"));
         } else {
-            println!("tv-control setup [--json|--dry-run]\ntv-control verify-connection CONFIG [--launcher PATH]\ntv-control onboard|disconnect CONFIG [--json]\ntv-control interfaces|discover [--interface NAME] [--json]\ntv-control doctor|connect-chatgpt CONFIG [--json]\ntv-control validate|capabilities|mcp CONFIG\ntv-control execute|media-read CONFIG REQUEST.json|-\ntv-control workflow CONFIG ALIAS REQUEST_ID TTL_MS\nSetup prepares configuration. Onboard guides explicit access approvals and verifies the selected conversation. JSON onboarding never grants access.");
+            println!("tv-control setup [--json|--dry-run]\ntv-control service plan|status|stop|uninstall CONFIG\ntv-control service install|resume CONFIG --approve-persistence\ntv-control verify-connection CONFIG [--launcher PATH]\ntv-control onboard|disconnect CONFIG [--json]\ntv-control interfaces|discover [--interface NAME] [--json]\ntv-control doctor|connect-chatgpt CONFIG [--json]\ntv-control validate|capabilities|mcp CONFIG\ntv-control execute|media-read CONFIG REQUEST.json|-\ntv-control workflow CONFIG ALIAS REQUEST_ID TTL_MS\nSetup prepares configuration. Onboard guides explicit access approvals and verifies the selected conversation. JSON onboarding never grants access.");
         }
         return Ok(0);
     }

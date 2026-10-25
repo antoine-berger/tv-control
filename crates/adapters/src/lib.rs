@@ -12,7 +12,9 @@ pub mod process;
 pub mod runtime;
 pub mod runtime_credential;
 pub mod runtime_intent;
+pub mod service_platform;
 pub mod stdio;
+pub mod supervision_store;
 pub mod wire;
 
 use config::{Config, Device};

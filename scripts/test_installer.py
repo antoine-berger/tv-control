@@ -26,8 +26,25 @@ class Installer(unittest.TestCase):
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <signal.h>
 int main(int argc,char **argv) {
  if(argc>1 && strcmp(argv[1],"--version")==0) {printf("fixture:%s\n",argv[0]);return 0;}
+ if(argc>2 && strcmp(argv[1],"service")==0 && strcmp(argv[2],"uninstall-check")==0) {
+  const char *log=getenv("TV_TEST_SERVICE_GUARD_LOG");
+  if(log) {FILE*f=fopen(log,"a");if(!f)return 12;for(int i=0;i<argc;i++)fprintf(f,"%s\n",argv[i]);fputs("--call-end--\n",f);if(fclose(f))return 13;}
+  const char *mode=getenv("TV_TEST_SERVICE_GUARD_MODE");
+  if(!mode || strcmp(mode,"unsupported")==0)return 64;
+  const char *token="TV_CONTROL_SERVICE_REMOVAL_V1_SAFE";
+  if(strcmp(mode,"wrong")==0) {puts("not-the-removal-token");return 0;}
+  if(strcmp(mode,"empty")==0)return 0;
+  if(strcmp(mode,"stderr")==0) {fprintf(stderr,"%s\n",token);return 0;}
+  if(strcmp(mode,"no-newline")==0) {fputs(token,stdout);return 0;}
+  if(strcmp(mode,"large")==0) {signal(SIGXFSZ,SIG_IGN);for(int i=0;i<10000;i++)if(puts(token)==EOF)break;return 0;}
+  puts(token);
+  if(strcmp(mode,"extra")==0)puts("extra-output");
+  if(strcmp(mode,"blank-line")==0)puts("");
+  return strcmp(mode,"failed-with-token")==0 ? 23 : 0;
+ }
  if(argc>1 && strcmp(argv[1],"setup")==0) {
   const char *once=getenv("TV_TEST_SETUP_FAIL_ONCE");if(once && access(once,F_OK)) {FILE*f=fopen(once,"w");if(!f)return 11;fclose(f);fputs("fixture discovery failure\n",stderr);return 31;}
   if(getenv("TV_TEST_SETUP_INPUT")) {char answer[64];if(!isatty(0))return 9;fputs("Wizard answer: ",stderr);fflush(stderr);if(!fgets(answer,sizeof(answer),stdin)||strcmp(answer,"wizard-answer\n"))return 10;}
@@ -294,6 +311,105 @@ case "$url" in *.sha256) cp "$TV_TEST_CHECKSUM" "$output";; *) cp "$TV_TEST_ARCH
  def test_invalid_version_and_unknown_option_do_not_write(self):
   p=self.run_script(['--prefix',str(self.prefix),'--version','v0.4.11\n../escape','--json']);self.assertEqual(p.value['code'],'invalid_version');self.assertFalse(self.prefix.exists())
   p=self.run_script(['--prefix',str(self.prefix),'--bad','--json']);self.assertNotEqual(p.returncode,0);self.assertFalse(self.prefix.exists())
+ def installation_bytes(self):
+  return {str(p.relative_to(self.prefix)):p.read_bytes() for p in self.prefix.rglob('*') if p.is_file()}
+ def service_state(self,kind='registered'):
+  parent=self.root/'config/tv-control/connection';parent.mkdir(parents=True,exist_ok=True)
+  state=parent/'supervision'
+  if state.is_symlink() or state.is_file():state.unlink()
+  elif state.exists():shutil.rmtree(state)
+  if kind=='symlink':
+   target=self.root/'service-target';target.mkdir(exist_ok=True);(target/'keep').write_text('unchanged')
+   state.symlink_to(target,target_is_directory=True)
+  elif kind=='dangling-symlink':state.symlink_to(self.root/'missing-service-target')
+  elif kind=='plain-file':state.write_text('corrupt-service-record')
+  else:
+   state.mkdir(mode=0o700);(state/'state.json').write_text('{invalid' if kind=='corrupt' else '{"registration":"installed"}')
+  self.assertFalse((parent/'tunnel/.tv-control-owner').exists())
+  return state
+ def assert_service_guard_blocked(self,result,before):
+  self.assertEqual(result.returncode,1,result.stdout+result.stderr)
+  self.assertEqual(result.value['code'],'service_uninstall_required_installation_preserved')
+  self.assertEqual(self.installation_bytes(),before)
+  self.assertFalse(list(self.root.glob('.tv-control-stage.*')))
+  self.assertFalse(list(self.root.glob('.*.install-lock')))
+ def test_service_state_blocks_old_uninstall_and_update_even_without_tunnel_marker(self):
+  old=self.asset('v0.2.0');new=self.asset();self.assertEqual(self.install(old,'v0.2.0').returncode,0)
+  before=self.installation_bytes();log=self.root/'service-guard-calls';self.env['TV_TEST_SERVICE_GUARD_LOG']=str(log)
+  calls=[]
+  for shell in SHELLS:
+   for kind in ['registered','corrupt','symlink','dangling-symlink','plain-file']:
+    with self.subTest(shell=shell,state=kind):
+     state=self.service_state(kind)
+     log.write_text('')
+     a=self.run_script(['--prefix',str(self.prefix),'--uninstall','--json'],sh=shell)
+     self.assert_service_guard_blocked(a,before)
+     b=self.install(new,extra=['--update'],sh=shell);self.assert_service_guard_blocked(b,before)
+     self.assertTrue(state.exists() or state.is_symlink())
+     calls+=log.read_text().split('--call-end--\n')[:-1]
+  self.assertEqual(len(calls),len(SHELLS)*5*2)
+  for call in calls:
+   self.assertEqual(call.splitlines(),[str(self.prefix/'versions/v0.2.0/tv-control'),'service','uninstall-check',str(self.root/'config/tv-control/tv-control.local.json'),'--launcher',str(self.prefix/'tv-control')])
+ def test_service_guard_requires_success_and_exact_stdout_token(self):
+  self.assertEqual(self.install(self.asset()).returncode,0);self.service_state()
+  before=self.installation_bytes()
+  for mode in ['unsupported','wrong','empty','stderr','no-newline','extra','blank-line','failed-with-token','large']:
+   with self.subTest(mode=mode):
+    env=self.env.copy();env['TV_TEST_SERVICE_GUARD_MODE']=mode
+    result=self.run_script(['--prefix',str(self.prefix),'--uninstall','--json'],env=env)
+    self.assert_service_guard_blocked(result,before)
+ def test_service_safe_foreign_or_removed_receipt_allows_existing_operations(self):
+  old=self.asset('v0.2.0');new=self.asset()
+  for mode in ['foreign','removed']:
+   with self.subTest(mode=mode):
+    self.assertEqual(self.install(old,'v0.2.0').returncode,0)
+    state=self.service_state();keep=state/'state.json';data=keep.read_bytes()
+    self.env['TV_TEST_SERVICE_GUARD_MODE']=mode
+    result=self.install(new,extra=['--update']);self.assertEqual(result.returncode,0,result.stdout+result.stderr)
+    self.assertEqual((self.prefix/'current').read_text(),'v0.4.11\n')
+    result=self.run_script(['--prefix',str(self.prefix),'--uninstall','--json']);self.assertEqual(result.returncode,0,result.stdout+result.stderr)
+    self.assertFalse(self.prefix.exists());self.assertEqual(keep.read_bytes(),data)
+    shutil.rmtree(state)
+ def test_service_guard_precedes_same_version_setup_reuse(self):
+  self.assertEqual(self.install(self.asset()).returncode,0);self.service_state('corrupt')
+  before=self.installation_bytes();marker=self.root/'setup-marker';log=self.root/'downloads';env=self.env.copy()
+  env.update(TV_TEST_SETUP_MARKER=str(marker),TV_TEST_CURL_LOG=str(log))
+  curl=self.bin/'curl';curl.write_text('#!/bin/sh\nprintf called >> "$TV_TEST_CURL_LOG"\nexit 99\n');curl.chmod(0o700)
+  result=self.run_terminal(['--prefix',str(self.prefix),'--setup'],[('Continue? Type yes:',b'yes\n')],env=env)
+  self.assertEqual(result.returncode,1,result.stdout)
+  self.assertIn('service_uninstall_required_installation_preserved',result.stdout)
+  self.assertFalse(marker.exists());self.assertFalse(log.exists())
+  self.assertEqual(self.installation_bytes(),before)
+ def test_absent_service_state_keeps_unsupported_legacy_payload_compatible(self):
+  old=self.asset('v0.2.0');new=self.asset();log=self.root/'service-guard-calls';self.env['TV_TEST_SERVICE_GUARD_LOG']=str(log)
+  self.assertEqual(self.install(old,'v0.2.0').returncode,0)
+  self.assertEqual(self.install(new,extra=['--update']).returncode,0)
+  result=self.run_script(['--prefix',str(self.prefix),'--uninstall','--json']);self.assertEqual(result.returncode,0,result.stdout+result.stderr)
+  self.assertFalse(log.exists())
+ def test_installation_marker_blocks_custom_profile_update_and_uninstall(self):
+  old=self.asset('v0.2.0');new=self.asset()
+  self.assertEqual(self.install(old,'v0.2.0').returncode,0)
+  custom=self.root/'custom-profile/connection/supervision';custom.mkdir(parents=True,mode=0o700)
+  state=custom/'state.json';state.write_text('custom-profile-installed-receipt')
+  marker=self.prefix/'.tv-control-supervision'
+  target=self.root/'marker-target';target.write_text('foreign-marker-preserved')
+  env=self.env.copy();env['XDG_CONFIG_HOME']=str(self.root/'different-config-root')
+  for kind in ['file','directory','symlink','dangling-symlink']:
+   with self.subTest(marker=kind):
+    if kind=='file':marker.write_text('installation-bound-receipt')
+    elif kind=='directory':marker.mkdir();(marker/'foreign').write_text('preserved')
+    else:marker.symlink_to(target if kind=='symlink' else self.root/'missing-marker-target')
+    before=self.installation_bytes()
+    for args in [
+     ['--prefix',str(self.prefix),'--version','v0.4.11','--archive',str(new),'--update','--json'],
+     ['--prefix',str(self.prefix),'--uninstall','--json'],
+    ]:
+     self.assert_service_guard_blocked(self.run_script(args,env=env),before)
+    self.assertEqual(self.installation_bytes(),before)
+    self.assertEqual(state.read_text(),'custom-profile-installed-receipt')
+    self.assertEqual(target.read_text(),'foreign-marker-preserved')
+    if kind=='directory':shutil.rmtree(marker)
+    else:marker.unlink()
 if __name__=='__main__':
  print('Installer shells: '+', '.join(' '.join(s) for s in SHELLS),file=sys.stderr)
  unittest.main()
