@@ -140,12 +140,20 @@ fn file(path: &Path, bytes: &[u8], mode: u32) {
 impl Fixture {
     fn new() -> Self {
         static NEXT: AtomicU64 = AtomicU64::new(0);
-        let root = std::env::temp_dir().canonicalize().unwrap().join(format!(
+        // Production also pins current_exe. Anchor fixture executables under its
+        // already trusted ancestry rather than Linux's intentionally public /tmp.
+        let binary = std::env::current_exe().unwrap().canonicalize().unwrap();
+        let root = binary.parent().unwrap().join(format!(
             "tv-service-binding-{}-{}",
             std::process::id(),
             NEXT.fetch_add(1, Ordering::SeqCst)
         ));
         directory(&root);
+        assert_eq!(root.canonicalize().unwrap(), root);
+        assert_eq!(
+            fs::metadata(&root).unwrap().permissions().mode() & 0o7777,
+            0o700
+        );
         let state = root.join("connection");
         directory(&state);
         for path in [
@@ -366,6 +374,12 @@ fn missing_or_symlink_identity_and_old_launcher_never_start() {
     symlink(&moved, &key).unwrap();
     assert!(check_binding(&binding, &fixture.process, &ctx).is_err());
     assert_eq!(fixture.process.connects.load(Ordering::SeqCst), 0);
+    let root = fixture.root.clone();
+    drop(fixture);
+    assert!(
+        !root.exists(),
+        "private fixture root must be removed by Drop"
+    );
 }
 
 #[test]
