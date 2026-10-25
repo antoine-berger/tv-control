@@ -317,7 +317,7 @@ fn context<'a>(clock: &'a SystemClock, cancel: &'a CancelFlag) -> Context<'a> {
 }
 
 fn preserved_unknown_journal(fixture: &Fixture) -> (PathBuf, Vec<u8>) {
-    use tv_domain::generic::{Intent, Operation, Request};
+    use tv_domain::generic::{Intent, Operation, Reply, Request};
     let path = fixture.root.join(".tv-control-operations");
     let request = Request {
         id: "preserved-layout".into(),
@@ -332,11 +332,28 @@ fn preserved_unknown_journal(fixture: &Fixture) -> (PathBuf, Vec<u8>) {
             journal.reserve(&request, "fixture-tv", 100).unwrap(),
             tv_application::generic::Reservation::Acquired
         ));
+        // This fixture tests preservation of an already published Unknown, not
+        // crash recovery while another test's pre-exec child may inherit a lease.
+        journal
+            .finish(
+                &request,
+                &Reply {
+                    request_id: request.id.clone(),
+                    status: tv_domain::Status::OutcomeUnknown,
+                    code: "fixture_unknown".into(),
+                    observed: None,
+                    choices: vec![],
+                    cached: false,
+                    local_elapsed_ms: 0,
+                },
+                200,
+            )
+            .unwrap();
     }
     let journal =
         tv_adapters::operation_journal::OperationJournal::open(&path, 16, 60_000).unwrap();
     assert!(
-        matches!(journal.get(&request.id).unwrap(), Operation::Complete(reply) if reply.status == tv_domain::Status::OutcomeUnknown)
+        matches!(journal.get(&request.id).unwrap(), Operation::Complete(reply) if reply.status == tv_domain::Status::OutcomeUnknown && reply.code == "fixture_unknown")
     );
     let file = path.join("operations.json");
     let bytes = fs::read(&file).unwrap();
