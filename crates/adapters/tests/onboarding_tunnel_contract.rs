@@ -12,7 +12,7 @@ use std::{
         Mutex,
     },
     thread,
-    time::Duration,
+    time::{Duration, Instant},
 };
 use tv_adapters::{
     onboarding_tunnel::{OfficialTunnel, TunnelSpec},
@@ -626,4 +626,209 @@ fn health_url_cannot_bypass_identity_or_block_owned_runtime_cleanup() {
         assert!(!adapter.status(&spec, &ctx).unwrap().process_running);
         assert_eq!(mock.invocations.lock().unwrap().len(), 5);
     }
+}
+
+fn failing_health(spec: &TunnelSpec, response: Option<Vec<u8>>) -> (Value, thread::JoinHandle<()>) {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let mut value = status(spec, true);
+    value["mcp_health_url"] = json!(format!(
+        "http://{}/health/mcp",
+        listener.local_addr().unwrap()
+    ));
+    let worker = thread::spawn(move || {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        // status and ensure each make exactly one passive health read.
+        for _ in 0..2 {
+            let (mut socket, _) = loop {
+                assert!(
+                    Instant::now() < deadline,
+                    "fixture health connection missing"
+                );
+                match listener.accept() {
+                    Ok(connection) => break connection,
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        thread::sleep(Duration::from_millis(1));
+                    }
+                    Err(error) => panic!("fixture accept failed: {error}"),
+                }
+            };
+            // Darwin may inherit O_NONBLOCK from the listening socket.
+            socket.set_nonblocking(false).unwrap();
+            socket
+                .set_write_timeout(Some(deadline.saturating_duration_since(Instant::now())))
+                .unwrap();
+            let mut request = Vec::new();
+            while !request.ends_with(b"\r\n\r\n") {
+                assert!(Instant::now() < deadline, "fixture request deadline");
+                socket
+                    .set_read_timeout(Some(deadline.saturating_duration_since(Instant::now())))
+                    .unwrap();
+                let mut byte = [0];
+                socket.read_exact(&mut byte).unwrap();
+                request.push(byte[0]);
+                assert!(request.len() <= 1024);
+            }
+            assert!(request.starts_with(b"GET /health/mcp HTTP/1.0\r\n"));
+            if let Some(response) = &response {
+                let _ = socket.write_all(response);
+            } else {
+                // The original bounded client deadline must close this stream.
+                socket
+                    .set_read_timeout(Some(deadline.saturating_duration_since(Instant::now())))
+                    .unwrap();
+                assert_eq!(socket.read(&mut [0]).unwrap(), 0);
+            }
+        }
+    });
+    (value, worker)
+}
+
+fn join_failing_health(worker: thread::JoinHandle<()>) {
+    let deadline = Instant::now() + Duration::from_secs(6);
+    while !worker.is_finished() {
+        assert!(
+            Instant::now() < deadline,
+            "fixture health worker did not finish"
+        );
+        thread::sleep(Duration::from_millis(1));
+    }
+    worker.join().unwrap();
+}
+
+#[test]
+fn optional_health_failures_keep_owned_recovery_available_but_never_ready() {
+    let directory = Directory::new();
+    let spec = directory.spec();
+    establish(&spec);
+    let clock = SystemClock::default();
+    let cancel = CancelFlag::default();
+    for (response, code) in [
+        (
+            Some(b"HTTP/1.0 429 Too Many Requests\r\nContent-Length: 0\r\n\r\n".to_vec()),
+            "tunnel_mcp_health_http_status",
+        ),
+        (
+            Some(b"HTTP/1.0 503 Service Unavailable\r\nContent-Length: 0\r\n\r\n".to_vec()),
+            "tunnel_mcp_health_http_status",
+        ),
+        (
+            Some(b"HTTP/1.0 200 OK\r\nContent-Length: 1\r\n\r\nx".to_vec()),
+            "tunnel_mcp_health_invalid_response",
+        ),
+        (
+            Some(b"HTTP/1.0 200 OK\r\nContent-Length: 24577\r\n\r\n".to_vec()),
+            "tunnel_mcp_health_response_too_large",
+        ),
+        (None, "tunnel_mcp_health_timeout"),
+    ] {
+        let (value, worker) = failing_health(&spec, response);
+        let mock = Mock::new(vec![
+            value.clone(),
+            aliases(&spec),
+            value.clone(),
+            value,
+            status(&spec, false),
+        ]);
+        let adapter = OfficialTunnel { process: &mock };
+        let health = adapter.status(&spec, &context(&clock, &cancel)).unwrap();
+        assert!(health.process_running && health.healthy);
+        assert!(!health.ready && !health.locally_ready());
+        assert_eq!(health.mcp_failure_code, Some(code));
+        let error = adapter
+            .ensure(&spec, true, None, &context(&clock, &cancel))
+            .unwrap_err();
+        assert_eq!(error.code, code);
+        assert_eq!(error.effect, Effect::None);
+        assert!(mock
+            .invocations
+            .lock()
+            .unwrap()
+            .iter()
+            .all(|call| !call.mutating));
+        join_failing_health(worker);
+        // Owned stop remains available after the endpoint disappears, but is
+        // still an explicit, separately approved lifecycle operation.
+        assert!(
+            !adapter
+                .stop(&spec, true, &context(&clock, &cancel))
+                .unwrap()
+                .process_running
+        );
+        let calls = mock.invocations.lock().unwrap();
+        assert_eq!(calls.len(), 5);
+        assert_eq!(calls.iter().filter(|call| call.mutating).count(), 1);
+        assert_eq!(
+            calls[4].args,
+            ["runtimes", "stop", &spec.alias, "--json"].map(std::ffi::OsString::from)
+        );
+    }
+}
+
+#[test]
+fn absent_optional_health_endpoint_is_a_not_ready_diagnostic_only() {
+    let directory = Directory::new();
+    let spec = directory.spec();
+    establish(&spec);
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    drop(listener);
+    let mut value = status(&spec, true);
+    value["mcp_health_url"] = json!(format!("http://{address}/health/mcp"));
+    let mock = Mock::new(vec![value]);
+    let clock = SystemClock::default();
+    let cancel = CancelFlag::default();
+    let health = OfficialTunnel { process: &mock }
+        .status(&spec, &context(&clock, &cancel))
+        .unwrap();
+    assert!(health.process_running);
+    assert!(!health.ready && !health.locally_ready());
+    assert_eq!(
+        health.mcp_failure_code,
+        Some("tunnel_mcp_health_unavailable")
+    );
+    assert_eq!(mock.invocations.lock().unwrap().len(), 1);
+    assert!(!mock.invocations.lock().unwrap()[0].mutating);
+}
+
+fn http_permission_blocks_status_and_ensure(code: u16) {
+    let directory = Directory::new();
+    let spec = directory.spec();
+    establish(&spec);
+    let response = format!(
+        "HTTP/1.0 {code} Fixture\r\nLocation: http://198.51.100.20/health/mcp\r\nContent-Length: 0\r\n\r\n"
+    ).into_bytes();
+    let (value, worker) = failing_health(&spec, Some(response));
+    let mock = Mock::new(vec![value.clone(), aliases(&spec), value]);
+    let clock = SystemClock::default();
+    let cancel = CancelFlag::default();
+    let adapter = OfficialTunnel { process: &mock };
+    assert_eq!(
+        adapter
+            .status(&spec, &context(&clock, &cancel))
+            .unwrap_err()
+            .code,
+        "tunnel_mcp_health_permission_denied"
+    );
+    assert_eq!(
+        adapter
+            .ensure(&spec, true, None, &context(&clock, &cancel))
+            .unwrap_err()
+            .code,
+        "tunnel_mcp_health_permission_denied"
+    );
+    join_failing_health(worker);
+    let calls = mock.invocations.lock().unwrap();
+    assert_eq!(calls.len(), 3);
+    assert!(calls.iter().all(|call| !call.mutating));
+}
+
+#[test]
+fn http401_does_not_become_a_recovery_diagnostic_or_trigger_retry() {
+    http_permission_blocks_status_and_ensure(401);
+}
+
+#[test]
+fn http403_does_not_become_a_recovery_diagnostic_or_trigger_retry() {
+    http_permission_blocks_status_and_ensure(403);
 }

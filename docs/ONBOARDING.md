@@ -118,6 +118,12 @@ To activate the installed payload, accept the explicit restart prompt. The contr
 resolves a saved or newly supplied key **before** stopping the old process. A saved
 key is reused without asking you to enter it again. A stopped or unhealthy saved
 controller requires an explicit resume confirmation, not a fresh installation.
+An unavailable or malformed response from the owned runtime's optional local MCP
+health endpoint is recorded as not ready. It does not prevent that explicit
+recovery prompt. Invalid endpoint URLs, runtime identity/ownership failures,
+permission errors, cancellation and expiry still stop maintenance. No failed
+health request is retried automatically, and startup must pass fresh readiness
+checks after an approved restart.
 The verified stable launcher preserves ownership across payload-version changes;
 old payloads remain available, and a running process retains its earlier code until
 restarted. Installation alone does not mean that new code is running.
@@ -131,6 +137,16 @@ silently adopting it or starting a second controller.
 Maintenance reports local readiness only. It does not claim a new successful call
 from your conversation. A restart invalidates old conversation proof; explicit
 onboarding verification issues a fresh challenge when that evidence is needed.
+
+If a read-only local preflight returns `adb_server_unavailable`, the configured
+private ADB listener was unavailable. A mutation that may already have been
+dispatched remains uncertain: recover its operation instead of replaying it.
+Historical progress and build records do not establish that the controller is
+still running. Use the
+existing installation's maintenance route when reconnection is authorized; do not
+start a global ADB server, delete the journal or replace credentials as a shortcut.
+An HTTP 429 from the hosted plugin is separate evidence: a local recovery test
+does not identify or repair an external tunnel provider's rate limit.
 
 The connection directory is adjacent to the private TV configuration. It holds
 progress, a bounded 64 KiB event-code log, the private ADB home and official tunnel

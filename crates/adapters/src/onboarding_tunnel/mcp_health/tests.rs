@@ -296,3 +296,43 @@ fn total_wall_time_cap_survives_slow_drips_and_a_frozen_application_clock() {
     assert!(started.elapsed() < Duration::from_secs(2));
     worker.join().unwrap();
 }
+
+#[test]
+fn permission_errors_are_classified_by_kind_or_errno_without_error_text() {
+    for error in [
+        std::io::Error::from_raw_os_error(libc::EPERM),
+        std::io::Error::from_raw_os_error(libc::EACCES),
+        std::io::Error::new(ErrorKind::PermissionDenied, "private diagnostic omitted"),
+    ] {
+        let errno = error.raw_os_error();
+        let failure = io_failure(error);
+        assert_eq!(failure.code, "tunnel_mcp_health_permission_denied");
+        assert_eq!(failure.os_error, errno);
+    }
+    for error in [
+        std::io::Error::from_raw_os_error(libc::ECONNREFUSED),
+        std::io::Error::other("Permission denied is only prose"),
+    ] {
+        assert_eq!(io_failure(error).code, "tunnel_mcp_health_unavailable");
+    }
+}
+
+fn permission_http_status(code: u16) {
+    let response = format!(
+        "HTTP/1.1 {code} Fixture\r\nLocation: http://198.51.100.20/health/mcp\r\nContent-Length: 7\r\n\r\nprivate"
+    );
+    assert_eq!(
+        check_response(response.into_bytes()).unwrap_err().code,
+        "tunnel_mcp_health_permission_denied"
+    );
+}
+
+#[test]
+fn http401_authentication_refusal_is_a_permission_error() {
+    permission_http_status(401);
+}
+
+#[test]
+fn http403_authorization_refusal_is_a_permission_error() {
+    permission_http_status(403);
+}

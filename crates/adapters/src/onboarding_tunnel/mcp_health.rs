@@ -21,6 +21,16 @@ const IO_SLICE: Duration = Duration::from_millis(10);
 fn fail(code: &'static str) -> Failure {
     Failure::before(code)
 }
+fn io_failure(error: std::io::Error) -> Failure {
+    let denied = error.kind() == ErrorKind::PermissionDenied
+        || matches!(error.raw_os_error(), Some(libc::EPERM | libc::EACCES));
+    fail(if denied {
+        "tunnel_mcp_health_permission_denied"
+    } else {
+        "tunnel_mcp_health_unavailable"
+    })
+    .with_os_error(error.raw_os_error())
+}
 
 fn address(url: &str) -> PortResult<SocketAddr> {
     let invalid = || fail("tunnel_mcp_health_invalid_url");
@@ -84,9 +94,14 @@ fn headers(bytes: &[u8]) -> PortResult<Option<Headers>> {
     let text = std::str::from_utf8(&bytes[..end]).map_err(|_| invalid())?;
     let mut lines = text[..text.len() - 4].split("\r\n");
     let mut status = lines.next().ok_or_else(invalid)?.splitn(3, ' ');
-    if !matches!(status.next(), Some("HTTP/1.0" | "HTTP/1.1")) || status.next() != Some("200") {
-        // Including redirects: never follow another location.
+    if !matches!(status.next(), Some("HTTP/1.0" | "HTTP/1.1")) {
         return Err(fail("tunnel_mcp_health_http_status"));
+    }
+    match status.next() {
+        Some("200") => {}
+        Some("401" | "403") => return Err(fail("tunnel_mcp_health_permission_denied")),
+        // Including redirects: never follow another location.
+        _ => return Err(fail("tunnel_mcp_health_http_status")),
     }
     let mut content_length = None;
     for line in lines {
@@ -131,10 +146,8 @@ fn read_snapshot(url: &str, ctx: &Context<'_>) -> PortResult<Vec<u8>> {
     let connected =
         TcpStream::connect_timeout(&address, budget.check(ctx)?.min(Duration::from_millis(50)));
     budget.check(ctx)?;
-    let mut stream = connected.map_err(|_| fail("tunnel_mcp_health_unavailable"))?;
-    stream
-        .set_nonblocking(true)
-        .map_err(|_| fail("tunnel_mcp_health_unavailable"))?;
+    let mut stream = connected.map_err(io_failure)?;
+    stream.set_nonblocking(true).map_err(io_failure)?;
     let request = format!(
         "GET /health/mcp HTTP/1.0\r\nHost: {address}\r\nAccept: application/json\r\nConnection: close\r\n\r\n"
     );
@@ -148,7 +161,7 @@ fn read_snapshot(url: &str, ctx: &Context<'_>) -> PortResult<Vec<u8>> {
             Ok(n) => pending = &pending[n..],
             Err(error) if error.kind() == ErrorKind::WouldBlock => budget.wait(ctx)?,
             Err(error) if error.kind() == ErrorKind::Interrupted => continue,
-            Err(_) => return Err(fail("tunnel_mcp_health_unavailable")),
+            Err(error) => return Err(io_failure(error)),
         }
     }
     let mut response = Vec::new();
@@ -165,7 +178,7 @@ fn read_snapshot(url: &str, ctx: &Context<'_>) -> PortResult<Vec<u8>> {
                 continue;
             }
             Err(error) if error.kind() == ErrorKind::Interrupted => continue,
-            Err(_) => return Err(fail("tunnel_mcp_health_unavailable")),
+            Err(error) => return Err(io_failure(error)),
         };
         if response.len() + count > MAX_HEADERS + MAX_BODY {
             return Err(fail("tunnel_mcp_health_response_too_large"));

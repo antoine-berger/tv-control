@@ -1,6 +1,9 @@
 //! Official tunnel-client lifecycle adapter. Health is not conversation exposure.
 //! The only persistent runtime operation is the reviewed native `runtimes` API.
 mod mcp_health;
+#[cfg(test)]
+#[path = "onboarding_tunnel/recovery_tests.rs"]
+mod recovery_tests;
 
 use crate::{
     process::{Invocation, Process},
@@ -55,6 +58,25 @@ pub struct OfficialTunnel<'a> {
 
 fn before(code: &'static str) -> Failure {
     Failure::before(code)
+}
+fn health_diagnostic(error: Failure, ctx: &Context<'_>) -> PortResult<&'static str> {
+    // A diagnostic completed outside the caller's budget must not permit a
+    // subsequent recovery action. Unknown errors and permission failures remain
+    // errors; only these bounded observations can make an owned runtime not ready.
+    ctx.check()?;
+    if matches!(
+        error.code,
+        "tunnel_mcp_health_unavailable"
+            | "tunnel_mcp_health_timeout"
+            | "tunnel_mcp_health_http_status"
+            | "tunnel_mcp_health_invalid_response"
+            | "tunnel_mcp_health_response_too_large"
+    ) && !matches!(error.os_error, Some(libc::EPERM | libc::EACCES))
+    {
+        Ok(error.code)
+    } else {
+        Err(error)
+    }
 }
 fn clean_path(path: &Path) -> bool {
     path.is_absolute()
@@ -405,7 +427,10 @@ impl OfficialTunnel<'_> {
                 let url = url
                     .as_str()
                     .ok_or(before("tunnel_mcp_health_invalid_url"))?;
-                health.mcp_failure_code = mcp_health::failure_code(url, ctx)?;
+                health.mcp_failure_code = match mcp_health::failure_code(url, ctx) {
+                    Ok(code) => code,
+                    Err(error) => Some(health_diagnostic(error, ctx)?),
+                };
                 health.ready &= health.mcp_failure_code.is_none();
             }
         }

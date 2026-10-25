@@ -120,6 +120,7 @@ python3 -W error::ResourceWarning scripts/test_install_flow.py target/release/tv
 python3 -W error::ResourceWarning scripts/test_zero_arg_ux.py target/release/tv-control
 python3 -W error::ResourceWarning scripts/test_journey_fixture.py target/release/tv-control
 python3 -W error::ResourceWarning scripts/test_complete_journey.py target/release/tv-control
+python3 -W error::ResourceWarning scripts/test_controller_recovery.py target/release/tv-control
 ./target/release/tv-control validate examples/config.json
 python3 scripts/audit_publication.py
 ```
