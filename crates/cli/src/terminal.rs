@@ -7,32 +7,38 @@ use std::{
     sync::atomic::{AtomicBool, Ordering},
 };
 use tv_application::{Cancellation, Context};
+#[cfg(test)]
+#[path = "terminal_signal_tests.rs"]
+mod signal_tests;
 static INTERRUPTED: AtomicBool = AtomicBool::new(false);
 extern "C" fn interrupt(_: i32) {
     INTERRUPTED.store(true, Ordering::Relaxed);
 }
 pub struct Interrupts {
-    old_int: libc::sigaction,
-    old_term: libc::sigaction,
+    previous: [(i32, libc::sigaction); 3],
 }
 impl Interrupts {
     pub fn install() -> Result<Self, &'static str> {
+        Self::install_signals([libc::SIGINT, libc::SIGTERM, libc::SIGHUP])
+    }
+    fn install_signals(signals: [i32; 3]) -> Result<Self, &'static str> {
         INTERRUPTED.store(false, Ordering::Relaxed);
         let mut action: libc::sigaction = unsafe { std::mem::zeroed() };
-        let mut old_int = unsafe { std::mem::zeroed() };
-        let mut old_term = unsafe { std::mem::zeroed() };
+        let mut previous = signals.map(|signal| (signal, unsafe { std::mem::zeroed() }));
         action.sa_sigaction = interrupt as *const () as usize;
         unsafe {
             libc::sigemptyset(&mut action.sa_mask);
-            if libc::sigaction(libc::SIGINT, &action, &mut old_int) != 0 {
-                return Err("signal_setup_failed");
-            }
-            if libc::sigaction(libc::SIGTERM, &action, &mut old_term) != 0 {
-                libc::sigaction(libc::SIGINT, &old_int, std::ptr::null_mut());
-                return Err("signal_setup_failed");
+            for index in 0..previous.len() {
+                let (signal, old) = &mut previous[index];
+                if libc::sigaction(*signal, &action, old) != 0 {
+                    for (signal, old) in previous[..index].iter().rev() {
+                        libc::sigaction(*signal, old, std::ptr::null_mut());
+                    }
+                    return Err("signal_setup_failed");
+                }
             }
         }
-        Ok(Self { old_int, old_term })
+        Ok(Self { previous })
     }
 }
 impl Cancellation for Interrupts {
@@ -43,8 +49,9 @@ impl Cancellation for Interrupts {
 impl Drop for Interrupts {
     fn drop(&mut self) {
         unsafe {
-            libc::sigaction(libc::SIGINT, &self.old_int, std::ptr::null_mut());
-            libc::sigaction(libc::SIGTERM, &self.old_term, std::ptr::null_mut());
+            for (signal, old) in self.previous.iter().rev() {
+                libc::sigaction(*signal, old, std::ptr::null_mut());
+            }
         }
     }
 }

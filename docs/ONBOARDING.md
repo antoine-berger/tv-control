@@ -199,6 +199,12 @@ revoke trust on the TV; revoke the computer on the TV when retiring it. No OS
 startup service is installed. A future restart reuses an opted-in saved runtime key;
 without one it needs a separately supplied key.
 
+The bridge treats SIGINT, SIGTERM and SIGHUP as cooperative cancellation: active
+workers are cancelled before the owned ADB child is cleaned up. A
+mutation that may have occurred remains uncertain and is never replayed. This
+does not ignore hangup, restart the bridge, or keep a terminated supervisor alive.
+SIGKILL and host failure cannot run cooperative cleanup.
+
 ## Requirements and limits
 
 - macOS Apple Silicon or Linux ARM64/x86-64; router execution is unqualified.
