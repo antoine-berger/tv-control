@@ -13,6 +13,7 @@ use tv_adapters::{
     process::{BoundedProcess, Invocation, Output},
     runtime::{CancelFlag, SystemClock},
 };
+use tv_application::generic::Journal as _;
 use tv_application::supervision::Store;
 use tv_application::{supervision, Clock};
 
@@ -159,6 +160,7 @@ impl Fixture {
         for path in [
             "adb",
             "adb/adb-home",
+            "adb/adb-home/.android",
             "tunnel",
             "tunnel/profiles",
             "tunnel/home",
@@ -166,12 +168,12 @@ impl Fixture {
             directory(&state.join(path));
         }
         file(
-            &state.join("adb/adb-home/adbkey"),
+            &state.join("adb/adb-home/.android/adbkey"),
             b"fixture-existing-private-key",
             0o600,
         );
         file(
-            &state.join("adb/adb-home/adbkey.pub"),
+            &state.join("adb/adb-home/.android/adbkey.pub"),
             b"fixture-existing-public-key",
             0o644,
         );
@@ -314,6 +316,33 @@ fn context<'a>(clock: &'a SystemClock, cancel: &'a CancelFlag) -> Context<'a> {
     }
 }
 
+fn preserved_unknown_journal(fixture: &Fixture) -> (PathBuf, Vec<u8>) {
+    use tv_domain::generic::{Intent, Operation, Request};
+    let path = fixture.root.join(".tv-control-operations");
+    let request = Request {
+        id: "preserved-layout".into(),
+        device: "screen".into(),
+        intent: Intent::Pause,
+        expires_at_unix_ms: 1000,
+    };
+    {
+        let journal =
+            tv_adapters::operation_journal::OperationJournal::open(&path, 16, 60_000).unwrap();
+        assert!(matches!(
+            journal.reserve(&request, "fixture-tv", 100).unwrap(),
+            tv_application::generic::Reservation::Acquired
+        ));
+    }
+    let journal =
+        tv_adapters::operation_journal::OperationJournal::open(&path, 16, 60_000).unwrap();
+    assert!(
+        matches!(journal.get(&request.id).unwrap(), Operation::Complete(reply) if reply.status == tv_domain::Status::OutcomeUnknown)
+    );
+    let file = path.join("operations.json");
+    let bytes = fs::read(&file).unwrap();
+    (file, bytes)
+}
+
 #[test]
 fn existing_executable_symlink_is_bound_and_retargeting_blocks_without_lifecycle() {
     let fixture = Fixture::new();
@@ -367,8 +396,8 @@ fn missing_or_symlink_identity_and_old_launcher_never_start() {
     );
     fixture.process.old_protocol.store(false, Ordering::SeqCst);
     let binding = fixture.capture(&ctx);
-    let key = fixture.state.join("adb/adb-home/adbkey");
-    let moved = fixture.state.join("adb/adb-home/old-key");
+    let key = fixture.state.join("adb/adb-home/.android/adbkey");
+    let moved = fixture.state.join("adb/adb-home/.android/old-key");
     fs::rename(&key, &moved).unwrap();
     assert!(check_binding(&binding, &fixture.process, &ctx).is_err());
     symlink(&moved, &key).unwrap();
@@ -389,6 +418,17 @@ fn owned_absent_runtime_starts_once_with_new_generation_and_preserves_saved_acce
     let cancel = CancelFlag::default();
     let ctx = context(&clock, &cancel);
     let binding = fixture.capture(&ctx);
+    let android = fixture.state.join("adb/adb-home/.android");
+    let keys: Vec<_> = [android.join("adbkey"), android.join("adbkey.pub")]
+        .into_iter()
+        .map(|path| {
+            assert!(binding.pins.contains_key(path.to_str().unwrap()));
+            let bytes = fs::read(&path).unwrap();
+            (path, bytes)
+        })
+        .collect();
+    assert!(!fixture.state.join("adb/adb-home/adbkey").exists());
+    let (journal, journal_bytes) = preserved_unknown_journal(&fixture);
     let store = fixture.store(&binding);
     let previous =
         runtime_intent::read_generation(&fixture.state, "installation", "revision", "screen")
@@ -410,6 +450,110 @@ fn owned_absent_runtime_starts_once_with_new_generation_and_preserves_saved_acce
     assert_eq!(backend.stop_owned(&ctx).unwrap(), Observation::Absent);
     assert_eq!(fixture.process.stops.load(Ordering::SeqCst), 1);
     check_binding(&binding, &fixture.process, &ctx).unwrap();
+    for (path, bytes) in keys {
+        assert_eq!(fs::read(path).unwrap(), bytes);
+    }
+    assert_eq!(fs::read(journal).unwrap(), journal_bytes);
+}
+
+#[test]
+fn missing_or_symlink_android_identity_is_refused_without_fallback_or_repair() {
+    for mutation in [
+        "directory",
+        "directory_symlink",
+        "private",
+        "private_symlink",
+        "public",
+        "public_symlink",
+    ] {
+        let fixture = Fixture::new();
+        let clock = SystemClock::default();
+        let cancel = CancelFlag::default();
+        let ctx = context(&clock, &cancel);
+        let binding = fixture.capture(&ctx);
+        let store = fixture.store(&binding);
+        let backend = RuntimeBackend::new_with_context(
+            &store,
+            store.load().unwrap().arm,
+            &fixture.process,
+            &ctx,
+        )
+        .unwrap();
+        let (journal, journal_bytes) = preserved_unknown_journal(&fixture);
+        let stable: Vec<_> = [
+            &fixture.configuration,
+            &fixture.state.join("runtime-credential.json"),
+        ]
+        .into_iter()
+        .map(|path| (path.to_owned(), fs::read(path).unwrap()))
+        .collect();
+        let android = fixture.state.join("adb/adb-home/.android");
+        let mut private = android.join("adbkey");
+        let mut public = android.join("adbkey.pub");
+        let private_bytes = fs::read(&private).unwrap();
+        let public_bytes = fs::read(&public).unwrap();
+        if mutation.starts_with("directory") {
+            let saved = fixture.state.join("adb/adb-home/saved-android");
+            fs::rename(&android, &saved).unwrap();
+            private = saved.join("adbkey");
+            public = saved.join("adbkey.pub");
+            if mutation == "directory_symlink" {
+                symlink(&saved, &android).unwrap();
+            }
+            // A complete flat pair must not become an implicit fallback.
+            file(
+                &fixture.state.join("adb/adb-home/adbkey"),
+                b"fixture-flat-private",
+                0o600,
+            );
+            file(
+                &fixture.state.join("adb/adb-home/adbkey.pub"),
+                b"fixture-flat-public",
+                0o644,
+            );
+        } else {
+            let path = if mutation.starts_with("private") {
+                &mut private
+            } else {
+                &mut public
+            };
+            let original = path.clone();
+            let saved = android.join("saved-key");
+            fs::rename(&original, &saved).unwrap();
+            if mutation.ends_with("symlink") {
+                symlink(&saved, &original).unwrap();
+            }
+            *path = saved;
+        }
+        assert!(backend.observe_owned(&ctx).is_err(), "{mutation}");
+        Fixture::admit(&store);
+        assert!(backend.start_owned(&ctx).is_err(), "{mutation}");
+        assert!(backend.stop_owned(&ctx).is_err(), "{mutation}");
+        assert_eq!(
+            fixture.process.status_reads.load(Ordering::SeqCst),
+            0,
+            "{mutation}"
+        );
+        assert_eq!(
+            fixture.process.connects.load(Ordering::SeqCst),
+            0,
+            "{mutation}"
+        );
+        assert_eq!(
+            fixture.process.stops.load(Ordering::SeqCst),
+            0,
+            "{mutation}"
+        );
+        assert_eq!(fs::read(private).unwrap(), private_bytes);
+        assert_eq!(fs::read(public).unwrap(), public_bytes);
+        assert_eq!(fs::read(journal).unwrap(), journal_bytes);
+        for (path, bytes) in stable {
+            assert_eq!(fs::read(path).unwrap(), bytes);
+        }
+        if mutation == "directory" {
+            assert!(!android.exists());
+        }
+    }
 }
 
 #[test]
